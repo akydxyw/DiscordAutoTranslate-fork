@@ -375,10 +375,10 @@ public final class ContentNodes {
 
     @Nullable
     static List<String> alignTranslation(String plain, AlignmentPlan plan) {
-        if (plan.groupIds.isEmpty() || !urlsMatch(plain, plan)
-                || !emojiAnchorsMatch(plain, plan)) {
+        if (plan.groupIds.isEmpty() || !urlsMatch(plain, plan)) {
             return null;
         }
+        plan.emojiPositions = locateEmojiAnchors(plain, plan);
         if (plan.hasStyleMarkers()) {
             return alignByStyleMarkers(plain, plan);
         }
@@ -489,18 +489,30 @@ public final class ContentNodes {
         return true;
     }
 
-    /** emoji 锚点必须按原数量出现，否则拒绝对齐。 */
-    private static boolean emojiAnchorsMatch(String plain, AlignmentPlan plan) {
-        java.util.Map<String, Integer> expected = new java.util.HashMap<>();
-        for (String anchor : plan.emojiAnchors) {
-            expected.merge(anchor, 1, Integer::sum);
-        }
-        for (java.util.Map.Entry<String, Integer> e : expected.entrySet()) {
-            if (countOccurrences(plain, e.getKey()) != e.getValue()) {
-                return false;
+    /**
+     * emoji 锚点按出现顺序校验：每个锚点依次在译文中向前查找，找得到的
+     * 话必须保持相对顺序；找不到的锚点跳过（模型丢弃了装饰性 emoji）。
+     * 数量不再要求严格相等——ASCIH-art 装饰消息中模型可能增删 emoji，
+     * 只要保留的锚点顺序正确即可。返回每个锚点在译文中的位置（
+     * 丢失的记 -1），供 {@link #alignTokens} 按位置切割间隔。
+     */
+    @Nullable
+    private static int[] locateEmojiAnchors(String plain, AlignmentPlan plan) {
+        int[] positions = new int[plan.emojiAnchors.size()];
+        int from = 0;
+        for (int i = 0; i < plan.emojiAnchors.size(); i++) {
+            String anchor = plan.emojiAnchors.get(i);
+            // 同一 anchor 可能重复出现（如两个 ⭐）：若下一个锚点与当前相同，
+            // 继续从上一个匹配之后找到一次即可达成顶顺序校验。
+            int at = plain.indexOf(anchor, from);
+            if (at < 0) {
+                positions[i] = -1; // 模型丢弃了这枚 emoji：跳过定位，不拦截回填
+                continue;
             }
+            positions[i] = at;
+            from = at + anchor.length();
         }
-        return true;
+        return positions;
     }
 
     /**
@@ -517,6 +529,7 @@ public final class ContentNodes {
                     plan.lineBreakFlagsIn(0, plan.groupIds.size()));
         }
         // 逐个令牌定位。锚点只切间隔、不产出片段；片段在其后的间隔里分配。
+        // emoji 锚点允许丢失：找不到的话跳过定位，不拦截回填（见 locateEmojiAnchors）。
         List<String> parts = new ArrayList<>(
                 java.util.Collections.nCopies(plan.groupIds.size(), ""));
         int from = 0;
@@ -527,13 +540,28 @@ public final class ContentNodes {
             if (t.url == null) {
                 continue;
             }
-            String anchor = t.url;
-            int at = plain.indexOf(anchor, from);
-            if (at < 0) {
-                return null; // 数量校验后仍未找到，表示锚点顺序改变
+            int at;
+            if (t.emoji) {
+                at = plan.emojiPositions != null
+                        && emojiIndex < plan.emojiPositions.length
+                        ? plan.emojiPositions[emojiIndex++] : -1;
+                if (at < 0) {
+                    // 模型丢弃了这枚 emoji：不做切割，也不推进片段边界。
+                    // 装饰性 emoji 丢失不影响其它片段的对齐。
+                    continue;
+                }
+                // 找到的位置若在当前游标之前，说明顺序错乱，无法安全切割。
+                if (at < from) {
+                    return null;
+                }
+            } else {
+                at = plain.indexOf(t.url, from);
+                if (at < 0) {
+                    return null; // 数量校验后仍未找到，表示锚点顺序改变
+                }
             }
             int segEnd = t.emoji
-                    ? plan.emojiSegIndex.get(emojiIndex++)
+                    ? plan.emojiSegIndex.get(emojiIndex - 1)
                     : plan.urlSegIndex.get(urlIndex++);
             List<String> spanParts = alignSpanToParts(plain.substring(from, at),
                     plan.groupIds.subList(segStart, segEnd),
@@ -543,7 +571,7 @@ public final class ContentNodes {
                 return null;
             }
             copySpan(spanParts, parts, segStart);
-            from = at + anchor.length();
+            from = at + t.url.length();
             segStart = segEnd;
         }
         List<String> tailParts = alignSpanToParts(plain.substring(from),
@@ -700,6 +728,9 @@ public final class ContentNodes {
         final List<String> emojiAnchors = new ArrayList<>();
         /** 与 {@code emojiAnchors} 平行：该 emoji 之前的可翻译片段数（间隔边界）。 */
         final List<Integer> emojiSegIndex = new ArrayList<>();
+        /** 对应后填充：每个锚点在译文中的位置；丢失的记 -1。 */
+        @Nullable
+        int[] emojiPositions;
         /** 按树序的定位与可翻译片段令牌。 */
         final List<PlanToken> tokens = new ArrayList<>();
         /** 样式标记总数（>0 表示请求里含 {@code <xN>} 标记）。 */
