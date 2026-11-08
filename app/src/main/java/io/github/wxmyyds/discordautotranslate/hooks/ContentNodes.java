@@ -546,8 +546,21 @@ public final class ContentNodes {
                         && emojiIndex < plan.emojiPositions.length
                         ? plan.emojiPositions[emojiIndex++] : -1;
                 if (at < 0) {
-                    // 模型丢弃了这枚 emoji：不做切割，也不推进片段边界。
-                    // 装饰性 emoji 丢失不影响其它片段的对齐。
+                    // 定位失败：先区分"顺序错乱"与"完全丢失"。
+                    // 锚点出现在游标之前 → 相对顺序被模型打乱，拒绝。
+                    int earlier = plain.indexOf(t.url, 0);
+                    if (earlier >= 0 && earlier < from) {
+                        return null;
+                    }
+                    // 锚点完全丢失：结构性 emoji（分隔行/段落）丢失会破坏
+                    // 结构对齐，拒绝；装饰性 emoji 丢失则跳过定位。
+                    int segEnd = plan.emojiSegIndex.get(emojiIndex - 1);
+                    boolean structural = segEnd < plan.lineBreakBefore.size()
+                            && Boolean.TRUE.equals(plan.lineBreakBefore.get(segEnd));
+                    if (structural) {
+                        return null;
+                    }
+                    // 装饰性 emoji：不做切割、不推进片段边界，继续下一个令牌。
                     continue;
                 }
                 // 找到的位置若在当前游标之前，说明顺序错乱，无法安全切割。
