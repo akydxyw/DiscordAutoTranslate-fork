@@ -3,13 +3,17 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- usesCleartextTraffic：设置页的「测试连接 / 测试翻译」在本模块进程内直接发请求，
+         需要允许明文 HTTP（例如用户自建的 http://127.0.0.1:8080/v1）。
+         Discord 进程内的明文访问由 hooks/CleartextHooks 按主机放行，见该类的说明。 -->
     <application
         android:allowBackup="false"
         android:hasCode="true"
         android:label="@string/module_name"
         android:icon="@mipmap/ic_launcher"
         android:description="@string/module_description"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true">
 
         <!-- 设置入口：第一版采用独立设置 Activity（需求 §5.7 备用方案）。
              原因见 docs/design-stage1.md：Discord 340.13 的设置界面由 RN/Hermes 渲染，

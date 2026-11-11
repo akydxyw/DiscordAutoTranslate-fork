@@ -5,11 +5,13 @@ import android.content.SharedPreferences;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import io.github.wxmyyds.discordautotranslate.core.CleartextHosts;
 import io.github.wxmyyds.discordautotranslate.core.Config;
 import io.github.wxmyyds.discordautotranslate.core.ModuleResources;
 import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
 import io.github.wxmyyds.discordautotranslate.core.TranslationCache;
+import io.github.wxmyyds.discordautotranslate.hooks.CleartextHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.EmbedHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.HookBridge;
 import io.github.wxmyyds.discordautotranslate.hooks.InlineIconSpan;
@@ -165,6 +167,9 @@ public class ModuleEntry extends XposedModule {
         // 行内图标所需的 Drawable 由 ModuleResources 按需解析（内部已缓存），
         // 不再需要在安装阶段预加载到某个视图类。
 
+        // 明文放行：修复回环/局域网明文 AI 端点请求失败（可选安装，失败不影响翻译管线）。
+        hooks.addAll(CleartextHooks.install(this, cl));
+
         List<XposedInterface.HookHandle> created = MessageHooks.install(this, cl);
         if (created.size() < MessageHooks.MIN_REQUIRED_HOOKS) {
             // 半安装状态会让模块“看似已启用、实际不工作”；回滚并等待重启。
@@ -229,8 +234,11 @@ public class ModuleEntry extends XposedModule {
             final SharedPreferences prefs = getRemotePreferences(Config.GROUP);
             Config.Snapshot snapshot = Config.read(prefs);
             HookBridge.get().updateConfig(snapshot);
+            // 明文放行名单跟随用户配置的 API 端点（仅回环与该主机，见 CleartextHosts）。
+            CleartextHosts.updateConfiguredUrl(snapshot.apiUrl);
         } catch (Throwable t) {
             HookBridge.get().updateConfig(Config.invalidSnapshot());
+            CleartextHosts.updateConfiguredUrl(null);
         }
     }
 }

@@ -3,7 +3,10 @@
 // 构建说明：本仓库禁止本地构建，所有编译/打包必须通过 GitHub Actions 执行。
 // 见 .github/workflows/build.yml
 plugins {
+    // Kotlin 编译由 AGP 9 内置支持，不能再 apply org.jetbrains.kotlin.android；
+    // 只额外 apply Compose 编译器插件。
     id "com.android.application"
+    id "org.jetbrains.kotlin.plugin.compose"
 }
 
 // 签名 keystore 通过环境变量 KEYSTORE_PROPERTIES 指向的 properties 文件注入
@@ -80,6 +83,8 @@ android {
 
     buildFeatures {
         buildConfig true
+        // 设置界面使用 Jetpack Compose + miuix（Compose Multiplatform UI 库）。
+        compose true
     }
 
     testOptions {
@@ -88,6 +93,13 @@ android {
             // 只需 org.json（JDK 自带的 JSON 实现来自 Android，单测环境不可用）。
             returnDefaultValues = true
         }
+    }
+}
+
+// 设置界面（Kotlin/Compose）与模块其余部分（Java 17）产物需保持同一 JVM 目标。
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 
@@ -103,6 +115,12 @@ dependencies {
     // api 与 service 的 AAR 均未传递 androidx.annotation，但其 API 使用 @NonNull 等注解，
     // 因此显式声明注解库。annotation 是纯注解 jar，compileOnly 即可。
     compileOnly "androidx.annotation:annotation:1.9.1"
+
+    // 设置界面：miuix（Compose Multiplatform 的 MIUI 风格组件库）与 Compose Activity。
+    // miuix 的 -android 变体已经传递 Compose foundation/runtime 依赖，无需再显式声明。
+    implementation "top.yukonga.miuix.kmp:miuix-ui-android:0.9.4"
+    implementation "top.yukonga.miuix.kmp:miuix-preference-android:0.9.4"
+    implementation "androidx.activity:activity-compose:1.13.0"
 
     // 单元测试：org.json 在 Android 上由系统提供，在 JVM 单测环境需要显式依赖。
     testImplementation "org.json:json:20260814"
