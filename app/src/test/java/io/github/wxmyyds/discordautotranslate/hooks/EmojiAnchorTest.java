@@ -250,4 +250,51 @@ public class EmojiAnchorTest {
         assertTrue("emoji 由原节点绘制，不能同时出现在文本里，实际=" + rendered,
                 !rendered.contains("\uD83D\uDCE2"));
     }
+
+    /**
+     * 方案 A：模型丢弃装饰性 emoji 时仍可回填——只要保留的锚点顺序正确。
+     * 旧行为要求每个锚点严格出现一次，模型改写装饰段时整条拒绝。
+     */
+    @Test
+    public void droppedDecorativeEmojiStillAlignsByOrder() {
+        TextContentNode first = new TextContentNode("hello");
+        UnicodeEmojiContentNode decorative =
+                new UnicodeEmojiContentNode("☄️", "x", false);
+        UnicodeEmojiContentNode kept =
+                new UnicodeEmojiContentNode("\uD83D\uDCE2", "y", false);
+        TextContentNode second = new TextContentNode("world");
+        List<Object> nodes = list(first, decorative, kept, second);
+
+        // 模型丢掉了 ☄️，但保留了 📢 且顺序正确。
+        List<Object> out = ContentNodes.replaceText(nodes,
+                "你好 \uD83D\uDCE2 世界");
+
+        assertNotNull("保留的锚点顺序正确时必须对齐成功", out);
+        assertSame(decorative, out.get(1));
+        assertSame(kept, out.get(2));
+        String left = ((TextContentNode) out.get(0)).getContent();
+        String right = ((TextContentNode) out.get(3)).getContent();
+        assertEquals("你好", left);
+        assertEquals("世界", right);
+    }
+
+    /** 锚点顺序颠倒时仍拒绝：顺序错误意味着无法安全切割间隔。 */
+    @Test
+    public void reorderedEmojiAnchorIsRejected() {
+        TextContentNode first = new TextContentNode("hello");
+        UnicodeEmojiContentNode a =
+                new UnicodeEmojiContentNode("☄️", "x", false);
+        UnicodeEmojiContentNode b =
+                new UnicodeEmojiContentNode("\uD83D\uDCE2", "y", false);
+        TextContentNode second = new TextContentNode("world");
+        List<Object> nodes = list(first, a, b, second);
+
+        // 📢 出现在 ☄之前：顺序不对，拒绝。
+        assertNull("锚点顺序颠倒时整条拒绝",
+                ContentNodes.replaceText(nodes, "你好 \uD83D\uDCE2 \u2604\uFE0F 世界"));
+        assertEquals("hello", first.getContent());
+        assertEquals("world", second.getContent());
+        assertSame(a, nodes.get(1));
+        assertSame(b, nodes.get(2));
+    }
 }
