@@ -121,6 +121,31 @@ final class PollBinding {
         return value;
     }
 
+    static String questionRow(List<?> args, JSONObject spec) throws Exception {
+        return string(path(argument(args, spec.getInt("accessoryArgument")),
+                spec.getJSONArray("messageIdPath")));
+    }
+
+    static List<?> options(List<?> args, JSONObject spec) throws Exception {
+        Object accessory = argument(args, spec.getInt("accessoryArgument"));
+        Object list = path(accessory, spec.getJSONArray("optionsPath"));
+        if (!(list instanceof List<?>)) throw new IllegalStateException("Poll option list unavailable");
+        return (List<?>) list;
+    }
+
+    static String optionText(Object item, JSONObject spec) throws Exception {
+        return string(path(item, spec.getJSONArray("textPath")));
+    }
+
+    static String optionSlot(Object item, String row, JSONObject spec) throws Exception {
+        String id = string(path(item, spec.getJSONArray("messageIdPath")));
+        String answerId = string(path(item, spec.getJSONArray("answerIdPath")));
+        if (!row.equals(id) || answerId == null || answerId.isEmpty()
+                || answerId.indexOf('\u0000') >= 0)
+            throw new IllegalStateException("Poll option identity mismatch");
+        return "answer:" + answerId;
+    }
+
     private static Object argument(List<?> args, int index) {
         if (index < 0 || index >= args.size()) {
             throw new IllegalStateException("Poll argument outside configured signature");

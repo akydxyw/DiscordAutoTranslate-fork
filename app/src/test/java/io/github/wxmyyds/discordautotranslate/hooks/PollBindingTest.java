@@ -36,6 +36,7 @@ public class PollBindingTest {
     private static final class Accessory {
         private final Message message;
         private final Poll poll;
+        private Object options = Collections.emptyList();
         Accessory(Object id, Object text) {
             message = new Message(id);
             poll = new Poll(text);
@@ -116,7 +117,7 @@ public class PollBindingTest {
     }
 
     private static JSONObject questionSpec() throws Exception {
-        return new JSONObject().put("accessoryArgument", 1)
+        return new JSONObject().put("accessoryArgument", 1).put("optionsPath", fields("options"))
                 .put("messageIdPath", fields("message", "id"))
                 .put("textPath", fields("poll", "question", "text"))
                 .put("hostPath", fields("binding", "root"))
@@ -313,6 +314,25 @@ public class PollBindingTest {
         assertSame(views.label, PollBinding.receiver(malformed, answerArgs(holder, -1),
                 answerSpec(), true));
         assertThrows(IllegalStateException.class, () -> answer(malformed, holder, -1));
+    }
+
+    @Test
+    public void rootCapturesAllOptionsWithStableSlotsWithoutAnyOptionView() throws Exception {
+        Accessory accessory = new Accessory(ROW, "question");
+        AnswerItem first = new AnswerItem(ROW, "a", "first hidden option");
+        AnswerItem last = new AnswerItem(ROW, "b", "last hidden option");
+        accessory.options = Arrays.asList(first, last);
+        List<?> all = PollBinding.options(questionArgs(accessory), questionSpec());
+        assertSame(accessory.options, all);
+        assertEquals("answer:a", PollBinding.optionSlot(all.get(0), ROW, answerSpec()));
+        assertEquals("first hidden option", PollBinding.optionText(all.get(0), answerSpec()));
+        assertEquals("answer:b", PollBinding.optionSlot(all.get(1), ROW, answerSpec()));
+        assertEquals("last hidden option", PollBinding.optionText(all.get(1), answerSpec()));
+        assertThrows(IllegalStateException.class,
+                () -> PollBinding.optionSlot(first, OTHER_ROW, answerSpec()));
+        accessory.options = "not a list";
+        assertThrows(IllegalStateException.class,
+                () -> PollBinding.options(questionArgs(accessory), questionSpec()));
     }
 
     @Test

@@ -120,6 +120,7 @@
         }
       },
       "accessoryArgument": 0,
+      "optionsPath": ["h"],
       "messageIdPath": ["e"],
       "textPath": ["g", "b", "a"],
       "hostPath": ["u"],

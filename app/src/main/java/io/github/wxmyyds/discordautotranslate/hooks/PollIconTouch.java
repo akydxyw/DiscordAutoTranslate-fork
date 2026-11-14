@@ -7,7 +7,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.TextView;
 
-/** Consume only touches on the injected icon, never normal Poll answer taps. */
+/** Title-only control: consume the injected icon, never install on Poll answer views. */
 final class PollIconTouch implements View.OnTouchListener {
     private ClickableSpan pressed;
 

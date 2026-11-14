@@ -6,9 +6,9 @@ import io.github.wxmyyds.discordautotranslate.core.StateStore;
 final class PollTextProjection {
     private PollTextProjection() {}
 
-    static String display(String original, StateStore.Entry state) {
-        return state != null && state.status == StateStore.Status.TRANSLATED
-                && !state.showingOriginal && state.translatedText != null
+    static String display(String original, StateStore.Entry state, PollCardState.Card card) {
+        return card != null && !card.showingOriginal()
+                && state != null && state.status == StateStore.Status.TRANSLATED && state.translatedText != null
                 ? state.translatedText : original;
     }
 }

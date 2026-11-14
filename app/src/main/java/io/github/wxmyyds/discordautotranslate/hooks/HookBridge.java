@@ -146,6 +146,7 @@ public final class HookBridge {
         if (old == null || !old.version().equals(c.version())) {
             StateStore.get().onNewGeneration();
             TranslationCache.get().clear();
+            PollCardState.clear();
         }
         // 引擎随配置重建，保证下一次请求使用最新配置。
         this.engine = new JsonApiEngine(c);
@@ -210,6 +211,7 @@ public final class HookBridge {
         messageRevisions.clear();
         lastView.clear();
         contentIdentityToMessageId.clear();
+        PollCardState.clear();
     }
 
     private static <K, V> Map<K, V> boundedMap(int maxEntries) {
@@ -306,6 +308,10 @@ public final class HookBridge {
         return ex == null || ex.text.trim().isEmpty() ? null
                 : stateKey(rowMessageId, POLL_KEY_PREFIX + slot + "\u0000",
                         contentHashOf(ex, config));
+    }
+
+    static boolean isPollKey(@Nullable String key) {
+        return key != null && key.contains(POLL_KEY_PREFIX);
     }
 
     /** Card segment keys are isolated from canonical body IDs. */
@@ -496,7 +502,7 @@ public final class HookBridge {
             entry.translatedText = cached;
             entry.status = StateStore.Status.TRANSLATED;
             entry.showingOriginal = false;
-            RerenderRegistry.rerender(messageId);
+            refreshTranslation(messageId);
             return;
         }
 
@@ -505,7 +511,7 @@ public final class HookBridge {
                     + " configErrorPresent=" + (cfg.configError != null));
             entry.status = StateStore.Status.FAILED;
             entry.lastError = cfg.configError != null ? cfg.configError : "API 未配置";
-            RerenderRegistry.rerender(messageId);
+            refreshTranslation(messageId);
             return;
         }
 
@@ -523,7 +529,7 @@ public final class HookBridge {
                 + " textNodes=" + ex.textNodeCount + " segments=" + ex.segmentCount);
         entry.status = StateStore.Status.TRANSLATING;
         // 立即重渲染，让「翻译中」旋转图标显示出来。
-        RerenderRegistry.rerender(messageId);
+        refreshTranslation(messageId);
 
         Scheduler.get().submit(messageId, hash, requestText, engine,
                 (generationSnapshot, contentHash) -> {
@@ -561,7 +567,7 @@ public final class HookBridge {
                         ? StateStore.Status.TRANSLATED
                         : StateStore.Status.IDLE;
             }
-            RerenderRegistry.rerender(id);
+            refreshTranslation(id);
             return;
         }
         if (error != null || translated == null || translated.isEmpty()) {
@@ -574,7 +580,15 @@ public final class HookBridge {
             // 写入缓存，供同内容的其它消息复用（需求 §5.6）。
             TranslationCache.get().put(cur.contentHash, translated);
         }
-        RerenderRegistry.rerender(id);
+        refreshTranslation(id);
+    }
+
+    /** A segment update also refreshes the Poll title's aggregate progress/error icon. */
+    private static void refreshTranslation(String key) {
+        RerenderRegistry.rerender(key);
+        PollCardState.Card card = PollCardState.forKey(key);
+        if (card != null && card.titleKey != null && !key.equals(card.titleKey))
+            RerenderRegistry.rerender(card.titleKey);
     }
 
     /** 把异常转换为可读且不泄露密钥的描述。 */
@@ -606,6 +620,11 @@ public final class HookBridge {
 
     /** 原文/译文切换：由图标点击触发，不触发新请求（需求 §2.4）。 */
     public void toggleShowingOriginal(String messageId) {
+        if (isPollKey(messageId)) {
+            PollCardState.Card card = PollCardState.toggle(messageId);
+            if (card != null) for (String key : card.keys) RerenderRegistry.rerender(key);
+            return;
+        }
         StateStore.Entry e = StateStore.get().peek(messageId);
         if (e == null || e.status != StateStore.Status.TRANSLATED || e.translatedText == null) {
             return;
@@ -622,6 +641,17 @@ public final class HookBridge {
      */
     public void onIconClicked(String messageId) {
         if (messageId == null) {
+            return;
+        }
+        if (isPollKey(messageId)) {
+            PollCardState.Card card = PollCardState.forKey(messageId);
+            if (card == null || !messageId.equals(card.titleKey)) return;
+            toggleShowingOriginal(messageId);
+            // Switching back to translation is the sole user retry action for failed slots.
+            if (!card.showingOriginal()) for (String key : card.keys) {
+                StateStore.Entry segment = StateStore.get().peek(key);
+                if (segment != null && segment.status == StateStore.Status.FAILED) retry(key);
+            }
             return;
         }
         StateStore.Entry e = StateStore.get().peek(messageId);

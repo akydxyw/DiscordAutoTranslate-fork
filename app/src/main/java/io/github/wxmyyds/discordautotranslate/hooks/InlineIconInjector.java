@@ -139,13 +139,19 @@ public final class InlineIconInjector {
                 return rendered;
             }
             StateStore.Entry entry = StateStore.get().peek(messageId);
-            if (entry == null) {
+            PollCardState.Card poll = HookBridge.isPollKey(messageId)
+                    ? PollCardState.forKey(messageId) : null;
+            if (HookBridge.isPollKey(messageId)
+                    && (poll == null || !messageId.equals(poll.titleKey))) return rendered;
+            if (poll == null && entry == null) {
                 HookDiagnostics.warnOnce("icon.noState", "icon injection skipped: no translation state exists");
-                return rendered; // 尚无状态（还没触发过翻译流程）：不注入
+                return rendered;
             }
+            StateStore.Status status = poll == null ? entry.status : poll.status();
+            boolean showingOriginal = poll == null ? entry.showingOriginal : poll.showingOriginal();
             // 未翻译（IDLE）不显示图标：既符合「待翻译不显示」的要求，
             // 也使非英文消息、纯表情消息自然不出图标。
-            if (entry.status == StateStore.Status.IDLE) {
+            if (status == StateStore.Status.IDLE) {
                 HookDiagnostics.infoOnce("icon.idle", "icon injection skipped: translation state is IDLE");
                 return rendered;
             }
@@ -161,12 +167,11 @@ public final class InlineIconInjector {
                 return rendered;
             }
 
-            Drawable source = iconFor(context, entry.status);
-            Drawable tinted = InlineIconSpan.tintForState(
-                    source, entry.status, entry.showingOriginal);
+            Drawable source = iconFor(context, status);
+            Drawable tinted = InlineIconSpan.tintForState(source, status, showingOriginal);
             InlineIconSpan icon = InlineIconSpan.create(
                     tinted, context.getResources().getDisplayMetrics().density,
-                    entry.status);
+                    status);
             if (icon == null) {
                 HookDiagnostics.warnOnce("icon.spanCreation", "icon injection skipped: icon span creation failed");
                 return rendered;

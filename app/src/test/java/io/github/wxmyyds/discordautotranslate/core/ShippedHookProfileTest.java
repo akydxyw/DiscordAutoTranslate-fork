@@ -137,6 +137,7 @@ public class ShippedHookProfileTest {
         }
         JSONObject question = root.getJSONObject("hooks").getJSONObject("poll.bind");
         assertEquals(0, question.getInt("accessoryArgument"));
+        assertEquals("[\"h\"]", question.getJSONArray("optionsPath").toString());
         assertEquals("[\"g\",\"b\",\"a\"]", question.getJSONArray("textPath").toString());
         assertEquals("[\"e\"]", question.getJSONArray("messageIdPath").toString());
         assertEquals("[\"u\",\"P\",\"w\"]", question.getJSONArray("textViewPath").toString());

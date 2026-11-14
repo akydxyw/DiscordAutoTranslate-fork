@@ -115,7 +115,7 @@ public final class HookConfiguration {
             int count = spec.getJSONObject("target").getInt("parameterCount");
             if ("poll.bind".equals(id)) {
                 validateIndex(spec, "accessoryArgument", count);
-                for (String path : new String[]{"messageIdPath", "textPath", "hostPath", "textViewPath"})
+                for (String path : new String[]{"messageIdPath", "textPath", "hostPath", "textViewPath", "optionsPath"})
                     validateFieldPath(spec, path);
             } else if ("poll.answerBind".equals(id)) {
                 validateIndex(spec, "holderArgument", count);

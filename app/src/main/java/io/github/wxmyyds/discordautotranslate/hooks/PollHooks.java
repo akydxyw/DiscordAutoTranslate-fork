@@ -86,6 +86,10 @@ public final class PollHooks {
                             RerenderRegistry.unregister((View) receiver);
                             bridge.unbindView((View) receiver);
                             if (receiver instanceof TextView) ((View) receiver).setOnTouchListener(null);
+                            if (!answer) {
+                                String incoming = PollBinding.questionRow(chain.getArgs(), spec);
+                                if (HookBridge.looksLikeSnowflake(incoming)) PollCardState.invalidate(incoming);
+                            }
                         }
                         binding = answer ? PollBinding.answer(chain.getThisObject(), chain.getArgs(), spec)
                                 : PollBinding.question(chain.getThisObject(), chain.getArgs(), spec);
@@ -102,13 +106,17 @@ public final class PollHooks {
                         if (bridge.isRerendering()) {
                             // An answer's saved adapter position may now name another slot or text.
                             // Never replay it merely because it still belongs to the same poll row.
-                            if (key == null || !key.equals(bridge.directMessageIdOf(view))) return null;
+                            if (key == null || !key.equals(bridge.directMessageIdOf(view))
+                                    || PollCardState.forKey(key) == null) return null;
                         } else {
                             if (key != null) {
                                 bridge.bindView(view, key);
                                 RerenderRegistry.register(key, view, chain.getThisObject(), method,
                                         chain.getArgs().toArray());
-                                bridge.onMessageBound(view, key, original);
+                            }
+                            if (!answer) {
+                                registerCard(binding.messageId, key, original, view, chain.getArgs(),
+                                        spec, config.hook("poll.answerBind"));
                             }
                         }
                         if (key != null) bridge.rememberContent(key, original);
@@ -127,6 +135,32 @@ public final class PollHooks {
                 }));
         installedHookIds.add(id);
         HookDiagnostics.infoOnce(id + ".target", id + " target=" + method.toGenericString());
+    }
+
+    /** Capture every option before native list diff/individual row binding; no per-option producer. */
+    private static void registerCard(String row, String titleKey, Object title, View titleView,
+            List<?> args, JSONObject questionSpec, JSONObject answerSpec) throws Exception {
+        if (!HookBridge.looksLikeSnowflake(row)) return;
+        HookBridge bridge = HookBridge.get();
+        List<String> keys = new ArrayList<>();
+        List<Object> originals = new ArrayList<>();
+        if (titleKey != null) { keys.add(titleKey); originals.add(title); }
+        for (Object item : PollBinding.options(args, questionSpec)) {
+            String slot = PollBinding.optionSlot(item, row, answerSpec);
+            String text = PollBinding.optionText(item, answerSpec);
+            if (text == null || text.trim().isEmpty()) continue;
+            Object original = StructurableTextFactory.primitive(text);
+            if (original == null) throw new IllegalStateException("Poll option input construction failed");
+            String key = bridge.pollStateKey(row, slot, original);
+            keys.add(key);
+            originals.add(original);
+        }
+        PollCardState.bind(row, titleKey, keys);
+        for (int i = 0; i < keys.size(); i++) {
+            bridge.rememberContent(keys.get(i), originals.get(i));
+            bridge.onMessageBound(keys.get(i).equals(titleKey) ? titleView : null,
+                    keys.get(i), originals.get(i));
+        }
     }
 
     private static void installSetter(XposedModule module, ClassLoader cl, HookConfiguration config,
@@ -150,8 +184,9 @@ public final class PollHooks {
                     try {
                         StateStore.Entry state = HookBridge.get()
                                 .existingReferencedMessageState(scope.key, scope.original);
-                        display = PollTextProjection.display(scope.binding.text, state);
-                        if (!accessibility) {
+                        display = PollTextProjection.display(scope.binding.text, state,
+                                PollCardState.forKey(scope.key));
+                        if (!accessibility && "question".equals(scope.binding.slot)) {
                             android.text.SpannableStringBuilder text =
                                     new android.text.SpannableStringBuilder(display);
                             try (InlineIconInjector.HostScope iconScope = InlineIconInjector.enterHost(
@@ -168,7 +203,7 @@ public final class PollHooks {
                         return chain.proceed(); // Reject the projection before the one native write.
                     }
                     Object result = chain.proceed(args);
-                    if (!accessibility) {
+                    if (!accessibility && "question".equals(scope.binding.slot)) {
                         try {
                             PollIconTouch.attach((TextView) scope.binding.receiver,
                                     (android.text.Spanned) display);

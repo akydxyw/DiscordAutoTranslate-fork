@@ -32,6 +32,7 @@ io.github.wxmyyds.discordautotranslate
     Reflect / Sha256 / ModuleResources / TranslationException
   hooks/                      Discord Hook 与渲染替换
     MessageHooks / HookBridge / EmbedHooks
+    PollHooks / PollBinding / PollCardState / PollTextProjection / PollIconTouch
     ContentNodes / StructurableTextFactory / RerenderRegistry / RowRefresher
     IdentityMessageMap / ReplyTextProjection / HookDiagnostics
     InlineIconInjector / InlineIconSpan / InlineIconGeometry / IconClickSpanFactory
@@ -78,7 +79,7 @@ io.github.wxmyyds.discordautotranslate
 ## 能力范围（按 profile）
 
 - `340013`：保留正文和富 Embed 配置；帖子预览绑定缺少模型参数、Poll 绑定缺少附件参数，其业务体无法执行，已连同配置和相关状态接口删除；旧独立回复 Hook 已移除，当前 profile 未提供统一回复消费者映射，不声称回复支持。
-- `352017`：正文翻译与重渲染；回复预览复用引用消息 ID，经 `message.textConversion` 读取其翻译状态（预览不经过正文 `message.render`），不安装独立回复 Hook。普通回复译文复用及用户名避让已由用户设备复测确认；带图片/Embed 的引用投影与规范正文不同导致校验拒绝；`ca9713d` 的复用修正已由用户确认可显示译文，随后观察到空白/错位。`583ffbd` 日志确认原生预览模型已压平换行，但复用的正文译文渲染仍保留换行、提前终止首行。当前在同一个原生转换结果上、原生避让 span 添加之前等长压平行段分隔符；不改正文状态，不新增请求或渲染链，`27451e9` 的布局修正已由用户确认修复带图片引用的空白/错位。富 Embed 已复用现有 `embed.bind` 链路完成 smali 静态适配并启用，设备回归尚未确认。投票问题/选项由 `ea.r0.v`/`ba.h.f` 建立字符串与精确视图的作用域，只在原生 setter 参数处替换；图片选项仅处理无障碍文本。投票复用现有调度/状态/图标/重渲染，不修改模型或投票结果；帖子预览没有实现。
+- `352017`：正文翻译与重渲染；回复预览复用引用消息 ID，经 `message.textConversion` 读取其翻译状态（预览不经过正文 `message.render`），不安装独立回复 Hook。普通回复译文复用及用户名避让已由用户设备复测确认；带图片/Embed 的引用投影与规范正文不同导致校验拒绝；`ca9713d` 的复用修正已由用户确认可显示译文，随后观察到空白/错位。`583ffbd` 日志确认原生预览模型已压平换行，但复用的正文译文渲染仍保留换行、提前终止首行。当前在同一个原生转换结果上、原生避让 span 添加之前等长压平行段分隔符；不改正文状态，不新增请求或渲染链，`27451e9` 的布局修正已由用户确认修复带图片引用的空白/错位。富 Embed 已复用现有 `embed.bind` 链路完成 smali 静态适配并启用，设备回归尚未确认。投票根标题 `ea.r0.v` 从 accessory `h` 读取所有选项并统一登记翻译输入，`ba.h.f` 只登记显示/重渲染、不发请求；两者建立字符串与精确视图的作用域，只在原生 setter 参数处替换。标题单一图标切换整张投票卡片，涵盖所有选项及图片选项的无障碍文本；选项不注入图标或安装独立切换触摸。投票复用现有调度/状态/重渲染，不修改模型或投票结果；帖子预览没有实现。
 - 无可用译文或严格回填失败时显示宿主原始节点树，这是状态/失败处理，不是尝试另一套翻译实现。352017 的点击接口已核实；340013 点击配置禁用，本次未设备复测。
 
 ## 单链路与清理边界
@@ -87,7 +88,9 @@ io.github.wxmyyds.discordautotranslate
 - 富 Embed 输入和宿主均由同一 `embed.bind` profile 显式选择：352017 的 `inputSource=arguments` 只取模型参数 1、消息 ID 参数 3，`host.source=this`；340013 的 `inputSource=accessory` 只取 accessory 参数 1，`host.source=field` 只读 `itemView`。不探测其他输入或宿主。
 - 352017 的 `Embed=n7.c`、`EmbedField=n7.o` 通过语义字段访问结构化描述 `j`、标题 `f`、字段 `g`、字段名 `c` 和值 `d`；340013 保留已配置的语义 getter，旧模型类型源码不可用，不新增未经核实的类型别名。旧 `embed*Getter`/`embedHolderViewField` 专用全局配置已移除。
 - Embed 每次实际绑定先移除该视图全部旧段登记；空卡片和同一消息的卡片编辑也不能重放旧参数。段状态共享现有 StateStore/Scheduler/缓存/转换器；当前绑定作用域选择一个图标承载段并最多注入一次，不保留跨卡片全局图标键。嵌套渲染退出后恢复之前的宿主作用域。
-- Poll 的原始字符串通过 Primitive 输入适配已有翻译链，显示端按当前状态选译文；状态键为行 ID + poll + question/answer ID + 正文 hash，与正文/Embed 隔离。投票选项保存的 adapter position 在重放前核对当前 ID、槽位与文本键，不能因同一行 ID 而套用旧参数。图片选项不注入图标；文字问题/选项图标使用只消费图标范围的触摸监听，普通投票点击仍走宿主。
+- Poll 的原始字符串通过 Primitive 输入适配已有翻译链；段状态键为行 ID + poll + question/answer ID + 正文 hash，与正文/Embed 隔离，等标签不同答案 ID 仍是不同段。根标题从 accessory `h` 登记问题和完整选项列表，选项绑定只投影已有状态；不以选项视图出现与否决定请求。`PollCardState` 按行保存唯一整组显示选择，显示端忽略段 Entry 的 `showingOriginal`；当前卡片缺失或段无有效译文时显示原文。
+- Poll 重复绑定、标题/选项编辑时替换当前段键集合并保留行选择，旧标题/移除选项不能再控制卡片；完成回调不重置选择。新代次和 `HookBridge.reset` 清空卡片状态。投票选项保存的 adapter position 在重放前核对当前 ID、槽位与文本键，不能因同一行 ID 而套用旧参数。
+- Poll 仅当前标题图标控制整组切换/失败段重试，并刷新所有当前段；其状态汇总当前段翻译进度/结果，着色读取卡片选择。标题触摸仅消费图标范围；文本和图片选项均无图标或独立切换触摸，普通投票点击完全交给宿主，图片选项只替换无障碍文本。
 - 混淆容器只调用 `nodeConstructors` 指定的精确构造器，参数顺序和字段明确配置；失败不换构造器或改走 copy。未指定构造器的类型使用原 data class copy 规则。
 - 点击 span 只有配置构造器/回调一种实现；无 interfaceProxy。
 - 回复排障的 trace、逐条空白/布局监听和附件快照已删除；保留已验证的显示投影和必要错误日志。
