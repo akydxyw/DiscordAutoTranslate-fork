@@ -76,7 +76,6 @@ public class RetainedLeafMarkerTest {
         assertEquals(4, source.segmentCount);
         assertEquals(4, source.textNodeCount);
         assertEquals(2, source.opaqueNodeCount);
-        assertTrue(source.codeHeavy);
         assertFalse(source.text.contains("secret"));
         List<Object> out = ContentNodes.replaceChecked(tree, "甲<keep1/>乙<keep2/>丙<keep3/>丁");
         assertSame(inline, out.get(1));
@@ -193,13 +192,11 @@ public class RetainedLeafMarkerTest {
         TextExtractor.Result empty = TextExtractor.extractTree(retained);
         assertEquals("<keep1/><keep2/>", empty.text);
         assertEquals(0, empty.segmentCount);
-        assertFalse(EnglishDetector.evaluate(empty.text, empty.textNodeCount, empty.opaqueNodeCount,
-                empty.codeHeavy, "简体中文").shouldTranslate);
+        assertFalse(EnglishDetector.evaluate(empty.text, empty.textNodeCount, "简体中文").shouldTranslate);
         assertNull(ContentNodes.replacePlanned(retained, "<keep1/><keep2/>"));
         ContentTree shortBody = tree(new h5(), text("ok"));
         TextExtractor.Result shortSource = TextExtractor.extractTree(shortBody);
-        assertFalse(EnglishDetector.evaluate(shortSource.text, shortSource.textNodeCount,
-                shortSource.opaqueNodeCount, shortSource.codeHeavy, "简体中文").shouldTranslate);
+        assertFalse(EnglishDetector.evaluate(shortSource.text, shortSource.textNodeCount, "简体中文").shouldTranslate);
     }
 
     @Test public void itemAnchorPrefixDoesNotConsumeBodyTextOrPreviousItem() {

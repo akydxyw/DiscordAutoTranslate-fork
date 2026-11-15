@@ -608,7 +608,6 @@ public class LongTextRegressionTest {
         assertEquals(3, request.segmentCount);
         assertEquals(5, request.textNodeCount);
         assertEquals(2, request.opaqueNodeCount);
-        assertFalse(request.codeHeavy);
         assertFalse(request.text.contains("npm install"));
 
         List<Object> out = ContentPlanTestSupport.replace(nodes,

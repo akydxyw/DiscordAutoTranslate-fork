@@ -216,7 +216,8 @@ public class HeadingBoundaryTest {
         ContentTree tree = tree(heading(text("Title")), code, text("Body"));
         assertEquals("Title\n<keep1/>Body", extract(tree));
         assertEquals(1, breaks(tree));
-        assertTrue(TextExtractor.extractTree(tree).codeHeavy);
+        assertTrue(io.github.wxmyyds.discordautotranslate.core.EnglishDetector.evaluate(
+                extract(tree), TextExtractor.extractTree(tree).textNodeCount, "简体中文").shouldTranslate);
         List<Object> out = ContentNodes.replaceChecked(tree, "标题\n<keep1/>正文");
         assertSame(code, out.get(1));
         assertEquals("正文", content(out.get(2)));

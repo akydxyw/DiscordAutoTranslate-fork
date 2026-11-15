@@ -78,11 +78,13 @@ io.github.wxmyyds.discordautotranslate
 
 ## 能力范围（按 profile）
 
-- `340013`：正文、富 Embed、点击及行刷新 `244306a` 已获用户确认正常。引用预览接入现有统一消费者：唯一 `message.bind` 改为外层 `MessageView.setMessage` 七参数入口，建立引用作用域和编辑版本；正文渲染/转换取原生 ID 参数2。Loaded 引用字段 `message/systemContent`、预览 `replyPreview.binding.replyText` 均已核实，消费者重放外层绑定，复用规范译文并在同一 native builder 压平换行，`5f1d1fb` 已获用户确认引用跟随修复。旧 holder 绑定及 boundView 路径不并存；投票已配置唯一 PollViewHolder.bind 和 typed PollAnswerAdapter.onBindViewHolder 及两个原生 setter，复用现有 Poll 状态/投影/重放，待新版设备复测；帖子预览未接入。
+- `340013`：正文、富 Embed、点击及行刷新 `244306a` 已获用户确认正常。引用预览接入现有统一消费者：唯一 `message.bind` 改为外层 `MessageView.setMessage` 七参数入口，建立引用作用域和编辑版本；正文渲染/转换取原生 ID 参数2。Loaded 引用字段 `message/systemContent`、预览 `replyPreview.binding.replyText` 均已核实，消费者重放外层绑定，复用规范译文并在同一 native builder 压平换行，`5f1d1fb` 已获用户确认引用跟随修复。旧 holder 绑定及 boundView 路径不并存；投票已配置唯一 PollViewHolder.bind 和 typed PollAnswerAdapter.onBindViewHolder 及两个原生 setter，复用现有 Poll 状态/投影/重放，c4b70af已获用户确认翻译正常；帖子预览未接入。
 - `352017`：正文翻译与重渲染；回复预览复用引用消息 ID，经 `message.textConversion` 读取其翻译状态（预览不经过正文 `message.render`），不安装独立回复 Hook。普通回复译文复用及用户名避让已由用户设备复测确认；带图片/Embed 的引用投影与规范正文不同导致校验拒绝；`ca9713d` 的复用修正已由用户确认可显示译文，随后观察到空白/错位。`583ffbd` 日志确认原生预览模型已压平换行，但复用的正文译文渲染仍保留换行、提前终止首行。当前在同一个原生转换结果上、原生避让 span 添加之前等长压平行段分隔符；不改正文状态，不新增请求或渲染链，`27451e9` 的布局修正已由用户确认修复带图片引用的空白/错位。富 Embed 已复用现有 `embed.bind` 链路完成 smali 静态适配并启用；`4493cee` 已获用户整体功能正常确认，不推定所有边界样例均覆盖。投票根标题 `ea.r0.v` 从 accessory `h` 读取所有选项并统一登记翻译输入，`ba.h.f` 只登记显示/重渲染、不发请求；两者建立字符串与精确视图的作用域，只在原生 setter 参数处替换。标题单一图标切换整张投票卡片，涵盖所有选项及图片选项的无障碍文本；选项不注入图标或安装独立切换触摸。投票复用现有调度/状态/重渲染，不修改模型或投票结果；帖子预览没有实现。
 - 无可用译文或严格回填失败时显示宿主原始节点树，这是状态/失败处理，不是尝试另一套翻译实现。两版点击都使用已核实的原生 span 构造器，340013 点击修正版已获用户确认。
 
 ## 单链路与清理边界
+
+- 语言检测只消费同次捕获的输入及TEXT存在性，屏蔽keep/解包x样式后分析自然语言；不再用存在代码块或opaque/TEXT节点数量比例否决混合正文。删除codeHeavy、代码块计数及旧检测参数/原因，保留字母/比例/目标语言阈值；不新增语言模型、独立解析/备用检测链。
 
 - 两版正文 render 都只取 profile 指定的原生消息 ID 参数；340013 引用接入后删除已无消费者的 boundView 分支和 contentViewField。正文映射/生产不依赖外层 ThreadLocal 是否仍在，外层 bind 只负责 Message 身份、编辑版本及引用作用域。
 - 富 Embed 输入和宿主均由同一 `embed.bind` profile 显式选择：352017 的 `inputSource=arguments` 只取模型参数 1、消息 ID 参数 3，`host.source=this`；340013 的 `inputSource=accessory` 只取 accessory 参数 1，`host.source=field` 只读 `itemView`。不探测其他输入或宿主。

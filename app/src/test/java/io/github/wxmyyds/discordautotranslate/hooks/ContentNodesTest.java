@@ -802,7 +802,6 @@ public class ContentNodesTest {
         assertEquals(2, result.textNodeCount);
         assertEquals(0, result.opaqueNodeCount);
         assertTrue(EnglishDetector.evaluate(result.text, result.textNodeCount,
-                result.opaqueNodeCount, result.codeHeavy,
                 io.github.wxmyyds.discordautotranslate.core.Config.DEF_TARGET_LANG).shouldTranslate);
     }
 
@@ -823,7 +822,6 @@ public class ContentNodesTest {
         assertEquals(3, result.textNodeCount);
         assertEquals(0, result.opaqueNodeCount);
         assertTrue(EnglishDetector.evaluate(result.text, result.textNodeCount,
-                result.opaqueNodeCount, result.codeHeavy,
                 io.github.wxmyyds.discordautotranslate.core.Config.DEF_TARGET_LANG).shouldTranslate);
     }
 
@@ -847,7 +845,6 @@ public class ContentNodesTest {
         assertEquals(2, result.segmentCount);
         assertEquals(2, result.textNodeCount);
         assertEquals(1, result.opaqueNodeCount);
-        assertFalse(result.codeHeavy);
     }
 
     @Test

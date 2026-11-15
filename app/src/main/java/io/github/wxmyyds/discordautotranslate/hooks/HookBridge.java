@@ -312,9 +312,8 @@ public final class HookBridge {
      * <p>含 {@code U+0000} 保证不会与任何真实正文混淆；只有存在 ≥2 个可翻译
      * 片段的消息会带上它，因此单片段消息的缓存与旧版本保持兼容。</p>
      *
-     * <p>版本随回填协议的译文形态变化升级：seg2 对应「单链路无标记请求 +
-     * 渲染层结构对齐回填」的版本，同时失效 seg1 时期（可能含损坏/被拒译文）
-     * 的旧缓存。</p>
+     * <p>seg2 隔离 seg1 时期的旧缓存；当前输入继续使用统一的样式与保留叶
+     * 位置标记。此后缀只区分多片段命名空间，不改变请求或回填协议。</p>
      */
     private static final String SEGMENT_CACHE_SUFFIX = "\u0000seg2";
 
@@ -342,9 +341,8 @@ public final class HookBridge {
         }
 
         Config.Snapshot cfg = config;
-        // 单一链路（用户决策）：始终发送无标记纯文本，不做分段标记请求。
-        // 内容哈希沿用带分段后缀的键空间（仅作缓存命名空间，多段消息与
-        // 旧缓存条目隔离）。
+        // The single captured request keeps style ranges and retained-node anchors.
+        // The segment suffix is only a cache namespace, not another request protocol.
         String requestText = ex.text;
         String hash = contentHashOf(ex, cfg);
         StateStore.Entry entry = StateStore.get().obtain(messageId, hash);
@@ -381,10 +379,10 @@ public final class HookBridge {
         }
 
         EnglishDetector.Verdict v = EnglishDetector.evaluate(
-                ex.text, ex.textNodeCount, ex.opaqueNodeCount, ex.codeHeavy,
-                cfg.targetLang);
+                ex.text, ex.textNodeCount, cfg.targetLang);
         if (!v.shouldTranslate) {
-            HookDiagnostics.infoOnce("translation.languageSkip", "translation skipped by language detector"
+            HookDiagnostics.infoOnce("translation.languageSkip." + v.reason.name(),
+                    "translation skipped by language detector"
                     + " reason=" + v.reason.name() + " textNodes=" + ex.textNodeCount
                     + " opaqueNodes=" + ex.opaqueNodeCount);
             return;

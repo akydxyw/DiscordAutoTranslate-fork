@@ -10,7 +10,7 @@ import org.junit.Test;
 public class EnglishDetectorTest {
 
     private static EnglishDetector.Verdict detect(String text, String target) {
-        return EnglishDetector.evaluate(text, 1, 0, false, target);
+        return EnglishDetector.evaluate(text, 1, target);
     }
 
     private static void assertVerdict(Reason expected, EnglishDetector.Verdict actual) {
@@ -26,18 +26,16 @@ public class EnglishDetectorTest {
     }
 
     @Test
-    public void explicitDefaultTargetPreservesStructuralGuards() {
-        assertVerdict(Reason.EMPTY, EnglishDetector.evaluate(null, 1, 0, false,
-                Config.DEF_TARGET_LANG));
+    public void explicitDefaultTargetRequiresExtractableProseRatherThanNodeRatios() {
+        assertVerdict(Reason.EMPTY, EnglishDetector.evaluate(null, 1, Config.DEF_TARGET_LANG));
         assertVerdict(Reason.EMPTY, detect(" \n\t", Config.DEF_TARGET_LANG));
-        assertVerdict(Reason.CODE_BLOCK, EnglishDetector.evaluate("hello world", 1, 0, true,
+        assertVerdict(Reason.NO_TEXT_NODE, EnglishDetector.evaluate("hello world", 0,
                 Config.DEF_TARGET_LANG));
-        assertVerdict(Reason.NO_TEXT_NODE, EnglishDetector.evaluate("hello world", 0, 0, false,
-                Config.DEF_TARGET_LANG));
-        assertVerdict(Reason.MOSTLY_STRUCTURE, EnglishDetector.evaluate("hello world", 1, 4, false,
-                Config.DEF_TARGET_LANG));
-        assertVerdict(Reason.TRANSLATABLE, EnglishDetector.evaluate("hello world", 1, 3, false,
-                Config.DEF_TARGET_LANG));
+        for (int textNodes : new int[]{1, 4, 200}) {
+            assertVerdict(Reason.TRANSLATABLE, EnglishDetector.evaluate(
+                    "hello<keep1/><keep2/><keep3/><keep4/> world", textNodes, Config.DEF_TARGET_LANG));
+        }
+        assertVerdict(Reason.NO_VISIBLE_CONTENT, detect("<keep1/><keep2/>", Config.DEF_TARGET_LANG));
     }
 
     @Test

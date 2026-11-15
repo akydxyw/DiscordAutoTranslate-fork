@@ -9,8 +9,8 @@ public final class EnglishDetector {
 
     /** 固定判定依据，不包含正文、计数或目标语言配置。 */
     public enum Reason {
-        EMPTY, CODE_BLOCK, NO_VISIBLE_CONTENT, TOO_FEW_LETTERS, LOW_LETTER_RATIO,
-        NO_TEXT_NODE, MOSTLY_STRUCTURE, TARGET_LANGUAGE_SCRIPT, TRANSLATABLE
+        EMPTY, NO_VISIBLE_CONTENT, TOO_FEW_LETTERS, LOW_LETTER_RATIO,
+        NO_TEXT_NODE, TARGET_LANGUAGE_SCRIPT, TRANSLATABLE
     }
 
     /** 判定结果与依据，便于诊断。 */
@@ -31,16 +31,12 @@ public final class EnglishDetector {
     private EnglishDetector() {
     }
 
+    /** Evaluate extractable prose; retained native nodes never veto surrounding text. */
     public static Verdict evaluate(@Nullable String rawText, int textNodeCount,
-                                   int opaqueNodeCount, boolean codeHeavy,
                                    @Nullable String targetLanguage) {
         if (rawText == null || rawText.trim().isEmpty()) {
             return new Verdict(false, Reason.EMPTY);
         }
-        if (codeHeavy) {
-            return new Verdict(false, Reason.CODE_BLOCK);
-        }
-
         String text = RetainedNodeMarkers.maskedForDetection(rawText).replaceAll("https?://\\S+", " ")
                 .replaceAll("`[^`]*`", " ")
                 .replaceAll(":([A-Za-z0-9_]+):", " ");
@@ -91,10 +87,6 @@ public final class EnglishDetector {
         if (textNodeCount == 0) {
             return new Verdict(false, Reason.NO_TEXT_NODE);
         }
-        if (opaqueNodeCount > textNodeCount * 3) {
-            return new Verdict(false, Reason.MOSTLY_STRUCTURE);
-        }
-
         // Han-only text is treated as Chinese for the default target. Japanese kana
         // and Korean Hangul disambiguate their scripts from Chinese.
         if (targetScript == TargetScript.HAN

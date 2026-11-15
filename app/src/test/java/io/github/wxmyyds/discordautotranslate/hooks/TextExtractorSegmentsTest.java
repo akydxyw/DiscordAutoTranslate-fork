@@ -217,7 +217,6 @@ public class TextExtractorSegmentsTest {
         assertEquals("代码与 emoji 不占片段", 2, r.segmentCount);
         assertEquals(2, r.textNodeCount);
         assertEquals(2, r.opaqueNodeCount);
-        assertFalse(r.codeHeavy);
     }
 
     @Test

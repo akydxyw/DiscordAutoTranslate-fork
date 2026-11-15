@@ -41,23 +41,20 @@ public final class TextExtractor {
         public final int textNodeCount;
         /** 不可解析的结构节点数量（提及、表情等）。 */
         public final int opaqueNodeCount;
-        /** 是否为不可翻译结构（例如纯代码块消息）。 */
-        public final boolean codeHeavy;
         /** Captured occurrence plan; Primitive input does not have a node tree. */
         public final ContentTree tree;
 
         Result(String text, int segmentCount, int textNodeCount,
-               int opaqueNodeCount, boolean codeHeavy, ContentTree tree) {
+               int opaqueNodeCount, ContentTree tree) {
             this.text = text;
             this.segmentCount = segmentCount;
             this.textNodeCount = textNodeCount;
             this.opaqueNodeCount = opaqueNodeCount;
-            this.codeHeavy = codeHeavy;
             this.tree = tree;
         }
     }
 
-    private static final Result EMPTY = new Result("", 0, 0, 0, false, null);
+    private static final Result EMPTY = new Result("", 0, 0, 0, null);
 
     /**
      * URL 形态判定：带 scheme 的完整 URL、www 前缀，或「无空白且以
@@ -154,7 +151,7 @@ public final class TextExtractor {
             }
             // Primitive 整体就是一个片段，不应用 Annotated 文本节点的分块规则。
             if (RetainedNodeMarkers.hasReservedPrefix(s)) return null;
-            return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, false, null);
+            return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, null);
         }
 
         if ("AnnotatedStructurableText".equals(cls)) {
@@ -246,7 +243,7 @@ public final class TextExtractor {
     public static Result extractTree(@Nullable ContentTree tree) {
         if (tree == null) return null;
         StringBuilder out = new StringBuilder();
-        int textNodes = 0, opaque = 0, codeBlocks = 0, styleSeq = 0;
+        int textNodes = 0, opaque = 0, styleSeq = 0;
         java.util.List<String> retainedMarkers = new java.util.ArrayList<>();
         for (ContentTree.Event event : tree.events) {
             if (event.headingBreakBefore) out.append('\n');
@@ -284,8 +281,7 @@ public final class TextExtractor {
                     opaque++; out.append(' ').append(node.text).append(' '); break;
                 case INLINE_CODE: case OPAQUE: case CODE_BLOCK:
                     retainedMarkers.add(event.retainedMarker);
-                    if (node.kind == ContentTree.Kind.CODE_BLOCK) codeBlocks++;
-                    else opaque++;
+                    if (node.kind != ContentTree.Kind.CODE_BLOCK) opaque++;
                     out.append(event.retainedMarker);
                     break;
                 case BREAK:
@@ -296,6 +292,6 @@ public final class TextExtractor {
         String extracted = out.toString();
         // Also catches reserved syntax assembled across adjacent captured text occurrences.
         if (!RetainedNodeMarkers.matchesExpected(extracted, retainedMarkers)) return null;
-        return new Result(extracted, tree.segmentCount, textNodes, opaque, codeBlocks > 0, tree);
+        return new Result(extracted, tree.segmentCount, textNodes, opaque, tree);
     }
 }

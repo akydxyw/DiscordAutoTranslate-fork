@@ -494,7 +494,6 @@ public class ContentTreeTest {
         assertEquals(3, result.segmentCount);
         assertEquals(3, result.textNodeCount);
         assertEquals(4, result.opaqueNodeCount);
-        assertTrue(result.codeHeavy);
         assertFalse(result.text.contains("secret"));
         assertEquals(ContentTree.Kind.INLINE_CODE, tree.root.children.get(1).kind);
         assertEquals("<keep1/>", tree.events.get(1).retainedMarker);
@@ -566,7 +565,6 @@ public class ContentTreeTest {
         assertEquals("", extracted(empty).text);
         assertEquals(0, extracted(empty).textNodeCount);
         assertEquals(0, extracted(empty).opaqueNodeCount);
-        assertFalse(extracted(empty).codeHeavy);
         assertNull(ContentNodes.replacePlanned(empty, "译文"));
 
         TextContentNode nullText = new TextContentNode(null);

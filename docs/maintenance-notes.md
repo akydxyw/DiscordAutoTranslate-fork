@@ -71,7 +71,7 @@
 - `ae4506e` Actions 实际 529 项测试、0 失败/跳过；诊断 APK 设备最新 11:02:27、11:02:35、11:03:25 等多次在 translatedPresent=true 后报告 SOURCE_BOUNDARY_AMBIGUOUS，定位为源槽边界不足，不是该次超时或 URL/emoji 数量拒绝。无法读取完整实机树/译文，不能把所有歧义都推定成同一种节点形态。
 - 源码确定的缺口是：原 TextContentNode 空白/前导/尾随 LF 已进入请求，却只有独立 BREAK 设置逐行对齐。修正为从当前捕获的源空白 LF 认定行/段落边界；不新增宿主树遍历，不更改文本分块、样式号或锚点策略。
 - `ContentTree` 捕获每块内部行数；连续多槽行运行按总行数核对并分配各槽，保留单槽多行和原始首尾空白。删除旧 sep 文本仓库与 BREAK-only 标记，必需行数参数贯穿每个锚点/样式间隔；旧四参数生产重载不保留，单元测试 unit counts 仅在 test source set 构造。
-- 独立复核发现代码块人为换行会让源 First\n + CODE + Second 提取成 First\n\nSecond；因此代码块统一只贡献空格占位，不改变源 LF/BREAK，也不把占位空白作为行边界。代码内容、language/inline 属性、原节点及 codeHeavy 计数不变；请求与当前计划保持同一种解释，无第二解析/修复链。
+- 独立复核发现代码块人为换行会让源 First\n + CODE + Second 提取成 First\n\nSecond；因此代码块统一只贡献空格占位，不改变源 LF/BREAK，也不把占位空白作为行边界。当时保留代码内容、language/inline 属性、原节点及旧代码块检测标志；后续保留叶改为keep标记，本轮删除该检测标志。请求与当前计划保持同一种解释，无第二解析/修复链。
 - 代码/不透明模型内部行数不作为边界，仍拒绝真实同行多槽歧义。该修正确认需要 GitHub Actions 及设备复测，不宣称所有实机歧义均已修复。
 
 ## 剩余源槽歧义的结构诊断
@@ -136,6 +136,13 @@
 - root accessory.messageId / data.question.text / answers提供身份/标题/全部PollAnswerAccessory，不用data.answers裸答案；选项answer.answerId / answer.pollMedia.text，adapter.items和父类holder.binding精确读取。两种binding分别label文本、image无障碍描述，根标题pollView.binding.questionText。
 - 标题/两种选项setter均在同步bind内；图片setContentDescription在setMedia相等早退之前。原生root点击/图片点击仍通过稳定answerId和captured channelId/messageId回Chat事件，不改模型/点击回调/结果。
 - 只新增340013 profile四项required Poll Hook及真实字段路径，PollHooks/PollBinding/PollCardState不增加版本分支。新增shipped元数据及实际生产读取/重放守卫回归；静态smali核验、Actions与设备结果分别记录，图片无障碍文字不等于新增可见字幕。
+
+## 混合 Markdown 正文检测修复
+
+- c4b70af Actions实际698项、0失败/跳过，用户确认340013投票翻译正常，未推定所有投票设备边界覆盖。用户另报告Markdown Test2/3（标题、5项列表、多样式/提及/时间戳、末尾代码块）不触发翻译。
+- 确认TextExtractor曾把任何代码块标记codeHeavy，EnglishDetector在正文统计前全局拒绝；并以opaque>textNodes×3否决正文，受宿主拆节点影响。删除两项否决及无消费者字段/计数/原因，evaluate只接受输入、TEXT数和目标语言，不新增识别库或版本分支。
+- 同次捕获仍生成并严格校验keep/x标记，保留代码/提及/时间戳/未知对象不读取内部内容。检测仅屏蔽保留位置并解包样式，纯代码/纯保留节点不触发，短文/低字母比例/目标语言阈值不变。迁移旧测试API，新增完整样例、正文合并/拆分与多opaque等价及严格回填回归。
+- 拒绝日志按固定原因分别去重，解决languageSkip全局一次隐藏后续原因；不输出正文、译文、身份、长度或位置。网络/PARSE日志无身份不可归属于样例，代码事实不等于本条设备失败已关联；新版Actions和设备验证另记。
 
 ## 冗余与规则审计后的统一清理
 

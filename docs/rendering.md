@@ -44,7 +44,7 @@
 
 - 问题入口唯一 `PollViewHolder.bind(PollMessageAccessory,Function3,Function3,Function8)`；原生同步调用 `BasePollWithRecyclerView.bind`，在答案列表 diff 前统一登记 accessory.answers 中所有答案。标题 `pollView.binding.questionText` 的 String setter 由现有 Poll Scope 精确匹配。
 - 答案入口唯一 typed `PollAnswerAdapter.onBindViewHolder(PollAnswerViewHolder,int)`，不同时挂 bridge；保存完整原生绑定参数，重放仍核当前messageId/answerId/文本键及成员。文本布局 label 的 setText 和图片布局 image 的 setContentDescription 均在原生holder.bind内同步调用。
-- 图片描述 setter 在 setMedia 的缓存早退之前，不需要清媒体缓存。只改这两个 setter 的文本参数，不修改模型、选项点击 root、图片点击/长按、票数/百分比、选择状态或回调。不新增 Java 分支、解析链或图片可见字幕；投票链路待新版设备复测。
+- 图片描述 setter 在 setMedia 的缓存早退之前，不需要清媒体缓存。只改这两个 setter 的文本参数，不修改模型、选项点击 root、图片点击/长按、票数/百分比、选择状态或回调。不新增 Java 分支、解析链或图片可见字幕；c4b70af 已获用户确认投票翻译正常，未逐项覆盖的点击/复用边界仍须专项设备复测。
 
 ## 回复预览（352017)
 

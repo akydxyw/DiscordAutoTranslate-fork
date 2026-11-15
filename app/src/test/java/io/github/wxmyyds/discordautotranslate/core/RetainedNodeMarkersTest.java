@@ -33,13 +33,13 @@ public class RetainedNodeMarkersTest {
 
     @Test public void markerCharactersCannotMakeShortTextTranslatable() {
         assertEquals("run", RetainedNodeMarkers.withoutMarkers("run<keep1/><keep2/>"));
-        EnglishDetector.Verdict raw = EnglishDetector.evaluate("ok", 1, 1, false, "简体中文");
-        EnglishDetector.Verdict marked = EnglishDetector.evaluate("ok<keep1/>", 1, 1, false, "简体中文");
+        EnglishDetector.Verdict raw = EnglishDetector.evaluate("ok", 1, "简体中文");
+        EnglishDetector.Verdict marked = EnglishDetector.evaluate("ok<keep1/>", 1, "简体中文");
         assertFalse(marked.shouldTranslate);
         assertEquals(Reason.TOO_FEW_LETTERS, raw.reason);
         assertEquals(raw.reason, marked.reason);
-        assertEquals(EnglishDetector.evaluate("Read this", 1, 1, false, "简体中文").reason,
-                EnglishDetector.evaluate("Read<keep1/> this", 1, 1, false, "简体中文").reason);
+        assertEquals(EnglishDetector.evaluate("Read this", 1, "简体中文").reason,
+                EnglishDetector.evaluate("Read<keep1/> this", 1, "简体中文").reason);
     }
 
     @Test public void lengthRatioDoesNotCountRetainedCodeMarkersAsNaturalLanguage() {
@@ -51,7 +51,7 @@ public class RetainedNodeMarkersTest {
 
     @Test public void detectorDoesNotSwallowTextAfterUrlCodeBoundary() {
         EnglishDetector.Verdict verdict = EnglishDetector.evaluate(
-                "https://example.invalid<keep1/>hello", 2, 1, false, "简体中文");
+                "https://example.invalid<keep1/>hello", 2, "简体中文");
         assertTrue(verdict.reason.name(), verdict.shouldTranslate);
         assertEquals(Reason.TRANSLATABLE, verdict.reason);
         assertEquals("url text", RetainedNodeMarkers.maskedForDetection("url<keep1/>text"));
