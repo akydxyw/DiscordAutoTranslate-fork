@@ -12,10 +12,10 @@ Discord Android 的 LSPosed 自动翻译模块，基于 LibXposed API 102。消�
 - 投票标题控制整卡原文/译文切换，保留选项、图片及投票行为。图片选项仅翻译无障碍描述。
 - 独立设置页支持目标语言、API、三种供应商协议、流式请求、配置检查和翻译测试。
 
-| Discord Stable | versionCode | 已接入能力 |
-|---|---|---|
-| 340.13 | 340013 | 正文、回复预览、富 Embed、投票 |
-| 352.17 | 352017 | 正文、回复预览、富 Embed、投票 |
+| Discord Stable | versionCode | 已接入能力 | Discord 安装包 |
+|---|---|---|---|
+| 340.13 | 340013 | 正文、回复预览、富 Embed、投票 | [下载](https://1drv.ms/u/c/8ccaf25c5b0de4fb/IQC_FsEpTW9pQYQTZZX4XrKJAUecfhaG98Q7V0cyTK1MIqg?e=QTqag5) |
+| 352.17 | 352017 | 正文、回复预览、富 Embed、投票 | [下载](https://1drv.ms/u/c/8ccaf25c5b0de4fb/IQCbMILHoJWrQYp5eeZrkUTAAT85sbCHsOEhamnOonbWzCg?e=qh9gUL) |
 
 仅支持表中列出的 Discord 版本。暂不支持帖子预览、图片 OCR、语音及界面文本翻译。
 
