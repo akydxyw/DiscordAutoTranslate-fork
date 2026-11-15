@@ -168,7 +168,7 @@ public class HeadingBoundaryTest {
 
     @Test public void headingInsideListUsesItemBoundaryAndStillSeparatesOnListExit() {
         BulletListContentNode list = new BulletListContentNode(null, false,
-                list(list(heading(text("Title")))));
+                Arrays.asList(list(heading(text("Title")))));
         ContentTree tree = tree(list, text("Body"));
         assertEquals("\n• Title\nBody", extract(tree));
         assertEquals(1, breaks(tree));
@@ -180,7 +180,7 @@ public class HeadingBoundaryTest {
     }
 
     @Test public void headingFollowedByListDoesNotDoubleItemLf() {
-        BulletListContentNode list = new BulletListContentNode(null, false, list(list(text("Item"))));
+        BulletListContentNode list = new BulletListContentNode(null, false, Arrays.asList(list(text("Item"))));
         ContentTree tree = tree(heading(text("Title")), list);
         assertEquals("Title\n• Item", extract(tree));
         assertEquals(0, breaks(tree));
