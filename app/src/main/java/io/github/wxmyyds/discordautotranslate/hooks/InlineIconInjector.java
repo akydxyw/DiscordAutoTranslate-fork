@@ -214,6 +214,11 @@ public final class InlineIconInjector {
                 ProjectLog.warnOnce("icon.clickCreation", "icon injection rejected: click span unavailable");
                 return rendered;
             }
+            if (!RerenderRegistry.hasNativeBinding(host)) {
+                ProjectLog.warnOnce("icon.nativeBinding.missing", "icon injection rejected: native binding unavailable");
+                return rendered;
+            }
+            icon.ownText(ssb, clickSpan);
             // Both spans are ready before mutating the native builder.
             ssb.append(CLICK_LEAD);
             int start = ssb.length();

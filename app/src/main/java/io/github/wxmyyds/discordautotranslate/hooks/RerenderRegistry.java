@@ -7,9 +7,12 @@ import androidx.annotation.Nullable;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -28,7 +31,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h3>复用防护</h3>
  * <p>列表会复用视图。渲染前逐个校验“视图当前绑定的消息 ID 是否仍是目标消息”，
  * 不是则从登记表移除，避免把译文渲染到错误的消息上（需求 §风险 2）。
- * 视图与调用目标均用弱引用，避免长期持有已回收的列表项。</p>
+ * 视图与调用目标本身使用弱引用；原生实参可能强引用视图，真实重新绑定前必须
+ * 注销旧登记，容量清理则必须保留仍拥有图标的宿主所需的最新原生实参。</p>
  */
 public final class RerenderRegistry {
 
@@ -51,7 +55,7 @@ public final class RerenderRegistry {
         }
     }
 
-    /** messageId -> 承载它的视图集合。 */
+    /** messageId -> 承载它的视图集合。所有登记与容量变更由类锁串行化。 */
     private static final Map<String, List<Target>> TARGETS = new ConcurrentHashMap<>();
     private static final java.util.concurrent.atomic.AtomicLong REGISTRATION_SEQUENCE =
             new java.util.concurrent.atomic.AtomicLong();
@@ -71,14 +75,17 @@ public final class RerenderRegistry {
      * @param method           重渲染方法
      * @param args             原始实参
      */
-    public static void register(String messageId, View contentView, Object invocationTarget,
+    public static synchronized void register(String messageId, View contentView, Object invocationTarget,
                                 Method method, Object[] args) {
         if (messageId == null || contentView == null || method == null || args == null
                 || (!java.lang.reflect.Modifier.isStatic(method.getModifiers())
                 && invocationTarget == null)) {
             return;
         }
-        pruneIfNeeded();
+        // Refreshing an existing key needs no capacity and must not evict its cleanup metadata.
+        if (!TARGETS.containsKey(messageId)) {
+            pruneIfNeeded();
+        }
         List<Target> list = TARGETS.computeIfAbsent(messageId, k -> new ArrayList<>(2));
         synchronized (list) {
             for (int i = 0; i < list.size(); i++) {
@@ -94,7 +101,7 @@ public final class RerenderRegistry {
     }
 
     /** Remove every stale registration for a view before it is rebound to another message. */
-    public static void unregister(View contentView) {
+    public static synchronized void unregister(View contentView) {
         if (contentView == null) {
             return;
         }
@@ -113,26 +120,43 @@ public final class RerenderRegistry {
         }
     }
 
-    /** Restore only icon-owning hosts through their latest recorded native binding, on the UI thread. */
-    static void restoreNativeHosts(java.util.Set<View> hosts) {
-        if (HookRuntime.isActive()) throw new IllegalStateException("Runtime must be suspended");
-        for (View host : hosts) {
-            Target latest = null;
-            String latestKey = null;
-            for (Map.Entry<String, List<Target>> entry : TARGETS.entrySet()) {
-                synchronized (entry.getValue()) {
-                    for (Target target : entry.getValue()) {
-                        if (target.contentView.get() == host
-                                && (latest == null || target.registration > latest.registration)) {
-                            latest = target;
-                            latestKey = entry.getKey();
-                        }
+    /** The newest target for this exact view is the sole source of native cleanup arguments. */
+    @Nullable
+    private static Map.Entry<String, Target> latestRegistration(View host) {
+        Map.Entry<String, Target> latest = null;
+        for (Map.Entry<String, List<Target>> entry : TARGETS.entrySet()) {
+            synchronized (entry.getValue()) {
+                for (Target target : entry.getValue()) {
+                    if (target.contentView.get() == host
+                            && (latest == null
+                            || target.registration > latest.getValue().registration)) {
+                        latest = new java.util.AbstractMap.SimpleImmutableEntry<>(entry.getKey(), target);
                     }
                 }
             }
-            if (latest == null || !stillBound(latestKey, HookBridge.get().messageIdOf(host))) {
+        }
+        return latest;
+    }
+
+    /** Whether injection can rely on a current native binding for this exact host. */
+    static synchronized boolean hasNativeBinding(View host) {
+        if (host == null) return false;
+        Map.Entry<String, Target> latest = latestRegistration(host);
+        return latest != null
+                && stillBound(latest.getKey(), HookBridge.get().messageIdOf(host))
+                && (java.lang.reflect.Modifier.isStatic(latest.getValue().method.getModifiers())
+                || latest.getValue().invocationTarget.get() != null);
+    }
+
+    /** Restore only icon-owning hosts through their latest recorded native binding, on the UI thread. */
+    static synchronized void restoreNativeHosts(java.util.Set<View> hosts) {
+        if (HookRuntime.isActive()) throw new IllegalStateException("Runtime must be suspended");
+        for (View host : hosts) {
+            Map.Entry<String, Target> binding = latestRegistration(host);
+            if (binding == null || !stillBound(binding.getKey(), HookBridge.get().messageIdOf(host))) {
                 throw new IllegalStateException("Current native icon host binding unavailable");
             }
+            Target latest = binding.getValue();
             Object receiver = latest.invocationTarget.get();
             if (!java.lang.reflect.Modifier.isStatic(latest.method.getModifiers()) && receiver == null) {
                 throw new IllegalStateException("Native icon host receiver unavailable");
@@ -145,7 +169,7 @@ public final class RerenderRegistry {
         }
     }
 
-    public static void clear() {
+    public static synchronized void clear() {
         TARGETS.clear();
     }
 
@@ -177,7 +201,7 @@ public final class RerenderRegistry {
      * 长列表滚动后旧条目会被淘汰。若把未知也当成已复用而删除登记项，
      * 该消息就再也不会因译文完成而刷新，只有重新 bind（滚动）才恢复。</p>
      */
-    public static void rerender(String messageId) {
+    public static synchronized void rerender(String messageId) {
         if (messageId == null) {
             return;
         }
@@ -195,14 +219,15 @@ public final class RerenderRegistry {
                 }
                 String bound = HookBridge.get().messageIdOf(contentView);
                 if (!stillBound(messageId, bound)) {
-                    // 已确认被复用到别的消息，不能再用它渲染本条消息。
-                    it.remove();
+                    // Skip stale replay, but retain owned-host metadata until a real native rebind.
+                    // Removing it here could expose older whole-row arguments as the latest bind.
+                    if (!InlineIconSpan.ownsHost(contentView)) it.remove();
                     continue;
                 }
                 Object invocationTarget = target.invocationTarget.get();
                 if (!java.lang.reflect.Modifier.isStatic(target.method.getModifiers())
                         && invocationTarget == null) {
-                    it.remove();
+                    if (!InlineIconSpan.ownsHost(contentView)) it.remove();
                     continue;
                 }
                 RenderDispatcher.requestRerender(contentView, messageId,
@@ -216,7 +241,7 @@ public final class RerenderRegistry {
     }
 
     /** A queued callback must not replay parameters from an earlier bind of the same view. */
-    private static boolean isCurrentRegistration(String messageId, Target expected) {
+    private static synchronized boolean isCurrentRegistration(String messageId, Target expected) {
         List<Target> current = TARGETS.get(messageId);
         if (current == null) {
             return false;
@@ -226,34 +251,57 @@ public final class RerenderRegistry {
         }
     }
 
-    /** 定期清理已回收视图，并把登记表压回上限以内。 */
+    /** Make room for one new key without discarding any live icon host's latest native binding. */
     private static void pruneIfNeeded() {
         if (TARGETS.size() < MAX_MESSAGES) {
             return;
         }
-        for (Iterator<Map.Entry<String, List<Target>>> entries = TARGETS.entrySet().iterator();
-                entries.hasNext(); ) {
-            List<Target> list = entries.next().getValue();
+        // Scan every list first: a dead entry must be reclaimed before any live key is evicted.
+        for (Map.Entry<String, List<Target>> entry : TARGETS.entrySet()) {
+            List<Target> list = entry.getValue();
             synchronized (list) {
                 for (Iterator<Target> it = list.iterator(); it.hasNext(); ) {
-                    if (it.next().contentView.get() == null) {
+                    Target target = it.next();
+                    // A missing receiver must keep its registration identity: dropping it could
+                    // make an older whole-row snapshot look current for a still-owned icon host.
+                    if (target.contentView.get() == null) {
                         it.remove();
                     }
                 }
                 if (list.isEmpty()) {
-                    entries.remove();
-                    continue;
+                    TARGETS.remove(entry.getKey(), list);
                 }
             }
-            if (TARGETS.size() < MAX_MESSAGES) {
-                return;
+        }
+        if (TARGETS.size() < MAX_MESSAGES) {
+            return;
+        }
+
+        // This is a transient selection from TARGETS, never a second owner of native snapshots.
+        Map<View, Map.Entry<String, Target>> newestByHost = new IdentityHashMap<>();
+        for (Map.Entry<String, List<Target>> entry : TARGETS.entrySet()) {
+            synchronized (entry.getValue()) {
+                for (Target target : entry.getValue()) {
+                    View host = target.contentView.get();
+                    if (host == null || !InlineIconSpan.ownsHost(host)) continue;
+                    Map.Entry<String, Target> previous = newestByHost.get(host);
+                    if (previous == null || target.registration > previous.getValue().registration) {
+                        newestByHost.put(host,
+                                new java.util.AbstractMap.SimpleImmutableEntry<>(entry.getKey(), target));
+                    }
+                }
             }
         }
-        // 仍然超限：丢弃最早登记的键，避免无界增长。
-        Iterator<String> keys = TARGETS.keySet().iterator();
-        if (keys.hasNext()) {
-            keys.next();
-            keys.remove();
+        Set<String> protectedKeys = new HashSet<>();
+        for (Map.Entry<String, Target> latest : newestByHost.values()) {
+            protectedKeys.add(latest.getKey());
         }
+        for (String key : TARGETS.keySet()) {
+            if (!protectedKeys.contains(key)) {
+                TARGETS.remove(key);
+                if (TARGETS.size() < MAX_MESSAGES) return;
+            }
+        }
+        throw new IllegalStateException("Native icon host bindings occupy rerender registry capacity");
     }
 }

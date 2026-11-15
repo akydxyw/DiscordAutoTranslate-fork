@@ -82,17 +82,17 @@ public class ApiTesterTest {
     @Test
     public void cancellationDisconnectsReadThatIgnoresInterruption() throws Exception {
         CountDownLatch reading = new CountDownLatch(1);
-        CountDownLatch disconnected = new CountDownLatch(1);
+        CountDownLatch disconnectSignal = new CountDownLatch(1);
         FakeConnection connection = new FakeConnection(new InputStream() {
             @Override public int read() throws IOException {
                 reading.countDown();
-                awaitIgnoringInterrupt(disconnected);
+                awaitIgnoringInterrupt(disconnectSignal);
                 throw new IOException("Disconnected");
             }
         }) {
             @Override public void disconnect() {
                 super.disconnect();
-                disconnected.countDown();
+                disconnectSignal.countDown();
             }
         };
         AtomicInteger opens = new AtomicInteger();
@@ -112,7 +112,7 @@ public class ApiTesterTest {
             assertFalse(executor.submit(() -> Thread.currentThread().isInterrupted())
                     .get(2, TimeUnit.SECONDS));
         } finally {
-            disconnected.countDown();
+            disconnectSignal.countDown();
             executor.shutdownNow();
         }
     }

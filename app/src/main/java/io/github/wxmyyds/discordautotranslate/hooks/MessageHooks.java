@@ -276,6 +276,8 @@ public final class MessageHooks {
                         InlineIconInjector.HostScope hostScope = InlineIconInjector.enterHost(view, null);
                         try {
                             if (!RenderDispatcher.isRerendering() && view != null) {
+                                RerenderRegistry.unregister(view);
+                                HookBridge.get().unbindView(view);
                                 Object[] renderArgs = chain.getArgs().toArray();
                                 Object configuredId = safeArg(chain, messageIdArgument);
                                 String messageId = configuredId instanceof String

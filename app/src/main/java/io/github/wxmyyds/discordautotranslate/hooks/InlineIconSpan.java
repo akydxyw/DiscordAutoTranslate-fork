@@ -118,6 +118,9 @@ public final class InlineIconSpan extends ImageSpan {
      * 绑定时把卡片内全部 TextView 收集进来，逐个失效。</p>
      */
     private final List<WeakReference<android.widget.TextView>> spinTargets = new ArrayList<>();
+    private WeakReference<android.widget.TextView> shadowTarget;
+    private Object clickSpan;
+    private WeakReference<android.text.Spannable> injectedText;
     private boolean targetsComplete = true;
     private int visitedViews;
 
@@ -237,6 +240,7 @@ public final class InlineIconSpan extends ImageSpan {
         }
         if (previous != null && previous != this) {
             previous.terminate();
+            previous.clearShadowSpans();
         }
 
         this.host = new WeakReference<>(view);
@@ -250,16 +254,75 @@ public final class InlineIconSpan extends ImageSpan {
         startSpin();
     }
 
-    /** 收集每帧失效目标：宿主本身，加上宿主内部的全部 TextView（Embed 卡片场景）。 */
+    void ownText(android.text.Spannable text, Object clickSpan) {
+        this.clickSpan = clickSpan;
+        this.injectedText = new WeakReference<>(text);
+    }
+
+    static boolean ownsHost(View view) {
+        synchronized (BOUND_LOCK) { return BOUND.containsKey(view); }
+    }
+
+    /** Collect native text owners, including the body renderer's private truncation shadow. */
     private void collectSpinTargets(View hostView) {
         spinTargets.clear();
         targetsComplete = true;
         visitedViews = 0;
+        shadowTarget = null;
         if (hostView instanceof android.widget.TextView) {
             spinTargets.add(new WeakReference<>((android.widget.TextView) hostView));
+            collectShadow(hostView);
             return;
         }
         collectTextViews(hostView, 0);
+    }
+
+    private void collectShadow(View view) {
+        io.github.wxmyyds.discordautotranslate.core.HookConfiguration config =
+                io.github.wxmyyds.discordautotranslate.core.HookConfiguration.activeConfiguration();
+        org.json.JSONObject render = config == null ? null : config.hook("message.render");
+        org.json.JSONObject target = render == null ? null : render.optJSONObject("target");
+        if (target == null || !view.getClass().getName().equals(target.optString("class"))) return;
+        try {
+            String getter = render.getString("shadowViewGetter");
+            java.lang.reflect.Method method = view.getClass().getDeclaredMethod(getter);
+            method.setAccessible(true);
+            Object shadow = method.invoke(view);
+            if (!(shadow instanceof android.widget.TextView))
+                throw new IllegalStateException("Native shadow text owner unavailable");
+            shadowTarget = new WeakReference<>((android.widget.TextView) shadow);
+            spinTargets.add(shadowTarget);
+        } catch (Exception failure) {
+            targetsComplete = false;
+            ProjectLog.warnOnce("icon.shadow.failed", "native shadow capture failed error="
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /** Remove only module-owned spans from the private measurement buffer; keep its native text. */
+    private void clearShadowSpans() {
+        clearInjectedBuffer();
+        android.widget.TextView shadow = shadowTarget == null ? null : shadowTarget.get();
+        if (shadow == null) return;
+        CharSequence text = shadow.getText();
+        if (!(text instanceof android.text.Spanned)) return;
+        InlineIconSpan[] icons = ((android.text.Spanned) text).getSpans(0, text.length(), InlineIconSpan.class);
+        if (icons.length == 0) return;
+        if (!(text instanceof android.text.Spannable))
+            throw new IllegalStateException("Native shadow spans are immutable");
+        android.text.Spannable mutable = (android.text.Spannable) text;
+        for (InlineIconSpan icon : icons) {
+            icon.clearInjectedBuffer();
+            if (icon.clickSpan != null) mutable.removeSpan(icon.clickSpan);
+            mutable.removeSpan(icon);
+        }
+    }
+
+    private void clearInjectedBuffer() {
+        android.text.Spannable text = injectedText == null ? null : injectedText.get();
+        if (text == null) return;
+        if (clickSpan != null) text.removeSpan(clickSpan);
+        text.removeSpan(this);
     }
 
     /** 深度与数量有界，防御异常深的视图树。 */
@@ -367,7 +430,10 @@ public final class InlineIconSpan extends ImageSpan {
     public static void stopForHost(View view) {
         InlineIconSpan previous;
         synchronized (BOUND_LOCK) { previous = BOUND.get(view); }
-        if (previous != null) previous.terminate();
+        if (previous != null) {
+            previous.terminate();
+            previous.clearShadowSpans();
+        }
     }
 
     static void finishBinding(View view) {
@@ -407,6 +473,7 @@ public final class InlineIconSpan extends ImageSpan {
                 InlineIconSpan span = entry.getValue();
                 span.terminate();
                 if (!span.targetsComplete || span.hasLiveIcon()) restore.add(entry.getKey());
+                span.clearShadowSpans();
             }
             PollIconTouch.detachAll();
             RerenderRegistry.restoreNativeHosts(restore);

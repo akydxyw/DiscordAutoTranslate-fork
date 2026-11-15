@@ -72,6 +72,7 @@
       "replyPreviewTextField": "H"
     },
     "message.render": {
+      "shadowViewGetter": "getShadowView",
       "target": {
         "class": "com.discord.chat.presentation.message.view.MessageContentView",
         "name": "c",
