@@ -38,7 +38,13 @@
 - 唯一正文绑定使用外层 `MessageView.setMessage(Message,MessageContext,ChatEventHandler,ComponentProvider,Function0,boolean,boolean)`；读取 Message 的完整ID getter、正文及编辑版本，引用scope不生产状态。正文render/转换均只取原生ID参数2，不再使用holder bind及boundView。
 - Embed accessory 通过其独立类型映射读取同样修饰的 ID；描述/标题/字段仍是原生 StructurableText，复用统一捕获、回填和转换。
 - 340013 公开节点的 copy/componentN 及 Primitive(String)/Annotated(List) 构造器已与 smali 核对，保留该版本唯一重建策略，不套用352017构造器。
-- 点击和行高刷新修正版 `244306a` 已获用户确认正常；引用预览复用同一规范 Source/revision/hash及showingOriginal，登记 `replyPreview.binding.replyText` 后重放完整外层绑定。native同步回调经toSpannable→BackgroundSpanDrawer→ReplyUtilsKt.createReplyContent（同builder添加首行margin）→Drawee，不修改用户名/裁剪/布局。已应用规范译文才在转换后等长压平，系统正文不套译文，待新版设备复测。
+- 点击和行高刷新修正版 `244306a` 已获用户确认正常；引用预览复用同一规范 Source/revision/hash及showingOriginal，登记 `replyPreview.binding.replyText` 后重放完整外层绑定。native同步回调经toSpannable→BackgroundSpanDrawer→ReplyUtilsKt.createReplyContent（同builder添加首行margin）→Drawee，不修改用户名/裁剪/布局。已应用规范译文才在转换后等长压平，系统正文不套译文，`5f1d1fb` 已获用户确认引用跟随修复。
+
+## 340013 投票原生投影
+
+- 问题入口唯一 `PollViewHolder.bind(PollMessageAccessory,Function3,Function3,Function8)`；原生同步调用 `BasePollWithRecyclerView.bind`，在答案列表 diff 前统一登记 accessory.answers 中所有答案。标题 `pollView.binding.questionText` 的 String setter 由现有 Poll Scope 精确匹配。
+- 答案入口唯一 typed `PollAnswerAdapter.onBindViewHolder(PollAnswerViewHolder,int)`，不同时挂 bridge；保存完整原生绑定参数，重放仍核当前messageId/answerId/文本键及成员。文本布局 label 的 setText 和图片布局 image 的 setContentDescription 均在原生holder.bind内同步调用。
+- 图片描述 setter 在 setMedia 的缓存早退之前，不需要清媒体缓存。只改这两个 setter 的文本参数，不修改模型、选项点击 root、图片点击/长按、票数/百分比、选择状态或回调。不新增 Java 分支、解析链或图片可见字幕；投票链路待新版设备复测。
 
 ## 回复预览（352017)
 

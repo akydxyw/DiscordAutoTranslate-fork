@@ -47,7 +47,7 @@ io.github.wxmyyds.discordautotranslate
 
 | `versionCode` | 必需消息 Hook | 可选 Hook | 正文渲染与转换 |
 |---|---|---|---|
-| `340013` | 外层消息绑定（含引用作用域）、正文渲染、文本转换、富 Embed | 无 | 精确7/34/29/9参数入口；`MessageContentView.setMessageContent-hYrISQc` 实例方法；`TextUtilsKt.toSpannable` |
+| `340013` | 外层消息绑定（含引用作用域）、正文渲染、文本转换、富 Embed、投票4项精确 Hook | 无 | 正文/Embed精确7/34/29/9参数入口；`MessageContentView.setMessageContent-hYrISQc` 实例方法；`TextUtilsKt.toSpannable` |
 | `352017` | `MessageView.f` 建立引用作用域并登记预览消费者；回复按消息 ID/编辑版本读取规范正文及已有状态；`embed.bind` 精确匹配 `q9.q.b` 实例方法（34 个 Java 参数，返回 `void`） | Poll 使用精确绑定作用域及原生文本/无障碍 setter；帖子预览未接入 | 正文 `MessageContentView.c`；回复 `af.i` 直接调用 `kl.b.B0`，添加首行 `LeadingMarginSpan` 后交给 Drawee，模块不覆盖 `TextView` |
 
 必需 Hook ID 与数量由 profile 声明；安装前逐项解析目标，注册期间 `HookRuntime` 不激活，拦截器只执行宿主原方法。全部必需 Hook 注册成功后才激活业务并保存成功 profile。失败统一解绑本次句柄，并清理运行配置、宿主构造缓存、状态、调度和渲染代次；不保留半安装业务。
@@ -78,7 +78,7 @@ io.github.wxmyyds.discordautotranslate
 
 ## 能力范围（按 profile）
 
-- `340013`：正文、富 Embed、点击及行刷新 `244306a` 已获用户确认正常。引用预览接入现有统一消费者：唯一 `message.bind` 改为外层 `MessageView.setMessage` 七参数入口，建立引用作用域和编辑版本；正文渲染/转换取原生 ID 参数2。Loaded 引用字段 `message/systemContent`、预览 `replyPreview.binding.replyText` 均已核实，消费者重放外层绑定，复用规范译文并在同一 native builder 压平换行，待新版设备复测。旧 holder 绑定及 boundView 路径不并存；帖子预览/Poll 未接入。
+- `340013`：正文、富 Embed、点击及行刷新 `244306a` 已获用户确认正常。引用预览接入现有统一消费者：唯一 `message.bind` 改为外层 `MessageView.setMessage` 七参数入口，建立引用作用域和编辑版本；正文渲染/转换取原生 ID 参数2。Loaded 引用字段 `message/systemContent`、预览 `replyPreview.binding.replyText` 均已核实，消费者重放外层绑定，复用规范译文并在同一 native builder 压平换行，`5f1d1fb` 已获用户确认引用跟随修复。旧 holder 绑定及 boundView 路径不并存；投票已配置唯一 PollViewHolder.bind 和 typed PollAnswerAdapter.onBindViewHolder 及两个原生 setter，复用现有 Poll 状态/投影/重放，待新版设备复测；帖子预览未接入。
 - `352017`：正文翻译与重渲染；回复预览复用引用消息 ID，经 `message.textConversion` 读取其翻译状态（预览不经过正文 `message.render`），不安装独立回复 Hook。普通回复译文复用及用户名避让已由用户设备复测确认；带图片/Embed 的引用投影与规范正文不同导致校验拒绝；`ca9713d` 的复用修正已由用户确认可显示译文，随后观察到空白/错位。`583ffbd` 日志确认原生预览模型已压平换行，但复用的正文译文渲染仍保留换行、提前终止首行。当前在同一个原生转换结果上、原生避让 span 添加之前等长压平行段分隔符；不改正文状态，不新增请求或渲染链，`27451e9` 的布局修正已由用户确认修复带图片引用的空白/错位。富 Embed 已复用现有 `embed.bind` 链路完成 smali 静态适配并启用；`4493cee` 已获用户整体功能正常确认，不推定所有边界样例均覆盖。投票根标题 `ea.r0.v` 从 accessory `h` 读取所有选项并统一登记翻译输入，`ba.h.f` 只登记显示/重渲染、不发请求；两者建立字符串与精确视图的作用域，只在原生 setter 参数处替换。标题单一图标切换整张投票卡片，涵盖所有选项及图片选项的无障碍文本；选项不注入图标或安装独立切换触摸。投票复用现有调度/状态/重渲染，不修改模型或投票结果；帖子预览没有实现。
 - 无可用译文或严格回填失败时显示宿主原始节点树，这是状态/失败处理，不是尝试另一套翻译实现。两版点击都使用已核实的原生 span 构造器，340013 点击修正版已获用户确认。
 
@@ -88,7 +88,7 @@ io.github.wxmyyds.discordautotranslate
 - 富 Embed 输入和宿主均由同一 `embed.bind` profile 显式选择：352017 的 `inputSource=arguments` 只取模型参数 1、消息 ID 参数 3，`host.source=this`；340013 的 `inputSource=accessory` 只取 accessory 参数 1，`host.source=field` 只读 `itemView`。不探测其他输入或宿主。
 - 352017 的 `Embed=n7.c`、`EmbedField=n7.o` 通过语义字段访问结构化描述 `j`、标题 `f`、字段 `g`、字段名 `c` 和值 `d`；340013 已核实真实 `com.discord.chat.bridge.embed.Embed/EmbedField` 类型及语义 getter；Embed accessory 的 ID 用独立类型访问器精确映射 `getMessageId-3Eiw7ao`；正文外层入口只读 Message 的 `getId-3Eiw7ao/getContent/getEditedTimestamp`。旧 `embed*Getter`/`embedHolderViewField` 专用全局配置已移除。
 - Embed 每次实际绑定先移除该视图全部旧段登记；空卡片和同一消息的卡片编辑也不能重放旧参数。段状态共享现有 StateStore/Scheduler/缓存/转换器；当前绑定作用域选择一个图标承载段并最多注入一次，不保留跨卡片全局图标键。嵌套渲染退出后恢复之前的宿主作用域。
-- Poll 的原始字符串通过 Primitive 输入适配已有翻译链；段状态键为行 ID + poll + question/answer ID + 正文 hash，与正文/Embed 隔离，等标签不同答案 ID 仍是不同段。根标题从 accessory `h` 登记问题和完整选项列表，选项绑定只投影已有状态；不以选项视图出现与否决定请求。`PollCardState` 按行保存唯一整组显示选择，显示端忽略段 Entry 的 `showingOriginal`；当前卡片缺失或段无有效译文时显示原文。
+- Poll 的原始字符串通过 Primitive 输入适配已有翻译链；段状态键为行 ID + poll + question/answer ID + 正文 hash，与正文/Embed 隔离，等标签不同答案 ID 仍是不同段。根标题从 profile 指定的 accessory 选项路径（352017 `h`、340013 `answers`）登记问题和完整选项列表，选项绑定只投影已有状态；不以选项视图出现与否决定请求。`PollCardState` 按行保存唯一整组显示选择，显示端忽略段 Entry 的 `showingOriginal`；当前卡片缺失或段无有效译文时显示原文。
 - Poll 重复绑定、标题/选项编辑时替换当前段键集合并保留行选择，旧标题/移除选项不能再控制卡片；完成回调不重置选择。新代次和 `HookBridge.reset` 清空卡片状态。投票选项保存的 adapter position 在重放前核对当前 ID、槽位与文本键，不能因同一行 ID 而套用旧参数。
 - Poll 仅当前标题图标控制整组切换/失败段重试，并刷新所有当前段；其状态汇总当前段翻译进度/结果，着色读取卡片选择。标题触摸仅消费图标范围；文本和图片选项均无图标或独立切换触摸，普通投票点击完全交给宿主，图片选项只替换无障碍文本。
 - 混淆容器只调用 `nodeConstructors` 指定的精确构造器，参数顺序和字段明确配置；失败不换构造器或改走 copy。未指定构造器的类型使用原 data class copy 规则。

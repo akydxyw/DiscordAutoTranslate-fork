@@ -8,7 +8,7 @@
   Discord `PackageInfo.versionCode` 精确读取对应文件，不存在匹配文件时不安装消息 Hook。
 - `hooks.*.target` 描述类、方法、静态/实例类型、参数数量和可选参数签名；绑定参数索引、
   混淆类型语义名、访问器、字段别名及精确节点构造器参数也应放在该版本 JSON 中。
-- `requiredHooks` 只列出该版本已通过 smali 核实且启动必须成功的 Hook；不能用其他版本的选择器作为默认值。352017 的富 Embed 已静态核实 `q9.q.b` 并列为必需 Hook；静态核实不等同于设备回归通过。回复复用统一转换，不安装独立 Hook；帖子预览旧实现已删除；352017 Poll 已重新核实原生绑定与 setter 并接入统一翻译状态，340013 未接入。
+- `requiredHooks` 只列出该版本已通过 smali 核实且启动必须成功的 Hook；不能用其他版本的选择器作为默认值。352017 的富 Embed 已静态核实 `q9.q.b` 并列为必需 Hook；静态核实不等同于设备回归通过。回复复用统一转换，不安装独立 Hook；帖子预览旧实现已删除；两版 Poll 均按自身 smali 核实原生绑定与 setter，并接入同一统一翻译状态；340013 新版效果尚待设备复测。
 - 静态渲染方法将 View 和正文都作为显式参数；对应 profile 要设置 `viewArgument` 和
   `contentArgument`，重渲染登记会以静态调用方式执行它。
 - 新增或修改 profile 后，先做 JSON/签名核对；编译与单元测试通过 GitHub Actions 运行，
@@ -27,7 +27,7 @@
 - 选项：`ba.h.f(k3.k1, int)`；`this.d` 是当前选项列表，消息/答案 ID 为 `n9.a.a`/`n9.a.c.a`，文字为 `n9.a.c.b.a`。文本布局 `q8.f0.v` 调用 `TextView.setText(CharSequence)`；图片布局 `q8.d0.i` 调用 `View.setContentDescription(CharSequence)`。百分比/票数是不同视图，不处理。
 - 无 `B0` 转换：只在精确绑定作用域匹配当前 receiver 和捕获的原始字符串，作用域在 finally 恢复。不能修改投票模型制造差分，更不能改答案 ID、图片、投票状态、结果或回调。
 - 先解析视图并清理旧登记，再读取新文本/构造 Primitive；重放参数前核对当前槽位/文本键。每次绑定和重放都登记包装内容的身份；只有实际根标题绑定发起统一翻译流程，选项绑定只读状态并登记显示/重渲染，不另发请求。
-- 每行仅有一个 `PollCardState` 显示选择和当前段键列表；重复绑定、标题/选项编辑保留选择并删除旧键，段 Entry 的 `showingOriginal` 不控制显示，完成回调不重置选择；新代次与桥接重置清空整组。仅当前标题图标汇总段状态、按卡片选择着色并控制整组切换/失败段重试，刷新全部当前键。选项无图标和独立切换触摸；图片选项无障碍文本也跟随标题，原生投票点击不变。340013 投票仍未接入。
+- 每行仅有一个 `PollCardState` 显示选择和当前段键列表；重复绑定、标题/选项编辑保留选择并删除旧键，段 Entry 的 `showingOriginal` 不控制显示，完成回调不重置选择；新代次与桥接重置清空整组。仅当前标题图标汇总段状态、按卡片选择着色并控制整组切换/失败段重试，刷新全部当前键。选项无图标和独立切换触摸；图片选项无障碍文本也跟随标题，原生投票点击不变。340013 亦共用此整卡选择/投影实现，新增其精确元数据而非复制生产代码。
 - `PollCardStateTest` 与 `PollTextProjectionTest` 使用现有 StateStore 和假 Primitive 模型，覆盖整组选择、迟到译文、编辑/旧键隔离与代次清理，不代替设备投票/点击/布局回归。构建及单测需要通过 GitHub Actions 执行；`4493cee` 已获用户整体功能正常确认，特殊投票组合仍须针对性验证。
 
 ## 架构优化第一阶段
@@ -128,6 +128,14 @@
 - LoadedReferencedMessage字段message/systemContent、Message编辑版本、replyPreview.binding.replyText已核实。configureReply里的Function1立即同步执行文本转换，doOnNextLayout只测高度，不翻译；toSpannable之后native在同builder增加BackgroundSpanDrawer/LeadingMarginSpan再交Drawee。
 - 原引用捕获类型/读取抽成ReplyBinding唯一操作，352017元数据不变，两版复用REPLY_CONVERSION、canonical Source/revision/hash和当前显示选择。引用只消费，重放登记替换同一视图旧Target；原文/译文切换统一刷新自身及引用消费者。系统正文和ID不匹配不能改走正文译文或注入图标。
 - 不新增独立请求/预览缓存/ThreadLocal/手写裁剪或TextView.setText，保持原生用户名避让与两行省略。新增双profile规范复用/系统内容/identity/revision及重绑失效回归，新版Actions及设备结果另记。
+
+## 340013 投票接入
+
+- 340013 引用修正版5f1d1fb（Actions实际688项、0失败/跳过）已获用户确认问题修复。本轮仅扩展投票。
+- 使用用户340013 smali（BuildConfig VERSION_CODE=340013）核实：问题PollViewHolder.bind4参数，答案PollAnswerAdapter.onBindViewHolder(PollAnswerViewHolder,int)typed2参数。只挂typed入口，bridge转发不会重复登记。
+- root accessory.messageId / data.question.text / answers提供身份/标题/全部PollAnswerAccessory，不用data.answers裸答案；选项answer.answerId / answer.pollMedia.text，adapter.items和父类holder.binding精确读取。两种binding分别label文本、image无障碍描述，根标题pollView.binding.questionText。
+- 标题/两种选项setter均在同步bind内；图片setContentDescription在setMedia相等早退之前。原生root点击/图片点击仍通过稳定answerId和captured channelId/messageId回Chat事件，不改模型/点击回调/结果。
+- 只新增340013 profile四项required Poll Hook及真实字段路径，PollHooks/PollBinding/PollCardState不增加版本分支。新增shipped元数据及实际生产读取/重放守卫回归；静态smali核验、Actions与设备结果分别记录，图片无障碍文字不等于新增可见字幕。
 
 ## 冗余与规则审计后的统一清理
 

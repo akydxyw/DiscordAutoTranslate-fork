@@ -31,7 +31,10 @@ public class ShippedHookProfileTest {
                     "embedFieldsGetter", "embedFieldNameGetter", "embedFieldValueGetter"}) {
                 assertTrue(members == null || !members.has(key));
             }
-            assertEquals(version == 352017, hooks.has("poll.bind"));
+            for (String id : new String[]{"poll.bind", "poll.answerBind", "poll.textSet",
+                    "poll.accessibilitySet"}) {
+                assertTrue(hooks.has(id));
+            }
             assertFalse(hooks.has("embed.postPreviewBind"));
             assertFalse(hooks.has("embed.postPreviewRender"));
             assertFalse(root.has("constructorFallbackTypes"));
@@ -151,22 +154,116 @@ public class ShippedHookProfileTest {
         assertEquals("q8.d0", answer.getString("imageBindingClass"));
         assertEquals("[\"v\"]", answer.getJSONArray("textViewPath").toString());
         assertEquals("[\"i\"]", answer.getJSONArray("imageViewPath").toString());
-        for (String id : ids) assertFalse(profile(340013).getJSONObject("hooks").has(id));
+    }
+
+    @Test
+    public void olderPollUsesExactTypedNativeSignaturePathsAndSharedAndroidSetters() throws Exception {
+        JSONObject root = profile(340013);
+        JSONObject hooks = root.getJSONObject("hooks");
+        String[] ids = {"poll.bind", "poll.answerBind", "poll.textSet", "poll.accessibilitySet"};
+        String[] owners = {
+                "com.discord.chat.presentation.message.viewholder.PollViewHolder",
+                "com.discord.chat.presentation.message.view.polls.PollAnswerAdapter",
+                "android.widget.TextView", "android.view.View"
+        };
+        String[] methods = {"bind", "onBindViewHolder", "setText", "setContentDescription"};
+        String[][] parameters = {
+                {"com.discord.chat.presentation.message.messagepart.PollMessageAccessory",
+                        "kotlin.jvm.functions.Function3", "kotlin.jvm.functions.Function3",
+                        "kotlin.jvm.functions.Function8"},
+                // The typed overload, not the RecyclerView.ViewHolder bridge.
+                {"com.discord.chat.presentation.message.view.polls.PollAnswerViewHolder", "int"},
+                {"java.lang.CharSequence"}, {"java.lang.CharSequence"}
+        };
+        assertEquals(8, hooks.length());
+        assertEquals(8, root.getJSONArray("requiredHooks").length());
+        for (int i = 0; i < ids.length; i++) {
+            JSONObject hook = hooks.getJSONObject(ids[i]);
+            JSONObject target = hook.getJSONObject("target");
+            assertTrue(hook.getBoolean("enabled"));
+            assertEquals(ids[i], root.getJSONArray("requiredHooks").getString(i + 4));
+            assertEquals(owners[i], target.getString("class"));
+            assertEquals(methods[i], target.getString("name"));
+            assertFalse(target.getBoolean("static"));
+            assertEquals("void", target.getString("returnType"));
+            assertEquals(6, target.length());
+            assertFalse(target.has("namePrefix"));
+            assertFalse(target.has("minParameterCount"));
+            assertFalse(target.has("selection"));
+            assertEquals(parameters[i].length, target.getInt("parameterCount"));
+            JSONObject types = target.getJSONObject("parameterTypes");
+            assertEquals(parameters[i].length, types.length());
+            for (int j = 0; j < parameters[i].length; j++) {
+                assertEquals("340013 " + ids[i] + " Java parameter " + j,
+                        parameters[i][j], types.getString(Integer.toString(j)));
+            }
+            if (i >= 2) {
+                assertEquals(3, hook.length());
+                assertEquals(0, hook.getInt("contentArgument"));
+                JSONObject current = profile(352017).getJSONObject("hooks")
+                        .getJSONObject(ids[i]);
+                assertEquals(current.getInt("contentArgument"), hook.getInt("contentArgument"));
+                JSONObject currentTarget = current.getJSONObject("target");
+                for (String key : new String[]{"class", "name", "returnType"}) {
+                    assertEquals(currentTarget.getString(key), target.getString(key));
+                }
+                assertEquals(currentTarget.getBoolean("static"), target.getBoolean("static"));
+                assertEquals(currentTarget.getInt("parameterCount"), target.getInt("parameterCount"));
+                assertEquals(currentTarget.getJSONObject("parameterTypes").getString("0"),
+                        types.getString("0"));
+            }
+        }
+        JSONObject question = hooks.getJSONObject("poll.bind");
+        assertEquals(8, question.length());
+        assertEquals(0, question.getInt("accessoryArgument"));
+        assertEquals("[\"answers\"]", question.getJSONArray("optionsPath").toString());
+        assertEquals("[\"messageId\"]", question.getJSONArray("messageIdPath").toString());
+        assertEquals("[\"data\",\"question\",\"text\"]", question.getJSONArray("textPath").toString());
+        assertEquals("[\"pollView\"]", question.getJSONArray("hostPath").toString());
+        assertEquals("[\"pollView\",\"binding\",\"questionText\"]",
+                question.getJSONArray("textViewPath").toString());
+        JSONObject answer = hooks.getJSONObject("poll.answerBind");
+        assertEquals(13, answer.length());
+        assertEquals(0, answer.getInt("holderArgument"));
+        assertEquals(1, answer.getInt("positionArgument"));
+        assertEquals("[\"items\"]", answer.getJSONArray("itemsPath").toString());
+        assertEquals("[\"messageId\"]", answer.getJSONArray("messageIdPath").toString());
+        assertEquals("[\"answer\",\"answerId\"]", answer.getJSONArray("answerIdPath").toString());
+        assertEquals("[\"answer\",\"pollMedia\",\"text\"]", answer.getJSONArray("textPath").toString());
+        assertEquals("[\"binding\"]", answer.getJSONArray("holderBindingPath").toString());
+        assertEquals("com.discord.chat.databinding.PollTextAndImageAnswerViewBinding",
+                answer.getString("textBindingClass"));
+        assertEquals("com.discord.chat.databinding.PollImageOnlyAnswerViewBinding",
+                answer.getString("imageBindingClass"));
+        assertEquals("[\"label\"]", answer.getJSONArray("textViewPath").toString());
+        assertEquals("[\"image\"]", answer.getJSONArray("imageViewPath").toString());
     }
 
     @Test
     public void malformedPollProfilesRejectBeforeInstallation() throws Exception {
-        for (int caseIndex = 0; caseIndex < 4; caseIndex++) {
-            JSONObject root = profile(352017);
-            JSONObject hooks = root.getJSONObject("hooks");
-            switch (caseIndex) {
-                case 0: hooks.remove("poll.textSet"); break;
-                case 1: hooks.getJSONObject("poll.bind").put("accessoryArgument", 4); break;
-                case 2: hooks.getJSONObject("poll.answerBind").put("textPath", new org.json.JSONArray()); break;
-                case 3: hooks.getJSONObject("poll.accessibilitySet").put("enabled", false); break;
+        for (int version : new int[]{340013, 352017}) {
+            for (int caseIndex = 0; caseIndex < 12; caseIndex++) {
+                JSONObject root = profile(version);
+                JSONObject hooks = root.getJSONObject("hooks");
+                JSONObject answer = hooks.getJSONObject("poll.answerBind");
+                switch (caseIndex) {
+                    case 0: hooks.remove("poll.textSet"); break;
+                    case 1: hooks.getJSONObject("poll.bind").put("accessoryArgument", 4); break;
+                    case 2: answer.put("textPath", new org.json.JSONArray()); break;
+                    case 3: hooks.getJSONObject("poll.accessibilitySet").put("enabled", false); break;
+                    case 4: answer.put("positionArgument", answer.getInt("holderArgument")); break;
+                    case 5: answer.put("textBindingClass", ""); break;
+                    case 6: answer.put("imageBindingClass", answer.getString("textBindingClass")); break;
+                    case 7: hooks.getJSONObject("poll.bind").remove("optionsPath"); break;
+                    case 8: answer.getJSONObject("target").put("static", true); break;
+                    case 9: hooks.getJSONObject("poll.textSet").put("contentArgument", 1); break;
+                    case 10: hooks.getJSONObject("poll.bind").put("hostPath",
+                            new org.json.JSONArray().put(123)); break;
+                    case 11: answer.put("positionArgument", -1); break;
+                }
+                assertThrows(org.json.JSONException.class,
+                        () -> HookConfiguration.parse(root.toString(), version));
             }
-            assertThrows(org.json.JSONException.class,
-                    () -> HookConfiguration.parse(root.toString(), 352017));
         }
     }
 
@@ -191,7 +288,7 @@ public class ShippedHookProfileTest {
     public void olderProfileUsesNativeMessageIdentityReplyAndRichEmbedMetadata() throws Exception {
         JSONObject root = profile(340013);
         JSONObject hooks = root.getJSONObject("hooks");
-        assertEquals(4, hooks.length());
+        assertEquals(8, hooks.length());
         JSONObject bind = hooks.getJSONObject("message.bind");
         assertEquals(0, bind.getInt("modelArgument"));
         assertEquals("getId", bind.getString("messageIdGetter"));
@@ -237,7 +334,8 @@ public class ShippedHookProfileTest {
         assertEquals("field", host.getString("source"));
         assertEquals("itemView", host.getString("field"));
         assertEquals(2, host.length());
-        assertEquals("[\"message.bind\",\"message.render\",\"message.textConversion\",\"embed.bind\"]",
+        assertEquals("[\"message.bind\",\"message.render\",\"message.textConversion\",\"embed.bind\","
+                        + "\"poll.bind\",\"poll.answerBind\",\"poll.textSet\",\"poll.accessibilitySet\"]",
                 root.getJSONArray("requiredHooks").toString());
         JSONObject members = root.getJSONObject("members");
         assertFalse(members.has("getMessageId"));
