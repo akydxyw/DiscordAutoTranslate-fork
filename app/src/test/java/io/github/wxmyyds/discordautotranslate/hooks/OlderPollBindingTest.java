@@ -203,7 +203,12 @@ public class OlderPollBindingTest {
         JSONObject nativeSpec = shipped.getJSONObject("poll.answerBind");
         restored.put("textBindingClass", nativeSpec.getString("textBindingClass"));
         restored.put("imageBindingClass", nativeSpec.getString("imageBindingClass"));
-        assertTrue(nativeSpec.similar(restored));
+        assertEquals(nativeSpec.length(), restored.length());
+        for (String name : new String[]{"enabled", "target", "holderArgument", "positionArgument",
+                "itemsPath", "messageIdPath", "answerIdPath", "textPath", "holderBindingPath",
+                "textBindingClass", "textViewPath", "imageBindingClass", "imageViewPath"}) {
+            assertEquals(name, nativeSpec.get(name).toString(), restored.get(name).toString());
+        }
         assertSame(shipped.getJSONObject("poll.bind"), questionSpec);
     }
 
