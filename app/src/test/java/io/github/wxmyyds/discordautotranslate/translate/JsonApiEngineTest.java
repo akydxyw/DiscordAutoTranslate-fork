@@ -243,19 +243,19 @@ public class JsonApiEngineTest {
     public void responsesCancellationAfterTextDeltaDisconnectsAndClearsRegistration() throws Exception {
         byte[] prefix = responsesDelta(0, "你好").getBytes(StandardCharsets.UTF_8);
         CountDownLatch waitingForCompletion = new CountDownLatch(1);
-        CountDownLatch disconnected = new CountDownLatch(1);
+        CountDownLatch disconnectSignal = new CountDownLatch(1);
         FakeConnection connection = new FakeConnection(new InputStream() {
             private int offset;
             @Override public int read() throws IOException {
                 if (offset < prefix.length) return prefix[offset++] & 0xff;
                 waitingForCompletion.countDown();
-                awaitIgnoringInterrupts(disconnected);
+                awaitIgnoringInterrupts(disconnectSignal);
                 throw new IOException("Disconnected before response.completed");
             }
         }) {
             @Override public void disconnect() {
                 super.disconnect();
-                disconnected.countDown();
+                disconnectSignal.countDown();
             }
         };
         AtomicInteger opens = new AtomicInteger();
