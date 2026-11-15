@@ -26,7 +26,7 @@
     <string name="hint_logging_enabled">默认关闭。保存后重启 Discord 生效。统一控制 logcat 和 LSPosed 中的项目诊断；不记录消息正文和凭据。</string>
     <string name="label_protocol">服务协议</string>
     <string name="hint_protocol">API URL 填写到 /v1，系统会自动追加协议端点。</string>
-    <string name="label_streaming">流式请求（Responses 不支持）</string>
+    <string name="label_streaming">流式请求</string>
     <string name="label_api_url">API URL</string>
     <string name="hint_api_url">https://api.openai.com/v1</string>
     <string name="label_api_key">API 密钥（仅保存在本机）</string>

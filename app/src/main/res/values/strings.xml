@@ -26,7 +26,7 @@
     <string name="hint_logging_enabled">Off by default. Save and restart Discord to apply. Controls project diagnostics in logcat and LSPosed; message text and credentials are never logged.</string>
     <string name="label_protocol">Provider protocol</string>
     <string name="hint_protocol">Enter the API base URL ending in /v1. The protocol endpoint is added automatically.</string>
-    <string name="label_streaming">Use streaming (unavailable for Responses)</string>
+    <string name="label_streaming">Use streaming</string>
     <string name="label_api_url">API URL</string>
     <string name="hint_api_url">https://api.openai.com/v1</string>
     <string name="label_api_key">API key (stored locally)</string>

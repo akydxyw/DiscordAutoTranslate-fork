@@ -96,7 +96,7 @@ public class ProtocolsTest {
         assertEquals(0, json.getDouble("temperature"), 0.0);
         assertFalse("Responses 接口不接受 frequency_penalty", json.has("frequency_penalty"));
         assertFalse("Responses 接口没有 messages 字段", json.has("messages"));
-        assertFalse("Responses 协议暂不支持流式，不携带 stream", json.has("stream"));
+        assertTrue("Responses 请求默认启用流式", json.getBoolean("stream"));
     }
 
     /** Messages 请求体：system 顶层字段 + 仅 user 消息 + 必填 max_tokens + 流式。 */
@@ -433,13 +433,18 @@ public class ProtocolsTest {
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_RESPONSES, resp));
     }
 
-    /** 多段 output_text 时只取响应顺序中的第一个候选，不跳过空文本。 */
+    /** 多段 output_text 按 output/content 顺序全部拼接，空文本不影响后续段。 */
     @Test
-    public void responsesExtractionUsesFirstTextCandidate() throws Exception {
+    public void responsesExtractionConcatenatesAllTextInOutputAndContentOrder() throws Exception {
         String resp = "{\"output\":[{\"type\":\"message\",\"content\":["
                 + "{\"type\":\"output_text\",\"text\":\"\"},"
-                + "{\"type\":\"output_text\",\"text\":\"第二段\"}]}]}";
-        assertEquals("", extractByFixtureMode(Config.PROTOCOL_OPENAI_RESPONSES, resp));
+                + "{\"type\":\"output_text\",\"text\":\"第一段\"},"
+                + "{\"type\":\"output_text\",\"text\":\"第二段\"}]},"
+                + "{\"type\":\"reasoning\",\"summary\":[]},"
+                + "{\"type\":\"message\",\"content\":["
+                + "{\"type\":\"output_text\",\"text\":\"第三段\"}]}]}";
+        assertEquals("第一段第二段第三段",
+                decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES, resp, false));
     }
 
     /** 找不到可译文本、缺 output 数组、响应非 JSON 对象都是明确的解析错误。 */
@@ -515,7 +520,7 @@ public class ProtocolsTest {
     }
 
     @Test
-    public void responsesSelectedTextMustBeAnActualStringWithoutSkippingInvalidCandidate() {
+    public void responsesTextPartsMustBeActualStringsWithoutSkippingInvalidParts() {
         for (String value : new String[]{"42", "true", "false", "{}", "[]", "null"}) {
             assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
                     "{\"output\":[{\"type\":\"message\",\"content\":["
@@ -528,12 +533,11 @@ public class ProtocolsTest {
     }
 
     @Test
-    public void responsesMultipartIterationSkipsOnlyNonTextParts() throws Exception {
+    public void responsesRefusalRejectsOtherwiseUsableText() {
         String body = "{\"output\":[{\"type\":\"reasoning\"},"
                 + "{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"x\"}]},"
                 + "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好\"}]}]}";
-        assertEquals("你好", decodeFixture(
-                Config.PROTOCOL_OPENAI_RESPONSES, body, false));
+        assertParseError(body);
     }
 
     @Test
@@ -694,12 +698,343 @@ public class ProtocolsTest {
     }
 
     @Test
-    public void responsesStreamingIsExplicitlyUnsupported() {
+    public void responsesSupportBothExplicitRequestAndDecoderModes() throws Exception {
+        assertTrue(Protocols.supportsStreaming(Config.PROTOCOL_OPENAI_RESPONSES));
+        for (boolean streaming : new boolean[]{true, false}) {
+            JSONObject request = new JSONObject(Protocols.requestBody(
+                    Config.PROTOCOL_OPENAI_RESPONSES, "hello", "prompt", "model", streaming));
+            assertEquals(streaming, request.getBoolean("stream"));
+            assertEquals(streaming ? "text/event-stream" : "application/json",
+                    Protocols.createDecoder(Config.PROTOCOL_OPENAI_RESPONSES, streaming).acceptType());
+        }
+    }
+
+    @Test
+    public void responsesStreamOrdersPartsAndIgnoresReasoningAndDoneSnapshots() throws Exception {
+        JSONObject response = new JSONObject("{\"status\":\"completed\",\"output\":["
+                + "{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]},"
+                + "{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"content\":["
+                + "{\"type\":\"output_text\",\"text\":\"你好\"},"
+                + "{\"type\":\"output_text\",\"text\":\"\"},"
+                + "{\"type\":\"output_text\",\"text\":\"，世界\"}]},"
+                + "{\"id\":\"msg_2\",\"type\":\"message\",\"content\":["
+                + "{\"type\":\"output_text\",\"text\":\"！🌍\"}]}]}");
+        String sse = ": keepalive\r\n\r\n"
+                + responseSse(responseEvent("response.created", 0).put("response",
+                        new JSONObject().put("id", "resp_1").put("status", "in_progress")
+                                .put("output", new JSONArray())))
+                + responseSse(responseEvent("response.reasoning_summary_text.delta", 1)
+                        .put("item_id", "rs_1").put("output_index", 0).put("summary_index", 0)
+                        .put("delta", "private reasoning"))
+                + responseSse(responseDelta(2, 2, 0, "msg_2", "！🌍"))
+                + responseSse(responseDelta(3, 1, 2, "msg_1", "，世界"))
+                + responseSse(responseDelta(4, 1, 0, "msg_1", "你"))
+                + responseSse(responseDelta(5, 1, 0, "msg_1", "好"))
+                + responseSse(responseEvent("response.output_text.done", 6)
+                        .put("output_index", 1).put("content_index", 0)
+                        .put("item_id", "msg_1").put("text", "你好"))
+                + responseSse(responseEvent("response.content_part.done", 7)
+                        .put("output_index", 1).put("content_index", 2).put("item_id", "msg_1")
+                        .put("part", response.getJSONArray("output").getJSONObject(1)
+                                .getJSONArray("content").getJSONObject(2)))
+                + responseSse(responseEvent("response.output_item.done", 8).put("output_index", 2)
+                        .put("item", response.getJSONArray("output").getJSONObject(2)))
+                + "event: response.completed\n" + responseSse(responseCompleted(9, response))
+                + "data: malformed trailing input\n\n";
+        assertEquals("你好，世界！🌍",
+                decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES, sse, true));
+        assertEquals("你好，世界！🌍",
+                decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES, response.toString(), false));
+    }
+
+    @Test
+    public void responsesEmptyTextMayHaveNoDeltaOrAnEmptyDelta() throws Exception {
+        for (String prefix : new String[]{"", responseSse(responseDelta(0, 0, 0, "msg_1", ""))}) {
+            assertEquals("", decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES,
+                    prefix + responseSse(responseCompleted(1, responseResult(""))), true));
+        }
+    }
+
+    @Test
+    public void responsesRequireCompletedEventAndCompleteSseFrame() throws Exception {
+        String delta = responseSse(responseDelta(0, 0, 0, "msg_1", "你好"));
+        String completed = responseSse(responseCompleted(2, responseResult("你好")));
+        for (String suffix : new String[]{"", "data: [DONE]\n\n",
+                responseSse(responseEvent("response.output_text.done", 1).put("text", "你好")),
+                completed.substring(0, completed.length() - 1),
+                "data: {\"type\":\"response.completed\",\"response\":", "data: {\n\n"}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, delta + suffix, true);
+        }
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseResult("你好").toString(), true);
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, delta + completed, false);
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, "data: [DONE]\n\n", true);
+    }
+
+    @Test
+    public void responsesEventTypesAndNamesMustAgree() throws Exception {
+        String completed = responseSse(responseCompleted(1, responseResult("你好")));
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                "event: response.completed\n"
+                        + responseSse(responseDelta(0, 0, 0, "msg_1", "你好")) + completed, true);
+        for (Object value : new Object[]{JSONObject.NULL, 42, true, new JSONArray(), new JSONObject()}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(0, 0, 0, "msg_1", "你好").put("type", value))
+                            + completed, true);
+        }
+        JSONObject missing = responseDelta(0, 0, 0, "msg_1", "你好");
+        missing.remove("type");
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, responseSse(missing) + completed, true);
+        for (String data : new String[]{"[]", "42", "null", "{}", "{} garbage"}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    "data: " + data + "\n\n" + completed, true);
+        }
+    }
+
+    @Test
+    public void responsesRequireNonnegativeIntegerSequenceAndPartIndices() throws Exception {
+        for (String field : new String[]{"sequence_number", "output_index", "content_index"}) {
+            for (Object invalid : new Object[]{JSONObject.NULL, "0", true, 0.5, -1,
+                    2147483648L, new JSONArray(), new JSONObject()}) {
+                JSONObject delta = responseDelta(0, 0, 0, "msg_1", "你好").put(field, invalid);
+                assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, responseSse(delta)
+                        + responseSse(responseCompleted(1, responseResult("你好"))), true);
+            }
+            JSONObject delta = responseDelta(0, 0, 0, "msg_1", "你好");
+            delta.remove(field);
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, responseSse(delta)
+                    + responseSse(responseCompleted(1, responseResult("你好"))), true);
+        }
+        // Lifecycle events participate in the same sequence as text and completion events.
+        for (int next : new int[]{1, 2}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(2, 0, 0, "msg_1", "你好"))
+                            + responseSse(responseEvent("response.in_progress", next))
+                            + responseSse(responseCompleted(3, responseResult("你好"))), true);
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(2, 0, 0, "msg_1", "你好"))
+                            + responseSse(responseCompleted(next, responseResult("你好"))), true);
+        }
+        JSONObject lifecycle = responseEvent("response.created", 0);
+        lifecycle.remove("sequence_number");
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, responseSse(lifecycle)
+                + responseSse(responseCompleted(1, responseResult(""))), true);
+        assertEquals("你好", decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseDelta(10, 0, 0, "msg_1", "你好"))
+                        + responseSse(responseCompleted(Integer.MAX_VALUE, responseResult("你好"))), true));
+    }
+
+    @Test
+    public void responsesDeltaTextAndItemIdMustBeStringsAndIdentityCannotChange() throws Exception {
+        for (String field : new String[]{"item_id", "delta"}) {
+            for (Object invalid : new Object[]{JSONObject.NULL, 42, true, new JSONArray(), new JSONObject()}) {
+                assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                        responseSse(responseDelta(0, 0, 0, "msg_1", "你好").put(field, invalid))
+                                + responseSse(responseCompleted(1, responseResult("你好"))), true);
+            }
+            JSONObject delta = responseDelta(0, 0, 0, "msg_1", "你好");
+            delta.remove(field);
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, responseSse(delta)
+                    + responseSse(responseCompleted(1, responseResult("你好"))), true);
+        }
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseDelta(0, 0, 0, "msg_1", "你"))
+                        + responseSse(responseDelta(1, 0, 0, "msg_2", "好"))
+                        + responseSse(responseCompleted(2, responseResult("你好"))), true);
+    }
+
+    @Test
+    public void responsesFinalOutputMustMatchEveryDeltaPartAndMessageId() throws Exception {
+        String completed = responseSse(responseCompleted(5, responseResult("你好")));
+        for (String prefix : new String[]{"",
+                responseSse(responseDelta(0, 0, 0, "msg_1", "你")),
+                responseSse(responseDelta(0, 0, 0, "msg_2", "你好")),
+                responseSse(responseDelta(0, 1, 0, "msg_1", "你好")),
+                responseSse(responseDelta(0, 0, 1, "msg_1", "你好")),
+                responseSse(responseDelta(0, 0, 0, "msg_1", "你好"))
+                        + responseSse(responseDelta(1, 0, 1, "msg_1", "额外"))}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, prefix + completed, true);
+        }
+        // Equal concatenated text is insufficient when the per-part boundaries disagree.
+        JSONObject twoParts = responseResult("你好");
+        twoParts.getJSONArray("output").getJSONObject(0).getJSONArray("content")
+                .put(new JSONObject().put("type", "output_text").put("text", ""));
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseDelta(0, 0, 0, "msg_1", "你"))
+                        + responseSse(responseDelta(1, 0, 1, "msg_1", "好"))
+                        + responseSse(responseCompleted(2, twoParts)), true);
+        JSONObject emptyFinal = responseResult("");
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseDelta(0, 1, 0, "extra", ""))
+                        + responseSse(responseCompleted(1, emptyFinal)), true);
+        for (Object id : new Object[]{JSONObject.NULL, 42}) {
+            JSONObject response = responseResult("你好");
+            response.getJSONArray("output").getJSONObject(0).put("id", id);
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(0, 0, 0, "msg_1", "你好"))
+                            + responseSse(responseCompleted(1, response)), true);
+        }
+    }
+
+    @Test
+    public void responsesCompletionRequiresCompletedResponseObjectAndOutputArray() throws Exception {
+        for (Object response : new Object[]{JSONObject.NULL, "completed", true, new JSONArray()}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseCompleted(0, response)), true);
+        }
+        JSONObject noResponse = responseEvent("response.completed", 0);
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES, responseSse(noResponse), true);
+        for (Object status : new Object[]{JSONObject.NULL, 42, "in_progress", "failed", "incomplete"}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseCompleted(0, responseResult("").put("status", status))), true);
+        }
+        JSONObject missingStatus = responseResult("");
+        missingStatus.remove("status");
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseCompleted(0, missingStatus)), true);
+        for (Object output : new Object[]{JSONObject.NULL, new JSONObject(), "text", new JSONArray()}) {
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseCompleted(0, responseResult("").put("output", output))), true);
+        }
+        JSONObject missingOutput = responseResult("");
+        missingOutput.remove("output");
+        assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseCompleted(0, missingOutput)), true);
+    }
+
+    @Test
+    public void responsesRejectFailedIncompleteRefusalAndErrorsWithoutPrivateDetails() throws Exception {
+        String secret = "private body\nhttps://private.invalid/?token=secret Bearer private-key";
+        String prefix = responseSse(responseDelta(0, 0, 0, "msg_1", secret));
+        for (String type : new String[]{"response.failed", "response.incomplete",
+                "response.refusal.delta", "response.refusal.done", "error"}) {
+            String expected = type.equals("error") ? "服务返回流式错误事件"
+                    : type.startsWith("response.refusal") ? "Responses 拒绝生成译文"
+                    : "Responses 生成失败或不完整";
+            JSONObject failure = responseEvent(type, 1).put("delta", secret)
+                    .put("response", new JSONObject().put("status", secret))
+                    .put("message", secret);
+            assertResponsesFailure(prefix + responseSse(failure), true, expected, secret);
+        }
+        assertResponsesFailure(prefix + "event: error\ndata: " + JSONObject.quote(secret) + "\n\n",
+                true, "服务返回流式错误事件", secret);
+        assertResponsesFailure(prefix + responseSse(responseEvent("response.in_progress", 1)
+                        .put("error", new JSONObject().put("message", secret))),
+                true, "服务返回流式错误事件", secret);
+        for (String field : new String[]{"status", "error", "incomplete_details"}) {
+            for (String value : field.equals("status")
+                    ? new String[]{"failed", "incomplete", secret} : new String[]{secret}) {
+                JSONObject response = responseResult(secret).put(field, value);
+                assertResponsesFailure(response.toString(), false, "Responses 生成失败或不完整", secret);
+                // Completion status is checked before the shared final-output extractor.
+                assertResponsesFailure(prefix + responseSse(responseCompleted(1, response)), true,
+                        field.equals("status") ? "Responses 结束事件缺少已完成响应"
+                                : "Responses 生成失败或不完整", secret);
+            }
+        }
+        JSONObject refusal = responseResult(secret);
+        refusal.getJSONArray("output").getJSONObject(0).getJSONArray("content")
+                .put(new JSONObject().put("type", "refusal").put("refusal", secret));
+        assertResponsesFailure(refusal.toString(), false, "Responses 拒绝生成译文", secret);
+        assertResponsesFailure(prefix + responseSse(responseCompleted(1, refusal)), true,
+                "Responses 拒绝生成译文", secret);
+    }
+
+    @Test
+    public void responsesFinalMessageStatusAndLaterTextPartsAreValidatedInBothModes() throws Exception {
+        for (String status : new String[]{"failed", "incomplete", "in_progress"}) {
+            JSONObject response = responseResult("你好");
+            response.getJSONArray("output").getJSONObject(0).put("status", status);
+            assertParseError(response.toString());
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(0, 0, 0, "msg_1", "你好"))
+                            + responseSse(responseCompleted(1, response)), true);
+        }
+        for (Object invalid : new Object[]{JSONObject.NULL, 42, true, new JSONArray(), new JSONObject()}) {
+            JSONObject response = responseResult("你好");
+            response.getJSONArray("output").getJSONObject(0).getJSONArray("content")
+                    .put(new JSONObject().put("type", "output_text").put("text", invalid));
+            assertParseError(response.toString());
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(0, 0, 0, "msg_1", "你好"))
+                            + responseSse(responseCompleted(1, response)), true);
+        }
+    }
+
+    @Test
+    public void responsesFinalOutputRejectsMalformedItemsAndContentInBothModes() throws Exception {
+        for (String output : new String[]{"[null]", "[42]", "[{}]", "[{\"type\":42}]",
+                "[{\"type\":\"message\"}]", "[{\"type\":\"message\",\"content\":{}}]",
+                "[{\"type\":\"message\",\"content\":[null]}]",
+                "[{\"type\":\"message\",\"content\":[{}]}]",
+                "[{\"type\":\"message\",\"content\":[{\"type\":42}]}]"}) {
+            JSONObject response = responseResult("").put("output", new JSONArray(output));
+            assertParseError(response.toString());
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseCompleted(0, response)), true);
+        }
+    }
+
+    @Test
+    public void responsesRejectWrapperTagsAssembledAcrossDeltasAndParts() throws Exception {
+        for (String tag : new String[]{"<translate>", "</translate>"}) {
+            String first = tag.substring(0, 5);
+            String second = tag.substring(5) + "你好";
+            JSONObject response = responseResult(first);
+            response.getJSONArray("output").getJSONObject(0).getJSONArray("content")
+                    .put(new JSONObject().put("type", "output_text").put("text", second));
+            assertParseError(response.toString());
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(0, 0, 0, "msg_1", first))
+                            + responseSse(responseDelta(1, 0, 1, "msg_1", second))
+                            + responseSse(responseCompleted(2, response)), true);
+            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseDelta(0, 0, 0, "msg_1", first))
+                            + responseSse(responseDelta(1, 0, 0, "msg_1", second))
+                            + responseSse(responseCompleted(2, responseResult(tag + "你好"))), true);
+        }
+    }
+
+    private static JSONObject responseEvent(String type, int sequence) throws Exception {
+        return new JSONObject().put("type", type).put("sequence_number", sequence);
+    }
+
+    private static JSONObject responseDelta(int sequence, int outputIndex, int contentIndex,
+                                            String itemId, String delta) throws Exception {
+        return responseEvent("response.output_text.delta", sequence)
+                .put("output_index", outputIndex).put("content_index", contentIndex)
+                .put("item_id", itemId).put("delta", delta);
+    }
+
+    private static JSONObject responseResult(String text) throws Exception {
+        return new JSONObject().put("status", "completed").put("output", new JSONArray()
+                .put(new JSONObject().put("type", "message").put("id", "msg_1")
+                        .put("content", new JSONArray().put(new JSONObject()
+                                .put("type", "output_text").put("text", text)))));
+    }
+
+    private static JSONObject responseCompleted(int sequence, Object response) throws Exception {
+        return responseEvent("response.completed", sequence).put("response", response);
+    }
+
+    private static String responseSse(JSONObject frame) {
+        return "data: " + frame + "\n\n";
+    }
+
+    private static void assertResponsesFailure(String body, boolean streaming,
+                                               String expected, String secret) throws Exception {
         try {
-            Protocols.createDecoder(Config.PROTOCOL_OPENAI_RESPONSES, true);
-            fail("Expected CONFIG");
-        } catch (TranslationException e) {
-            assertEquals(TranslationException.Kind.CONFIG, e.kind());
+            decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES, body, streaming);
+            fail("Expected Responses failure");
+        } catch (TranslationException failure) {
+            assertEquals(TranslationException.Kind.PARSE, failure.kind());
+            assertEquals(expected, failure.getMessage());
+            for (String detail : new String[]{secret, "private.invalid", "private-key", "private body"}) {
+                assertFalse(failure.getMessage().contains(detail));
+                assertFalse(failure.toString().contains(detail));
+                assertFalse(failure.userMessage().contains(detail));
+            }
+            assertTrue(failure.getCause() == null);
         }
     }
 

@@ -13,12 +13,14 @@
 | `provider_protocol` | 基础地址后追加端点 | 响应方式 |
 |---|---|---|
 | `openai-compatible`（默认） | `/chat/completions` | JSON `choices.0.message.content` 或 SSE delta |
-| `openai-responses` | `/responses` | 固定 JSON；从 output 的 message 项取 output_text |
+| `openai-responses` | `/responses` | JSON message/output_text 或 SSE response.output_text.delta |
 | `anthropic-messages` | `/messages` | JSON text 块或 SSE；请求 `max_tokens=8192` |
 
 请求按所选协议构造，使用系统 `org.json` 和 `HttpURLConnection`。配置校验解析一次额外请求头，实际请求复用并追加协议认证头。默认提示词按目标语言生成，自定义提示词保持原文；协议层统一附加行段及保留标记规则。
 
-每次请求只创建一个协议 decoder，不切换解析模式。`SseReader` 以空行提交完整事件，支持多行 data、event、注释和 CR/LF/CRLF。Compatible 必须收到 `[DONE]`，Anthropic 必须收到 `message_stop`；结束后不等待 EOF。缺结束事件、错误帧、截断、字段类型错误或包装污染均失败，不接受部分译文。
+每次请求只创建一个协议 decoder，不切换解析模式。`SseReader` 以空行提交完整事件，支持多行 data、event、注释和 CR/LF/CRLF。Compatible 必须收到 `[DONE]`，Responses 必须收到 `response.completed`，Anthropic 必须收到 `message_stop`；结束后不等待 EOF。缺结束事件、错误帧、截断、字段类型错误或包装污染均失败，不接受部分译文。
+
+Responses 按 `output_index`、`content_index` 和 `item_id` 收集文本增量，校验递增事件序号，并逐段核对完成响应；按 output/content 顺序拼接全部 `message/output_text`，跳过 reasoning，拒绝 refusal、failed、incomplete 和完成文本不一致。流式和非流式共用同一个完成文本提取操作，不用 `.done` 快照重复追加或补齐缺失增量。事件格式参见 [OpenAI 流式响应文档](https://developers.openai.com/api/docs/guides/streaming-responses)。
 
 HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单位，UTF-8 严格校验，禁止跟随重定向。非 2xx 仅读取有界 body 供错误分类，不输出 body。引擎在配置校验和构造请求体前登记 `Http.Request`，取消与连接 attach 原子协调，finally 才释放；实际 worker 是否退出由生命周期另行确认。
 
@@ -41,7 +43,7 @@ HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单
 | `api_model` | `gpt-4o-mini` | 模型 |
 | `target_lang` | `简体中文` | 目标语言；旧列表外值继续保留 |
 | `provider_protocol` | `openai-compatible` | 上表三种协议之一 |
-| `streaming_enabled` | true | Compatible/Anthropic 流式开关，Responses 固定非流式 |
+| `streaming_enabled` | true | 三种协议共用的流式请求开关 |
 | `system_prompt` | `Config.DEF_SYSTEM_PROMPT` | 规则式翻译提示词 |
 | `timeout_ms` | 30000 | 正整数；HTTP 实际至少 1000 ms |
 | `max_concurrency` | 4 | 正整数；调度器实际限制为 1–8 |

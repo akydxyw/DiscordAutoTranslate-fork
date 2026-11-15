@@ -87,7 +87,7 @@ public class JsonApiEngineTest {
                 Config.PROTOCOL_ANTHROPIC_MESSAGES, Config.PROTOCOL_OPENAI_RESPONSES};
         for (String protocol : protocols) {
             for (boolean streaming : new boolean[]{true, false}) {
-                boolean sse = streaming && !Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol);
+                boolean sse = streaming;
                 String body;
                 if (Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)) {
                     body = sse ? "data: {\"choices\":[{\"delta\":{\"content\":\" 你好 \"}}]}\n\n"
@@ -99,8 +99,8 @@ public class JsonApiEngineTest {
                             + "data: {\"type\":\"message_stop\"}\n\n"
                             : "{\"content\":[{\"type\":\"text\",\"text\":\" 你好 \"}]}";
                 } else {
-                    body = "{\"output\":[{\"type\":\"message\",\"content\":["
-                            + "{\"type\":\"output_text\",\"text\":\" 你好 \"}]}]}";
+                    body = sse ? responsesDelta(0, " 你好 ") + responsesCompleted(1, " 你好 ")
+                            : responsesJson(" 你好 ");
                 }
                 FakeConnection connection = new FakeConnection(body);
                 AtomicInteger opens = new AtomicInteger();
@@ -114,11 +114,7 @@ public class JsonApiEngineTest {
                 assertTrue(active(engine).isEmpty());
                 assertTrue(connection.disconnected);
                 JSONObject request = new JSONObject(connection.output.toString("UTF-8"));
-                if (!Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)) {
-                    assertEquals(sse, request.getBoolean("stream"));
-                } else {
-                    assertFalse(request.has("stream"));
-                }
+                assertEquals(streaming, request.getBoolean("stream"));
                 assertEquals(sse ? "text/event-stream" : "application/json",
                         connection.getRequestProperty("Accept"));
                 if (Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) {
@@ -128,6 +124,182 @@ public class JsonApiEngineTest {
                     assertEquals("Bearer key", connection.getRequestProperty("Authorization"));
                 }
             }
+        }
+    }
+
+    private static String responsesJson(String text) {
+        return "{\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\","
+                + "\"content\":[{\"type\":\"output_text\",\"text\":" + JSONObject.quote(text) + "}]}]}";
+    }
+
+    private static String responsesDelta(int sequence, String text) {
+        return "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\","
+                + "\"sequence_number\":" + sequence + ",\"output_index\":0,\"content_index\":0,"
+                + "\"item_id\":\"msg_1\",\"delta\":" + JSONObject.quote(text) + "}\n\n";
+    }
+
+    private static String responsesCompleted(int sequence, String text) {
+        return "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":"
+                + sequence + ",\"response\":" + responsesJson(text) + "}\n\n";
+    }
+
+    @Test
+    public void responsesCompletionStopsReadingBeforeEofAndCleansUp() throws Exception {
+        byte[] bytes = (responsesDelta(0, "你好") + responsesCompleted(1, "你好"))
+                .getBytes(StandardCharsets.UTF_8);
+        AtomicInteger reads = new AtomicInteger();
+        FakeConnection connection = new FakeConnection(new InputStream() {
+            @Override public int read() throws IOException {
+                int index = reads.getAndIncrement();
+                if (index >= bytes.length) {
+                    throw new IOException("Must not read past response.completed");
+                }
+                return bytes[index] & 0xff;
+            }
+        });
+        AtomicInteger opens = new AtomicInteger();
+        JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_RESPONSES, true),
+                http(url -> {
+                    opens.incrementAndGet();
+                    assertEquals("https://fake.invalid/v1/responses", url.toString());
+                    return connection;
+                }));
+        assertEquals("你好", engine.translate("hello"));
+        assertEquals(bytes.length, reads.get());
+        assertEquals(1, opens.get());
+        assertTrue(connection.disconnected);
+        assertTrue(active(engine).isEmpty());
+    }
+
+    @Test
+    public void responsesErrorsAndMalformedStreamsRejectPartialTextAndCleanUpOnce() throws Exception {
+        String secret = "private body https://private.invalid/?token=secret Bearer private-key";
+        String prefix = responsesDelta(0, secret);
+        for (String suffix : new String[]{"", "data: [DONE]\n\n", "data: {\n\n",
+                "event: error\ndata: " + JSONObject.quote(secret) + "\n\n",
+                "data: {\"type\":\"error\",\"message\":" + JSONObject.quote(secret) + "}\n\n",
+                "data: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{"
+                        + "\"error\":{\"message\":" + JSONObject.quote(secret) + "}}}\n\n",
+                "data: {\"type\":\"response.incomplete\",\"sequence_number\":1,\"response\":{"
+                        + "\"incomplete_details\":{\"reason\":" + JSONObject.quote(secret) + "}}}\n\n",
+                responsesCompleted(1, "different final text"),
+                responsesCompleted(0, secret)}) {
+            FakeConnection connection = new FakeConnection(prefix + suffix);
+            AtomicInteger opens = new AtomicInteger();
+            JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_RESPONSES, true),
+                    http(url -> { opens.incrementAndGet(); return connection; }));
+            try {
+                engine.translate("hello");
+                fail("Responses failure must reject accumulated text");
+            } catch (TranslationException failure) {
+                assertEquals(TranslationException.Kind.PARSE, failure.kind());
+                for (String detail : new String[]{secret, "private body", "private.invalid", "private-key"}) {
+                    assertFalse(failure.getMessage().contains(detail));
+                    assertFalse(failure.toString().contains(detail));
+                    assertFalse(failure.userMessage().contains(detail));
+                }
+            }
+            assertEquals(1, opens.get());
+            assertTrue(connection.disconnected);
+            assertTrue(active(engine).isEmpty());
+        }
+    }
+
+    @Test
+    public void responsesUseStrictUtf8AndSharedHttpByteLimit() throws Exception {
+        byte[] prefix = responsesDelta(0, "你好").getBytes(StandardCharsets.UTF_8);
+        byte[] invalidUtf8 = java.util.Arrays.copyOf(prefix, prefix.length + 2);
+        invalidUtf8[prefix.length] = (byte) 0xc3;
+        invalidUtf8[prefix.length + 1] = 0x28;
+        byte[] comment = ": 你\n\n".getBytes(StandardCharsets.UTF_8);
+        AtomicInteger bytesRead = new AtomicInteger();
+        InputStream oversized = new InputStream() {
+            @Override public int read() {
+                return comment[bytesRead.getAndIncrement() % comment.length] & 0xff;
+            }
+        };
+        InputStream[] inputs = {new ByteArrayInputStream(invalidUtf8), oversized};
+        String[] messages = {"响应不是合法 UTF-8", "HTTP response exceeds 1 MiB byte limit"};
+        for (int i = 0; i < inputs.length; i++) {
+            FakeConnection connection = new FakeConnection(inputs[i]);
+            AtomicInteger opens = new AtomicInteger();
+            JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_RESPONSES, true),
+                    http(url -> { opens.incrementAndGet(); return connection; }));
+            try {
+                engine.translate("hello");
+                fail("Responses must enforce the shared transport limits");
+            } catch (TranslationException failure) {
+                assertEquals(TranslationException.Kind.PARSE, failure.kind());
+                assertEquals(messages[i], failure.getMessage());
+            }
+            assertEquals(1, opens.get());
+            assertTrue(connection.disconnected);
+            assertTrue(active(engine).isEmpty());
+        }
+        assertEquals(Http.MAX_RESPONSE_BYTES + 1, bytesRead.get());
+    }
+
+    @Test
+    public void responsesCancellationAfterTextDeltaDisconnectsAndClearsRegistration() throws Exception {
+        byte[] prefix = responsesDelta(0, "你好").getBytes(StandardCharsets.UTF_8);
+        CountDownLatch waitingForCompletion = new CountDownLatch(1);
+        CountDownLatch disconnected = new CountDownLatch(1);
+        FakeConnection connection = new FakeConnection(new InputStream() {
+            private int offset;
+            @Override public int read() throws IOException {
+                if (offset < prefix.length) return prefix[offset++] & 0xff;
+                waitingForCompletion.countDown();
+                awaitIgnoringInterrupts(disconnected);
+                throw new IOException("Disconnected before response.completed");
+            }
+        }) {
+            @Override public void disconnect() {
+                super.disconnect();
+                disconnected.countDown();
+            }
+        };
+        AtomicInteger opens = new AtomicInteger();
+        JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_RESPONSES, true),
+                http(url -> { opens.incrementAndGet(); return connection; }));
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread worker = new Thread(() -> {
+            try { engine.translate("hello"); } catch (Throwable e) { failure.set(e); }
+        });
+        worker.start();
+        try {
+            assertTrue(waitingForCompletion.await(5, TimeUnit.SECONDS));
+            assertTrue(active(engine).containsKey(worker));
+            engine.cancel(worker);
+            worker.join(5000);
+            assertFalse(worker.isAlive());
+            assertCancelled(failure.get());
+            assertEquals(1, opens.get());
+            assertTrue(connection.disconnected);
+            assertTrue(active(engine).isEmpty());
+        } finally {
+            engine.cancel(worker);
+            worker.join(5000);
+        }
+    }
+
+    @Test
+    public void responsesModeMismatchIsRejectedWithoutRetry() throws Exception {
+        for (boolean streaming : new boolean[]{true, false}) {
+            String body = streaming ? responsesJson("你好")
+                    : responsesDelta(0, "你好") + responsesCompleted(1, "你好");
+            FakeConnection connection = new FakeConnection(body);
+            AtomicInteger opens = new AtomicInteger();
+            JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_RESPONSES, streaming),
+                    http(url -> { opens.incrementAndGet(); return connection; }));
+            try {
+                engine.translate("hello");
+                fail("The selected Responses mode must reject the other response format");
+            } catch (TranslationException failure) {
+                assertEquals(TranslationException.Kind.PARSE, failure.kind());
+            }
+            assertEquals(1, opens.get());
+            assertTrue(connection.disconnected);
+            assertTrue(active(engine).isEmpty());
         }
     }
 

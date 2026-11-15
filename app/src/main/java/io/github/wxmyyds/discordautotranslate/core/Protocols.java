@@ -6,6 +6,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * 内置供应商协议：按 {@link Config#KEY_PROTOCOL} 构造请求体、
  * 解析请求端点并从响应中提取译文。
@@ -21,10 +24,10 @@ import org.json.JSONObject;
  *       频率惩罚抑制重复 token，而广告/刷屏类原文本身就是大段重复，惩罚会
  *       促使模型跳过或改写重复段落，与「逐块照译、保留重复」直接冲突。</li>
  *   <li>{@link Config#PROTOCOL_OPENAI_RESPONSES}：{@code POST /v1/responses}，
- *       请求体为 {@code instructions} + {@code input} + {@code temperature:0}。
- *       保持非流式（其流式事件格式不同，暂未支持）。
- *       译文在 {@code output} 数组中按类型扫描（推理模型会把 reasoning 项排在
- *       message 项之前，不能固定取 {@code output.0}）。</li>
+ *       请求体为 {@code instructions} + {@code input} + {@code temperature:0} +
+ *       {@code stream}。流式按 {@code response.output_text.delta} 收集文本，
+ *       {@code response.completed} 校验完成；两种模式都按 {@code output} 中的
+ *       message/output_text 顺序提取译文，跳过 reasoning 项。</li>
  *   <li>{@link Config#PROTOCOL_ANTHROPIC_MESSAGES}：{@code POST /v1/messages}，
  *       请求体为顶层 {@code system} + {@code messages}（仅 user）+
  *       {@code max_tokens}（必填）+ {@code stream} 由设置开关决定。译文取
@@ -83,10 +86,9 @@ public final class Protocols {
     /**
      * 构造请求体 JSON。
      *
-     * <p>Compatible 协议与 Anthropic Messages 根据 {@code streaming} 携带
-     * {@code stream:true/false}。流式时 token 持续到达，读超时按字节间隔计算；
-     * 非流式接口在生成完成前零字节返回。Responses 协议保持非流式（其流式
-     * 事件格式暂未支持）。</p>
+     * <p>全部协议根据 {@code streaming} 携带 {@code stream:true/false}。
+     * 流式时 token 持续到达，读超时按字节间隔计算；非流式接口可能在生成完成前
+     * 零字节返回。每种协议使用各自的响应事件格式。</p>
      *
      * @throws TranslationException 配置值无效或 org.json 拒绝请求值时发生
      */
@@ -108,10 +110,7 @@ public final class Protocols {
             JSONObject body = new JSONObject();
             body.put("model", model);
             if (Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)) {
-                if (streaming) {
-                    throw new TranslationException(TranslationException.Kind.CONFIG,
-                            "OpenAI Responses 当前只支持非流式请求");
-                }
+                body.put("stream", streaming);
                 body.put("instructions", prompt);
                 body.put("input", wrapped);
                 body.put("temperature", TEMPERATURE);
@@ -188,6 +187,7 @@ public final class Protocols {
     /** 是否该协议支持本模块当前实现的流式响应格式。 */
     public static boolean supportsStreaming(String protocol) {
         return Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)
+                || Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
                 || Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol);
     }
 
@@ -199,10 +199,6 @@ public final class Protocols {
                 && !Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) {
             throw new TranslationException(TranslationException.Kind.CONFIG,
                     "不支持的供应商协议");
-        }
-        if (streaming && !supportsStreaming(protocol)) {
-            throw new TranslationException(TranslationException.Kind.CONFIG,
-                    "OpenAI Responses 当前只支持非流式响应");
         }
         return streaming ? new StreamingDecoder(protocol) : new JsonDecoder(protocol);
     }
@@ -240,12 +236,15 @@ public final class Protocols {
 
     private static final class StreamingDecoder implements Http.ResponseDecoder {
         private final boolean anthropic;
+        @Nullable private final ResponsesStream responses;
         private final SseReader reader;
         private final StringBuilder text = new StringBuilder();
         private boolean complete;
 
         StreamingDecoder(String protocol) {
             anthropic = Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol);
+            responses = Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
+                    ? new ResponsesStream() : null;
             reader = new SseReader(this::onEvent);
         }
 
@@ -262,7 +261,7 @@ public final class Protocols {
             if ("error".equals(event)) {
                 throw parseError("服务返回流式错误事件");
             }
-            if (!anthropic && "[DONE]".equals(data)) {
+            if (!anthropic && responses == null && "[DONE]".equals(data)) {
                 complete = true;
                 return;
             }
@@ -274,7 +273,13 @@ public final class Protocols {
             if (frame.has("error") || "error".equals(optionalString(frame.opt("type"), "type"))) {
                 throw parseError("服务返回流式错误事件");
             }
-            if (anthropic) {
+            if (responses != null) {
+                String result = responses.accept(event, frame);
+                if (result != null) {
+                    text.append(result);
+                    complete = true;
+                }
+            } else if (anthropic) {
                 acceptAnthropic(event, frame);
             } else {
                 acceptChat(frame);
@@ -346,10 +351,80 @@ public final class Protocols {
         public String finish() throws TranslationException {
             if (!complete) {
                 throw parseError("流式响应不完整：未收到结束事件（"
-                        + (anthropic ? "message_stop" : "[DONE]") + "）");
+                        + (responses != null ? "response.completed"
+                                : anthropic ? "message_stop" : "[DONE]") + "）");
             }
             return rejectTranslateTags(text.toString());
         }
+    }
+
+    /** Per-request Responses deltas; final output must match every captured content part. */
+    private static final class ResponsesStream {
+        private final Map<Long, ResponseText> parts = new HashMap<>();
+        private long sequence = -1;
+
+        @Nullable
+        String accept(String event, JSONObject frame) throws TranslationException {
+            String type = JsonPath.requireString(frame.opt("type"), "type");
+            if (!event.isEmpty() && !event.equals(type)) {
+                throw parseError("Responses event 与 type 不一致");
+            }
+            long next = responseIndex(frame.opt("sequence_number"));
+            if (next <= sequence) {
+                throw parseError("Responses 事件顺序无效");
+            }
+            sequence = next;
+            if ("response.failed".equals(type) || "response.incomplete".equals(type)) {
+                throw parseError("Responses 生成失败或不完整");
+            }
+            if ("response.refusal.delta".equals(type) || "response.refusal.done".equals(type)) {
+                throw parseError("Responses 拒绝生成译文");
+            }
+            if ("response.output_text.delta".equals(type)) {
+                long key = responsePartKey(responseIndex(frame.opt("output_index")),
+                        responseIndex(frame.opt("content_index")));
+                String id = JsonPath.requireString(frame.opt("item_id"), "item_id");
+                String delta = JsonPath.requireString(frame.opt("delta"), "delta");
+                ResponseText part = parts.get(key);
+                if (part == null) {
+                    part = new ResponseText(id);
+                    parts.put(key, part);
+                } else if (!part.itemId.equals(id)) {
+                    throw parseError("Responses 文本项身份不一致");
+                }
+                part.text.append(delta);
+            } else if ("response.completed".equals(type)) {
+                JSONObject response = optionalObject(frame.opt("response"), "response");
+                if (response == null || !"completed".equals(
+                        JsonPath.requireString(response.opt("status"), "response.status"))) {
+                    throw parseError("Responses 结束事件缺少已完成响应");
+                }
+                return extractResponsesText(response, parts);
+            }
+            // Lifecycle, reasoning, tool and done snapshots are not additional translated text.
+            return null;
+        }
+    }
+
+    private static final class ResponseText {
+        final String itemId;
+        final StringBuilder text = new StringBuilder();
+        ResponseText(String itemId) { this.itemId = itemId; }
+    }
+
+    private static int responseIndex(Object value) throws TranslationException {
+        if (!(value instanceof Integer) && !(value instanceof Long)) {
+            throw parseError("Responses 事件索引不是整数");
+        }
+        long index = ((Number) value).longValue();
+        if (index < 0 || index > Integer.MAX_VALUE) {
+            throw parseError("Responses 事件索引超出范围");
+        }
+        return (int) index;
+    }
+
+    private static long responsePartKey(int outputIndex, int contentIndex) {
+        return ((long) outputIndex << 32) | contentIndex;
     }
 
     @Nullable
@@ -413,44 +488,66 @@ public final class Protocols {
         return out.toString();
     }
 
-    /**
-     * Responses 协议提取：在 {@code output} 数组中找 {@code type=="message"} 的项，
-     * 再在其 {@code content} 数组中找 {@code type=="output_text"} 的文本。
-     *
-     * <p>结构依据 OpenAI 官方参考（推理模型的 reasoning 项排在 message 项之前），
-     * 因此按下标类型扫描而非固定路径。找到的文本即使为空也原样返回，
-     * 由引擎统一给出“提取到的译文为空”错误。</p>
-     */
+    /** Both response modes extract all message/output_text parts in output order. */
     private static String extractResponsesText(String responseBody) throws TranslationException {
         Object root = JsonPath.parse(responseBody);
         if (!(root instanceof JSONObject)) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "Responses 响应不是 JSON 对象");
+            throw parseError("Responses 响应不是 JSON 对象");
         }
-        JSONArray output = ((JSONObject) root).optJSONArray("output");
+        return extractResponsesText((JSONObject) root, null);
+    }
+
+    private static String extractResponsesText(JSONObject response,
+            @Nullable Map<Long, ResponseText> streamed) throws TranslationException {
+        String status = optionalString(response.opt("status"), "status");
+        if ((status != null && !"completed".equals(status))
+                || (response.has("error") && !response.isNull("error"))
+                || (response.has("incomplete_details") && !response.isNull("incomplete_details"))) {
+            throw parseError("Responses 生成失败或不完整");
+        }
+        JSONArray output = response.optJSONArray("output");
         if (output == null) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "Responses 响应缺少 output 数组");
+            throw parseError("Responses 响应缺少 output 数组");
         }
+        StringBuilder text = new StringBuilder();
+        boolean found = false;
+        int matched = 0;
         for (int i = 0; i < output.length(); i++) {
             JSONObject item = output.optJSONObject(i);
-            if (item == null || !"message".equals(item.optString("type"))) {
+            if (item == null) throw parseError("Responses output 项不是对象");
+            if (!"message".equals(JsonPath.requireString(item.opt("type"), "output.type"))) {
                 continue;
+            }
+            String itemStatus = optionalString(item.opt("status"), "output.status");
+            if (itemStatus != null && !"completed".equals(itemStatus)) {
+                throw parseError("Responses 消息未完成");
             }
             JSONArray content = item.optJSONArray("content");
-            if (content == null) {
-                continue;
-            }
+            if (content == null) throw parseError("Responses message 缺少 content 数组");
             for (int j = 0; j < content.length(); j++) {
                 JSONObject part = content.optJSONObject(j);
-                if (part == null || !"output_text".equals(part.optString("type"))) {
-                    continue;
+                if (part == null) throw parseError("Responses content 项不是对象");
+                String type = JsonPath.requireString(part.opt("type"), "content.type");
+                if ("refusal".equals(type)) throw parseError("Responses 拒绝生成译文");
+                if (!"output_text".equals(type)) continue;
+                String value = JsonPath.requireString(part.opt("text"), "content.text");
+                if (streamed != null) {
+                    ResponseText captured = streamed.get(responsePartKey(i, j));
+                    String id = JsonPath.requireString(item.opt("id"), "output.id");
+                    if (captured == null ? !value.isEmpty()
+                            : !captured.itemId.equals(id) || !value.contentEquals(captured.text)) {
+                        throw parseError("Responses 增量文本与完成响应不一致");
+                    }
+                    if (captured != null) matched++;
                 }
-                return JsonPath.requireString(part.opt("text"),
-                        "output." + i + ".content." + j + ".text");
+                found = true;
+                text.append(value);
             }
         }
-        throw new TranslationException(TranslationException.Kind.PARSE,
-                "Responses 响应中未找到 message/output_text 文本");
+        if (!found) throw parseError("Responses 响应中未找到 message/output_text 文本");
+        if (streamed != null && matched != streamed.size()) {
+            throw parseError("Responses 完成响应缺少已接收文本项");
+        }
+        return text.toString();
     }
 }

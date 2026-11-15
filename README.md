@@ -28,7 +28,7 @@ Discord Android 的 LSPosed 自动翻译模块，基于 LibXposed API 102。消�
 3. 保存设置，强制停止并重启 Discord。模块尚未启用时也可先保存，服务连接后同步。
 4. 使用“配置检查”检查格式，“测试连接”或“测试翻译”验证实际请求。
 
-API 基础地址示例：`https://api.openai.com/v1`，协议端点由模块追加。支持 OpenAI Compatible、OpenAI Responses、Anthropic Messages；Responses 固定使用非流式响应。
+API 基础地址示例：`https://api.openai.com/v1`，协议端点由模块追加。支持 OpenAI Compatible、OpenAI Responses、Anthropic Messages，均可选择流式或非流式请求。
 
 “启用自动翻译”默认开启。“启用项目日志”默认关闭，统一控制 logcat 和 LSPosed 中本项目产生的诊断，包括启动及错误日志。**保存后重启 Discord 生效**；同步失败时先处理设置页提示。关闭日志不会删除已有日志，也不控制 Discord 或框架自身输出。
 
