@@ -363,6 +363,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
 
     // ------------------------------------------------------------ UI 构建
 
+    @SuppressWarnings("deprecation") // Platform ActionBar dispatches its height via legacy content insets.
     private View buildContentView() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -521,6 +522,13 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         root.addView(resultText, matchWrap());
 
         ScrollView scroll = new ScrollView(this);
+        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+            // These content insets include the native ActionBar, unlike raw system-bar bounds.
+            // Pad the viewport so its first/last controls remain reachable at the scroll limits.
+            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets.consumeSystemWindowInsets();
+        });
         scroll.addView(root, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return scroll;
