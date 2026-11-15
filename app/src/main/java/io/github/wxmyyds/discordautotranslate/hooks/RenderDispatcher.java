@@ -118,8 +118,7 @@ public final class RenderDispatcher {
             if (previous == null) RERENDERING.remove(); else RERENDERING.set(previous);
         }
         HookDiagnostics.info("rerender method completed viewAttached="
-                + (view != null && view.isAttachedToWindow())
-                + " viewHeight=" + (view == null ? -1 : view.getHeight()));
+                + (view != null && view.isAttachedToWindow()));
         // 回复引用的调用目标是容器，真正需要重新绑定的是内部正文视图。
         RowRefresher.postInvalidateRow(HookBridge.get()::messageIdOf, messageId, view);
     }

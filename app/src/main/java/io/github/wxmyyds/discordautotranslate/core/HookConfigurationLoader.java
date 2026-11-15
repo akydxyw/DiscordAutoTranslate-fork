@@ -5,11 +5,12 @@ import androidx.annotation.Nullable;
 import org.json.JSONException;
 
 import java.io.BufferedReader;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;import java.io.IOException;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /** Loads the exact hook profile matching the installed Discord version. */
 public final class HookConfigurationLoader {

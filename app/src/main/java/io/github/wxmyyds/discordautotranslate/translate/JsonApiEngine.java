@@ -54,8 +54,8 @@ public final class JsonApiEngine implements Scheduler.Engine {
             if (text == null || text.trim().isEmpty()) {
                 throw new TranslationException(TranslationException.Kind.EMPTY, "原文为空，无需翻译");
             }
-            validateConfig(cfg);
-            String translated = requestOnce(text, request);
+            Http.Headers headers = validateConfig(cfg);
+            String translated = requestOnce(text, request, headers);
             String violation = Segments.plainTextViolation(translated, text);
             if (violation != null) {
                 throw new TranslationException(TranslationException.Kind.PARSE,
@@ -74,14 +74,15 @@ public final class JsonApiEngine implements Scheduler.Engine {
     /**
      * 发送一次请求并返回协议提取后的译文。
      */
-    private String requestOnce(String text, Http.Request request) throws Exception {
+    private String requestOnce(String text, Http.Request request, Http.Headers headers)
+            throws Exception {
         // 1) 单一输入按协议构造请求体；已保存提示词也追加原样保留结构标记的规则。
         boolean sse = Protocols.supportsStreaming(cfg.protocol) && cfg.streaming;
         String systemPrompt = Config.DEF_SYSTEM_PROMPT.equals(cfg.systemPrompt)
                 ? Config.defaultSystemPromptFor(cfg.targetLang) : cfg.systemPrompt;
         String body = Protocols.requestBody(cfg.protocol, text, systemPrompt, cfg.model,
                 sse);
-        Http.Headers headers = buildHeaders();
+        buildHeaders(headers);
 
         // Decoder selection is fixed for this request; no reparsing or mode detection.
         request.checkCancelled();
@@ -126,8 +127,10 @@ public final class JsonApiEngine implements Scheduler.Engine {
      *
      * <p>抽成静态方法供设置页的离线自检复用，避免两处各写一套校验而产生不一致。
      * 请求体与译文提取由 {@link Protocols} 按协议内置实现，无需再校验模板与路径。</p>
+     *
+     * @return 已解析的额外请求头，真实请求在同一对象上追加协议认证头
      */
-    public static void validateConfig(Config.Snapshot cfg) throws TranslationException {
+    public static Http.Headers validateConfig(Config.Snapshot cfg) throws TranslationException {
         if (cfg.configError != null) {
             throw new TranslationException(TranslationException.Kind.CONFIG, cfg.configError);
         }
@@ -139,17 +142,16 @@ public final class JsonApiEngine implements Scheduler.Engine {
             throw new TranslationException(TranslationException.Kind.CONFIG,
                     "API URL 必须以 http:// 或 https:// 开头");
         }
-        Http.Headers.parse(cfg.extraHeaders);
+        return Http.Headers.parse(cfg.extraHeaders);
     }
 
     /**
-     * 构造请求头。用户在额外请求头里已自定义的同名头不覆盖。
+     * 在已校验、已解析的请求头上追加协议头。用户已自定义的同名头不覆盖。
      *
      * <p>OpenAI 系协议用 {@code Authorization: Bearer}；Anthropic Messages
      * 用 {@code x-api-key} 且必须携带版本头 {@code anthropic-version}。</p>
      */
-    private Http.Headers buildHeaders() throws TranslationException {
-        Http.Headers headers = Http.Headers.parse(cfg.extraHeaders);
+    private void buildHeaders(Http.Headers headers) {
         boolean anthropic = Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(cfg.protocol);
         if (cfg.apiKey != null && !cfg.apiKey.trim().isEmpty()) {
             if (anthropic) {
@@ -163,7 +165,6 @@ public final class JsonApiEngine implements Scheduler.Engine {
         if (anthropic && headers.get("anthropic-version") == null) {
             headers.add("anthropic-version", "2023-06-01");
         }
-        return headers;
     }
 
     /** 把 HTTP 错误映射为用户可读、且不暴露服务端响应正文的异常。 */

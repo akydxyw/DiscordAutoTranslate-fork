@@ -59,10 +59,12 @@ public final class Segments {
         if (!RetainedNodeMarkers.matchesSource(translated, source)) {
             return "保留节点定位标记无效";
         }
-        if (RetainedNodeMarkers.withoutMarkers(translated).trim().isEmpty()) return "译文为空";
-        int n = RetainedNodeMarkers.withoutMarkers(source).length();
+        String sourceWithoutKeep = RetainedNodeMarkers.withoutMarkers(source);
+        String translationWithoutKeep = RetainedNodeMarkers.withoutMarkers(translated);
+        if (translationWithoutKeep.trim().isEmpty()) return "译文为空";
+        int n = sourceWithoutKeep.length();
         if (n >= 40) {
-            int m = RetainedNodeMarkers.withoutMarkers(translated).length();
+            int m = translationWithoutKeep.length();
             if (m * 4 < n) {
                 return "译文长度异常（" + m + "/" + n + "）：疑似内容丢失";
             }

@@ -307,11 +307,6 @@ public final class HookConfiguration {
         return hook != null && hook.optBoolean("enabled", true);
     }
 
-    public int requiredHookCount() {
-        JSONArray required = root.optJSONArray("requiredHooks");
-        return required == null ? 0 : required.length();
-    }
-
     public boolean hasAllRequiredTargets(ClassLoader hostClassLoader) {
         JSONArray required = root.optJSONArray("requiredHooks");
         if (required == null) {

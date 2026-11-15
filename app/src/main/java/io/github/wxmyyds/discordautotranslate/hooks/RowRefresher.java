@@ -227,8 +227,7 @@ final class RowRefresher {
                 return false;
             }
             HookDiagnostics.info("row refresh adapters notified content=" + contentNotified
-                    + " contentPosition=" + contentPosition
-                    + " rowPosition=" + notifyPosition);
+                    + " row=" + rowNotified);
             boolean contentUpdatesConsumed = contentNotified
                     && consumeRecyclerPendingUpdates(contentRecycler);
             boolean rowUpdatesConsumed = consumeRecyclerPendingUpdates(rowRecycler);
@@ -236,10 +235,7 @@ final class RowRefresher {
                     + contentUpdatesConsumed + " outer=" + rowUpdatesConsumed);
             HookDiagnostics.infoOnce("rowRefresh.outerAdapterNotified",
                     "outer chat adapter notified; recyclerClass="
-                            + rowRecycler.getClass().getName()
-                            + " bindingPosition=" + bindingPosition
-                            + " absolutePosition=" + absolutePosition
-                            + " notifyPosition=" + notifyPosition);
+                            + rowRecycler.getClass().getName());
             requestLayoutChain(messageRow);
             return true;
         } catch (Throwable t) {

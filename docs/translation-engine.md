@@ -11,6 +11,12 @@
 
 完整语言识别可参考 [Google ML Kit Language Identification](https://developers.google.com/ml-kit/language/identification/android)：官方支持 100 多种语言；打包模型约增加 900 KB，Play Services 版本需等待模型下载。当前方案不引入此依赖，以免 Discord 进程内的模型加载/首次可用性成为翻译前置条件。
 
+## 校验与诊断清理
+
+- validateConfig 返回本次已解析请求头，translate → requestOnce 复用同一对象追加协议认证头；离线自检调用同一验证，不新增备用路径。
+- 语言检测删除精确生成的格式标签而不插空格拆词，保留节点标记仍以空格掩蔽；请求正文不变。Verdict.reason 仅固定枚举，不携带字母数、比例或目标语言配置。
+- 流式 finish_reason/stop_reason 异常只返回固定描述，不拼接服务端值；未知异常状态描述仅保留异常类型。重渲染/行刷新日志不输出高度或位置，入口不传原始异常给日志。
+
 ## 保留叶节点位置协议
 
 统一富文本输入用 `<keepN/>` 表示捕获的保留叶节点出现位置，包括行内/块代码、提及、时间戳和未知不透明节点；内部内容不读取、不提交。协议构造统一追加保留规则，已保存/自定义提示词同样适用；模型必须按原位置、数量和顺序回带标记，不得改名或移入样式标记。引擎与原生回填共用 RetainedNodeMarkers 语法校验，删除旧 InlineCodeMarkers 及空格占位分支；损坏时明确拒绝，不补标记或另试请求。自然语言检测用空白掩蔽标记以保留词边界，长度比例不统计结构标记字符；API 测试和 Primitive 文本不产生宿主结构标记。保留节点本身没有翻译槽，纯结构或 codeHeavy 自动过滤规则不变。

@@ -42,6 +42,16 @@ public class TranslationResultOwnershipTest {
         assertFalse(entry.lastError.contains("private"));
     }
 
+    @Test public void unexpectedExceptionMessagesNeverEnterStateDescription() {
+        StateStore.Entry entry = store.obtain("row", "hash");
+        bridge.onTranslateResult(store.begin(entry), true, null,
+                new IllegalStateException("private body https://private.invalid/secret",
+                        new RuntimeException("private cause")));
+        assertEquals(StateStore.Status.FAILED, entry.status);
+        assertEquals("IllegalStateException", entry.lastError);
+        assertNull(TranslationCache.get().get("hash"));
+    }
+
     @Test public void nativeRenderRejectionInvalidatesOnlyTheMatchingCompletedTranslation() {
         StateStore.Entry entry = store.obtain("row", "hash");
         bridge.onTranslateResult(store.begin(entry), true, "译文", null);

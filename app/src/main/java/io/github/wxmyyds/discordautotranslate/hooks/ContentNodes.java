@@ -649,14 +649,14 @@ public final class ContentNodes {
     }
 
     /**
-     * 译文的可翻译段落块：空行切分，剔除空白块与 URL 块，与回填消费片段
-     * 的口径（ContentTree 捕获的文本分块）一致。
+     * 译文 interval 的段落块：仅剔除空白块。源 URL 已由定位 token 消费，
+     * 剩余 URL 块也是输出，必须参与段落数量校验，不能静默丢弃。
      */
     private static List<String> translatableChunks(String translated) {
         List<String> chunks = new ArrayList<>();
         for (String chunk : BlankLines.split(translated).chunks) {
             String trimmed = chunk.trim();
-            if (!trimmed.isEmpty() && !TextExtractor.isUrlLike(trimmed)) {
+            if (!trimmed.isEmpty()) {
                 chunks.add(trimmed);
             }
         }
@@ -696,7 +696,7 @@ public final class ContentNodes {
         }
 
         List<Boolean> lineBreakFlagsIn(int segStart, int segEnd) {
-            return new ArrayList<>(lineBreakBefore.subList(segStart, segEnd));
+            return lineBreakBefore.subList(segStart, segEnd);
         }
 
         List<Integer> sourceLinesIn(int segStart, int segEnd) {
@@ -705,7 +705,7 @@ public final class ContentNodes {
 
         /** [segStart, segEnd) 范围片段对应的列表项标记子列表。 */
         List<Boolean> listFlagsIn(int segStart, int segEnd) {
-            return new ArrayList<>(listFlags.subList(segStart, segEnd));
+            return listFlags.subList(segStart, segEnd);
         }
     }
 

@@ -42,21 +42,12 @@ public final class PollHooks {
 
     private PollHooks() {}
 
-    public static List<XposedInterface.HookHandle> install(XposedModule module, ClassLoader cl,
-            HookConfiguration config, Set<String> installedHookIds) {
-        List<XposedInterface.HookHandle> handles = new ArrayList<>(4);
-        try {
-            installSetter(module, cl, config, "poll.textSet", false, handles, installedHookIds);
-            installSetter(module, cl, config, "poll.accessibilitySet", true, handles, installedHookIds);
-            installBind(module, cl, config, "poll.bind", false, handles, installedHookIds);
-            installBind(module, cl, config, "poll.answerBind", true, handles, installedHookIds);
-            return handles;
-        } catch (Throwable failure) {
-            for (XposedInterface.HookHandle handle : handles) {
-                try { handle.unhook(); } catch (Throwable ignored) { /* Continue rollback. */ }
-            }
-            throw new IllegalStateException("Poll hook installation failed", failure);
-        }
+    public static void install(XposedModule module, ClassLoader cl, HookConfiguration config,
+            Set<String> installedHookIds, List<XposedInterface.HookHandle> handles) {
+        installSetter(module, cl, config, "poll.textSet", false, handles, installedHookIds);
+        installSetter(module, cl, config, "poll.accessibilitySet", true, handles, installedHookIds);
+        installBind(module, cl, config, "poll.bind", false, handles, installedHookIds);
+        installBind(module, cl, config, "poll.answerBind", true, handles, installedHookIds);
     }
 
     private static Method target(HookConfiguration config, String id, ClassLoader cl) {
@@ -108,8 +99,7 @@ public final class PollHooks {
                         if (RenderDispatcher.isRerendering()) {
                             // An answer's saved adapter position may now name another slot or text.
                             // Never replay it merely because it still belongs to the same poll row.
-                            if (key == null || !key.equals(bridge.directMessageIdOf(view))
-                                    || PollCardState.forKey(key) == null) return null;
+                            if (!PollCardState.canReplay(key, bridge.directMessageIdOf(view))) return null;
                         } else {
                             if (key != null) {
                                 bridge.bindView(view, key);

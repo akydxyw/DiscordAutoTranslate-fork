@@ -132,6 +132,177 @@ public class JsonApiEngineTest {
     }
 
     @Test
+    public void validatedExtraHeadersAreUsedWithNativeAuthWithoutOverwritingOverrides()
+            throws Exception {
+        for (String protocol : new String[]{Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_ANTHROPIC_MESSAGES, Config.PROTOCOL_OPENAI_RESPONSES}) {
+            boolean anthropic = Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol);
+            for (String extras : new String[]{"", "# comment\nX-Tenant: tenant-value",
+                    "X-Tenant: tenant-value\n"
+                            + (anthropic ? "X-Api-Key: custom-key\nAnthropic-Version: custom-version"
+                            : "authorization: custom-auth")}) {
+                Config.Snapshot cfg = Config.read(new MemoryPrefs()
+                        .put(Config.KEY_API_URL, "https://fake.invalid/v1")
+                        .put(Config.KEY_API_KEY, " key ")
+                        .put(Config.KEY_PROTOCOL, protocol)
+                        .put(Config.KEY_STREAMING, false)
+                        .put(Config.KEY_EXTRA_HEADERS, extras));
+                Http.Headers validated = JsonApiEngine.validateConfig(cfg);
+                assertTrue(ApiTester.selfCheck(cfg).ok);
+                boolean overrides = extras.contains("custom-");
+                assertEquals(extras.isEmpty() ? null : "tenant-value", validated.get("X-Tenant"));
+                assertEquals(overrides ? (anthropic ? "custom-key" : "custom-auth") : null,
+                        validated.get(anthropic ? "x-api-key" : "Authorization"));
+                String body = anthropic ? "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}]}"
+                        : Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
+                        ? "{\"output\":[{\"type\":\"message\",\"content\":["
+                                + "{\"type\":\"output_text\",\"text\":\"你好\"}]}]}"
+                        : "{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}";
+                FakeConnection connection = new FakeConnection(body);
+                AtomicInteger opens = new AtomicInteger();
+                JsonApiEngine engine = new JsonApiEngine(cfg, http(url -> {
+                    opens.incrementAndGet();
+                    return connection;
+                }));
+                assertEquals("你好", engine.translate("hello"));
+                assertEquals(1, opens.get());
+                assertEquals(extras.isEmpty() ? null : "tenant-value",
+                        connection.getRequestProperty("X-Tenant"));
+                if (anthropic) {
+                    assertEquals(overrides ? "custom-key" : "key",
+                            connection.getRequestProperty(overrides ? "X-Api-Key" : "x-api-key"));
+                    assertEquals(overrides ? "custom-version" : "2023-06-01",
+                            connection.getRequestProperty(overrides
+                                    ? "Anthropic-Version" : "anthropic-version"));
+                } else {
+                    assertEquals(overrides ? "custom-auth" : "Bearer key",
+                            connection.getRequestProperty(overrides
+                                    ? "authorization" : "Authorization"));
+                }
+                assertTrue(active(engine).isEmpty());
+                assertTrue(connection.disconnected);
+            }
+        }
+    }
+
+    @Test
+    public void invalidExtraHeadersFailOfflineAndActualValidationWithoutOpeningIo()
+            throws Exception {
+        for (String extras : new String[]{"Authorization Bearer private-secret", ": value",
+                "Invalid Header: value", "X-Header@: value"}) {
+            Config.Snapshot cfg = Config.read(new MemoryPrefs()
+                    .put(Config.KEY_API_URL, "https://fake.invalid/v1")
+                    .put(Config.KEY_EXTRA_HEADERS, extras));
+            assertFalse(ApiTester.selfCheck(cfg).ok);
+            String offlineMessage = null;
+            try {
+                JsonApiEngine.validateConfig(cfg);
+                fail("Expected header validation error");
+            } catch (TranslationException e) {
+                assertEquals(TranslationException.Kind.CONFIG, e.kind());
+                offlineMessage = e.getMessage();
+                assertFalse(e.userMessage().contains("private-secret"));
+            }
+            AtomicInteger opens = new AtomicInteger();
+            JsonApiEngine engine = new JsonApiEngine(cfg, http(url -> {
+                opens.incrementAndGet();
+                throw new IOException("Must not open");
+            }));
+            try {
+                engine.translate("hello");
+                fail("Expected same header validation error");
+            } catch (TranslationException e) {
+                assertEquals(TranslationException.Kind.CONFIG, e.kind());
+                assertEquals(offlineMessage, e.getMessage());
+                assertFalse(e.userMessage().contains("private-secret"));
+            }
+            assertEquals(0, opens.get());
+            assertTrue(active(engine).isEmpty());
+        }
+    }
+
+    @Test
+    public void cancellationAndEmptyInputStillPrecedeUrlAndHeaderValidation() throws Exception {
+        Config.Snapshot cfg = Config.read(new MemoryPrefs()
+                .put(Config.KEY_API_URL, "invalid-url")
+                .put(Config.KEY_EXTRA_HEADERS, "malformed-header"));
+        AtomicInteger opens = new AtomicInteger();
+        JsonApiEngine engine = new JsonApiEngine(cfg, http(url -> {
+            opens.incrementAndGet();
+            throw new IOException("Must not open");
+        }));
+        Thread.currentThread().interrupt();
+        try {
+            engine.translate(" ");
+            fail("Cancellation must precede input and config validation");
+        } catch (TranslationException e) {
+            assertEquals(TranslationException.Kind.CANCELLED, e.kind());
+        } finally {
+            Thread.interrupted();
+        }
+        for (String input : new String[]{null, "", " \n\t "}) {
+            try {
+                engine.translate(input);
+                fail("Empty input must precede config validation");
+            } catch (TranslationException e) {
+                assertEquals(TranslationException.Kind.EMPTY, e.kind());
+            }
+        }
+        try {
+            engine.translate("hello");
+            fail("URL validation must precede header validation");
+        } catch (TranslationException e) {
+            assertEquals(TranslationException.Kind.CONFIG, e.kind());
+            assertEquals("API URL 必须以 http:// 或 https:// 开头", e.getMessage());
+        }
+        assertEquals(0, opens.get());
+        assertTrue(active(engine).isEmpty());
+    }
+
+    @Test
+    public void maliciousStreamingReasonsRejectOnceWithoutExceptionOrUserMessageLeakage()
+            throws Exception {
+        String privateBody = "private response 正文";
+        String privateUrl = "https://private.invalid/v1?token=private-token";
+        String privateSecret = "Bearer private-secret";
+        String quoted = JSONObject.quote(privateBody + "\n" + privateUrl + "\n" + privateSecret);
+        String[] protocols = {Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_ANTHROPIC_MESSAGES};
+        String[] bodies = {
+                "data: {\"choices\":[{\"delta\":{\"content\":" + quoted + "}}]}\n\n"
+                        + "data: {\"choices\":[{\"finish_reason\":" + quoted + "}]}\n\n"
+                        + "data: [DONE]\n\n",
+                "data: {\"type\":\"content_block_delta\","
+                        + "\"delta\":{\"type\":\"text_delta\",\"text\":" + quoted + "}}\n\n"
+                        + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":"
+                        + quoted + "}}\n\n"
+                        + "data: {\"type\":\"message_stop\"}\n\n"};
+        for (int i = 0; i < protocols.length; i++) {
+            FakeConnection connection = new FakeConnection(bodies[i]);
+            AtomicInteger opens = new AtomicInteger();
+            JsonApiEngine engine = new JsonApiEngine(config(protocols[i], true), http(url -> {
+                opens.incrementAndGet();
+                return connection;
+            }));
+            try {
+                engine.translate("hello");
+                fail("Malicious reason must reject accumulated text");
+            } catch (TranslationException e) {
+                assertEquals(TranslationException.Kind.PARSE, e.kind());
+                for (String detail : new String[]{privateBody, privateUrl, privateSecret}) {
+                    assertFalse(e.getMessage().contains(detail));
+                    assertFalse(e.toString().contains(detail));
+                    assertFalse(e.userMessage().contains(detail));
+                }
+                assertTrue(e.getCause() == null);
+            }
+            assertEquals(1, opens.get());
+            assertTrue(connection.disconnected);
+            assertTrue(active(engine).isEmpty());
+        }
+    }
+
+    @Test
     public void rawHttpErrorsAreClassifiedBeforeSuccessParsingWithoutBodyLeakage() throws Exception {
         for (int status : new int[]{302, 401, 403, 429, 500}) {
             FakeConnection connection = new FakeConnection("secret non-SSE body");

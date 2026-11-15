@@ -44,8 +44,9 @@ public final class RetainedNodeMarkers {
         return EXACT.matcher(text).replaceAll("");
     }
 
-    /** Detection only: preserve lexical separation so adjacent URL/text are not merged. */
+    /** Detection only: unwrap styles without splitting words; anchors keep adjacent URL/text apart. */
     public static String maskedForDetection(String text) {
+        text = STYLE.matcher(text).replaceAll("");
         return EXACT.matcher(text).replaceAll(" ");
     }
 

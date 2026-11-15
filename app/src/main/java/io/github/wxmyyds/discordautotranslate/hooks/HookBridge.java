@@ -385,7 +385,7 @@ public final class HookBridge {
                 cfg.targetLang);
         if (!v.shouldTranslate) {
             HookDiagnostics.infoOnce("translation.languageSkip", "translation skipped by language detector"
-                    + " reason=" + v.reason + " textNodes=" + ex.textNodeCount
+                    + " reason=" + v.reason.name() + " textNodes=" + ex.textNodeCount
                     + " opaqueNodes=" + ex.opaqueNodeCount);
             return;
         }
@@ -433,8 +433,7 @@ public final class HookBridge {
         if (t instanceof TranslationException) {
             return ((TranslationException) t).userMessage();
         }
-        return t.getClass().getSimpleName()
-                + (t.getMessage() == null ? "" : ": " + t.getMessage());
+        return t.getClass().getSimpleName();
     }
 
     /** 富文本结构未能按严格规则重建时，将网络成功转换为可见翻译失败。 */

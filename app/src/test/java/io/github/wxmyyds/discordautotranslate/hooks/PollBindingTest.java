@@ -5,6 +5,8 @@ import static org.junit.Assert.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
+import org.junit.Before;
+import org.junit.After;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -15,6 +17,19 @@ import java.util.List;
 public class PollBindingTest {
     private static final String ROW = "123456789012345678";
     private static final String OTHER_ROW = "987654321098765432";
+
+    @Before public void setup() {
+        ContentNodeTestProfile.activate(ContentNodesTest.class);
+        PollCardState.clear();
+    }
+    @After public void cleanup() {
+        PollCardState.clear();
+        ContentNodeTestProfile.clear();
+    }
+    private static String key(PollBinding binding) {
+        return HookBridge.get().pollStateKey(binding.messageId, binding.slot,
+                new ContentNodesTest.PrimitiveStructurableText(binding.text));
+    }
 
     private static final class Label {
         private Object text;
@@ -234,22 +249,29 @@ public class PollBindingTest {
         Adapter adapter = new Adapter(items);
         AnswerHolder holder = new AnswerHolder(new TextAnswerBinding());
         PollBinding captured = answer(adapter, holder, 0);
-        assertTrue(captured.sameInput(answer(adapter, holder, 0)));
+        String boundKey = key(captured);
+        String secondKey = key(answer(adapter, holder, 1));
+        PollCardState.bind(ROW, null, Arrays.asList(boundKey, secondKey));
+        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
         Collections.swap(items, 0, 1);
         PollBinding replacement = answer(adapter, holder, 0);
         assertEquals(captured.text, replacement.text);
         assertSame(captured.receiver, replacement.receiver);
         assertNotEquals(captured.slot, replacement.slot);
-        assertFalse(captured.sameInput(replacement));
-        assertTrue(captured.sameInput(answer(adapter, holder, 1)));
-        assertFalse(captured.sameInput(null));
-        assertFalse(captured.sameInput(answer(adapter,
-                new AnswerHolder(new TextAnswerBinding()), 1)));
+        assertFalse(PollCardState.canReplay(key(replacement), boundKey));
+        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        assertFalse(PollCardState.canReplay(null, boundKey));
+        assertFalse(PollCardState.canReplay(boundKey, null));
         first.answer.label.text = "edited label";
-        assertFalse(captured.sameInput(answer(adapter, holder, 1)));
+        assertFalse(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
         first.answer.label.text = "same label";
         first.message.id = OTHER_ROW;
-        assertFalse(captured.sameInput(answer(adapter, holder, 1)));
+        assertFalse(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        first.message.id = ROW;
+        PollCardState.invalidate(ROW);
+        assertFalse(PollCardState.canReplay(boundKey, boundKey));
+        PollCardState.bind(ROW, null, Collections.singletonList(secondKey));
+        assertFalse(PollCardState.canReplay(boundKey, boundKey));
     }
 
     @Test
@@ -266,15 +288,17 @@ public class PollBindingTest {
         assertSame(views.image, binding.receiver);
         assertTrue(binding.accessibility);
         assertTrue(binding.matches(views.image, raw, true));
-        assertTrue(binding.sameInput(answer(adapter, holder, 0)));
+        String boundKey = key(binding);
+        PollCardState.bind(ROW, null, Collections.singletonList(boundKey));
+        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
         assertFalse(binding.matches(views.image, raw, false));
         assertFalse(binding.matches(views.image, new StringBuilder(raw), true));
         assertFalse(binding.matches(views.image, "another description", true));
         assertFalse(binding.matches(views.voteCount, raw, true));
         assertFalse(binding.matches(views.prompt, raw, true));
         assertFalse(binding.matches(views.image, views.voteCount.nativeText, true));
-        assertFalse(binding.sameInput(answer(adapter,
-                new AnswerHolder(new TextAnswerBinding()), 0)));
+        PollBinding otherReceiver = answer(adapter, new AnswerHolder(new TextAnswerBinding()), 0);
+        assertFalse(binding.matches(otherReceiver.receiver, raw, true));
         assertSame(raw, item.answer.label.text);
         assertEquals(17, item.answer.votes);
         assertTrue(item.answer.selected);

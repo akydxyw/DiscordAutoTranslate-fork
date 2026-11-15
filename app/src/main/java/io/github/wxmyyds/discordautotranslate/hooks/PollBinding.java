@@ -81,13 +81,6 @@ final class PollBinding {
         return new PollBinding(id, "answer:" + answerId, text, receiver, receiver, accessibility);
     }
 
-    boolean sameInput(PollBinding other) {
-        return other != null && receiver == other.receiver && accessibility == other.accessibility
-                && java.util.Objects.equals(messageId, other.messageId)
-                && java.util.Objects.equals(slot, other.slot)
-                && java.util.Objects.equals(text, other.text);
-    }
-
     /** Native setter must match both its exact receiver and captured raw input. */
     boolean matches(Object view, Object input, boolean accessibilitySetter) {
         return view == receiver && accessibility == accessibilitySetter

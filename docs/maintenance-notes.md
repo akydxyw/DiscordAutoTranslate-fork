@@ -112,6 +112,15 @@
 - 列表项以保留叶开头时，ITEM_START 记录首锚点项目符号归属，唯一token只消费紧邻首锚点且独占该行前缀的项目符号，不在无文字槽的间隔报UNASSIGNED_TEXT，也不吞掉前一项正文。源LF/标题逻辑边界仍沿当前计划，不补换行。
 - 回归覆盖时间戳样未知节点、共享/空/组合保留叶、代码/mention/URL/style/list混排、无getter读取、模型标记损坏和旧空格hash失效；原来缺标记拒绝保留，成功fixture显式回带标记，测试helper不偷偷补标记。CI和设备结果分别验证，不把测试成功当消息成功。
 
+## 冗余与规则审计后的统一清理
+
+- `8f4267b` Actions 已核 636 项、0 失败/跳过；用户确认此前复杂消息及 Markdown Test 3/3 可回填。中间 PARSE/NETWORK 记录无法对应具体消息，不以恢复成功倒推出失败原因。
+- 本轮删除 interval 的纯 URL 静默过滤，源 URL 仍由锚点精确消费；新增 URL 段落按严格段数拒绝。修正样式标签干扰语言检测，原因改固定枚举，删除高度/刷新位置及原异常日志、未知异常消息和服务端任意停止理由插值。
+- HookCleanup 统一句柄所有权清理：所有安装从创建时登记入口 hooks，不再 Message/Poll 各持局部列表回滚。退出、安装回滚、新代次清理均逐个尝试全部解绑，成功句柄移除、失败保留；解绑失败不再报告热重载成功，也不安装新 hooks，必须重启。不把只停 worker 等同完整退出。
+- 删除 PollBinding.sameInput 及仅测试旧比较的断言，PollCardState.canReplay 是现有 key/当前成员校验的唯一操作，生产和重排/编辑/成员失效测试共用；保留 native setter 的精确 receiver 校验。
+- 请求头只解析一次后追加认证；非文本节点不创建空 Split/flags/lines，容器共享捕获不可改 children；只读 flags 子区间不复制，长度检查去 keep 结果复用。删除不可达包装检查 null 分支及 requiredHookCount 无用接口。
+- 新增清理、语言等价、URL 严格拒绝、协议理由隐私及真实 Poll 重放守卫回归；本轮 Actions 与实机结果另行验证，不执行本地构建或测试。
+
 ## 已确认的架构教训（改代码前先读）
 
 1. **文本转换目标按 profile 变化**：`340013` 使用 `TextUtilsKt.toSpannable`，

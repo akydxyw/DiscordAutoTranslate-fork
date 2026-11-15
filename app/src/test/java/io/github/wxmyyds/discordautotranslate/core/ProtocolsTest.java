@@ -645,6 +645,43 @@ public class ProtocolsTest {
     }
 
     @Test
+    public void maliciousStreamingReasonsNeverEnterExceptionsOrUserMessages() throws Exception {
+        for (String reason : new String[]{"private response body\n正文内容",
+                "https://private.invalid/v1?token=private-token", "Bearer private-secret"}) {
+            String quoted = JSONObject.quote(reason);
+            String[] protocols = {Config.PROTOCOL_OPENAI_COMPATIBLE,
+                    Config.PROTOCOL_ANTHROPIC_MESSAGES};
+            String[] bodies = {
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"前段\"}}]}\n\n"
+                            + "data: {\"choices\":[{\"finish_reason\":" + quoted + "}]}\n\n"
+                            + "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"
+                            + "data: [DONE]\n\n",
+                    "data: {\"type\":\"content_block_delta\","
+                            + "\"delta\":{\"type\":\"text_delta\",\"text\":\"前段\"}}\n\n"
+                            + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":"
+                            + quoted + "}}\n\n"
+                            + "data: {\"type\":\"message_delta\","
+                            + "\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+                            + "data: {\"type\":\"message_stop\"}\n\n"};
+            for (int i = 0; i < protocols.length; i++) {
+                try {
+                    decodeFixture(protocols[i], bodies[i], true);
+                    fail("Malicious reason must reject accumulated text");
+                } catch (TranslationException e) {
+                    assertEquals(TranslationException.Kind.PARSE, e.kind());
+                    assertEquals(i == 0
+                            ? "生成被截断（finish_reason 非正常结束），译文不完整"
+                            : "生成被截断（stop_reason 非正常结束），译文不完整", e.getMessage());
+                    assertFalse(e.getMessage().contains(reason));
+                    assertFalse(e.toString().contains(reason));
+                    assertFalse(e.userMessage().contains(reason));
+                    assertTrue(e.getCause() == null);
+                }
+            }
+        }
+    }
+
+    @Test
     public void streamingWrapperTagsAreRejectedEvenAcrossDeltas() {
         assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
                 "data: {\"choices\":[{\"delta\":{\"content\":\"<trans\"}}]}\n\n"

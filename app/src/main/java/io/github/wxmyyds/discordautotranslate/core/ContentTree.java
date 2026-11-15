@@ -40,9 +40,21 @@ public final class ContentTree {
             this.kind = kind;
             this.semantic = semantic;
             this.text = text;
-            this.children = Collections.unmodifiableList(new ArrayList<>(children));
+            // Only SEQUENCE owns a defensive snapshot; semantic parents share that captured view.
+            this.children = kind == Kind.SEQUENCE
+                    ? Collections.unmodifiableList(new ArrayList<>(children))
+                    : kind == Kind.CONTAINER || kind == Kind.LIST
+                            ? sourceSequence.children : Collections.emptyList();
             leadingEnd = kind == Kind.TEXT && text != null ? TextExtractor.leadingWhitespace(text) : 0;
             trailingStart = kind == Kind.TEXT && text != null ? TextExtractor.trailingWhitespaceStart(text) : 0;
+            if (kind != Kind.TEXT) {
+                chunks = Collections.emptyList();
+                separators = Collections.emptyList();
+                translatable = Collections.emptyList();
+                chunkLineCounts = Collections.emptyList();
+                segmentCount = 0;
+                return;
+            }
             BlankLines.Split split = leadingEnd < trailingStart
                     ? BlankLines.split(text.substring(leadingEnd, trailingStart)) : BlankLines.split("");
             chunks = Collections.unmodifiableList(new ArrayList<>(split.chunks));
@@ -54,8 +66,7 @@ public final class ContentTree {
                 int lineCount = 1;
                 for (int i = 0; i < chunk.length(); i++) if (chunk.charAt(i) == '\n') lineCount++;
                 lines.add(lineCount);
-                boolean translate = kind == Kind.TEXT && !BlankLines.isBlank(chunk)
-                        && !TextExtractor.isUrlLike(chunk);
+                boolean translate = !BlankLines.isBlank(chunk) && !TextExtractor.isUrlLike(chunk);
                 flags.add(translate);
                 if (translate) count++;
             }

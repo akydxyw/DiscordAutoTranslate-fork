@@ -19,11 +19,10 @@ import io.github.libxposed.api.XposedModule;
 public final class EmbedHooks {
     private EmbedHooks() {}
 
-    public static List<XposedInterface.HookHandle> install(XposedModule module, ClassLoader cl,
-            HookConfiguration config, Set<String> installedHookIds) {
-        List<XposedInterface.HookHandle> handles = new ArrayList<>(1);
+    public static void install(XposedModule module, ClassLoader cl, HookConfiguration config,
+            Set<String> installedHookIds, List<XposedInterface.HookHandle> handles) {
         if (!config.isEnabled("embed.bind")) {
-            return handles;
+            return;
         }
         Method bind = config.findMethod("embed.bind", cl);
         JSONObject spec = config.hook("embed.bind");
@@ -61,7 +60,6 @@ public final class EmbedHooks {
                     }
                 }));
         installedHookIds.add("embed.bind");
-        return handles;
     }
 
     /** Register all current segments before any cache hit can enqueue a native rebind. */

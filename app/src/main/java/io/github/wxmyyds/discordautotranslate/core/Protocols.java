@@ -298,7 +298,7 @@ public final class Protocols {
             String finish = optionalString(choice.opt("finish_reason"), "finish_reason");
             if (finish != null && !finish.isEmpty()) {
                 if (!"stop".equals(finish)) {
-                    throw parseError("生成被截断（finish_reason=" + finish + "），译文不完整");
+                    throw parseError("生成被截断（finish_reason 非正常结束），译文不完整");
                 }
             }
             JSONObject delta = optionalObject(choice.opt("delta"), "choices.0.delta");
@@ -337,7 +337,7 @@ public final class Protocols {
                 String reason = optionalString(delta.opt("stop_reason"), "delta.stop_reason");
                 if (reason != null && !reason.isEmpty()) {
                     if (!"end_turn".equals(reason) && !"stop_sequence".equals(reason)) {
-                        throw parseError("生成被截断（stop_reason=" + reason + "），译文不完整");
+                        throw parseError("生成被截断（stop_reason 非正常结束），译文不完整");
                     }
                 }
             }
@@ -368,11 +368,7 @@ public final class Protocols {
         return (JSONObject) value;
     }
 
-    @Nullable
-    private static String rejectTranslateTags(@Nullable String text) throws TranslationException {
-        if (text == null) {
-            return null;
-        }
+    private static String rejectTranslateTags(String text) throws TranslationException {
         if (text.contains(WRAPPER_OPEN) || text.contains(WRAPPER_CLOSE)) {
             throw new TranslationException(TranslationException.Kind.PARSE,
                     "译文包含包装标签：" + WRAPPER_OPEN + "…" + WRAPPER_CLOSE);

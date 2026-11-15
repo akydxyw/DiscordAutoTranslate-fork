@@ -10,6 +10,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.HookCleanup;
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.HookConfigurationLoader;
 import io.github.wxmyyds.discordautotranslate.core.ModuleResources;
@@ -57,9 +58,11 @@ public class ModuleEntry extends XposedModule {
     private static final String TARGET_PACKAGE = "com.discord";
 
     /** 当前代次持有的 hook 句柄，热重载时用于清理。 */
-    private final List<XposedInterface.HookHandle> hooks = new java.util.ArrayList<>();
+    private final List<XposedInterface.HookHandle> hooks = new ArrayList<>();
 
     private volatile boolean installed;
+    /** Failed removal requires a host restart; never install beside surviving old hooks. */
+    private volatile boolean teardownFailed;
     private volatile boolean bootstrapInstalled;
     private volatile HookConfiguration hookConfiguration;
 
@@ -90,7 +93,7 @@ public class ModuleEntry extends XposedModule {
             return;
         }
         diagnosticInfo("onPackageReady received for Discord");
-        if (installed || bootstrapInstalled) {
+        if (installed || bootstrapInstalled || teardownFailed) {
             // 防止重复注册启动钩子。
             return;
         }
@@ -128,31 +131,23 @@ public class ModuleEntry extends XposedModule {
      */
     @Override
     public void onHotReloaded(@NonNull XposedModuleInterface.HotReloadedParam param) {
-        // 先移除框架记录的旧 Hook（默认实现即如此，这里显式执行以免句柄泄漏）。
-        for (XposedInterface.HookHandle h : param.getOldHookHandles()) {
-            try {
-                h.unhook();
-            } catch (Throwable ignored) {
-                // 单个 unhook 失败不影响其余清理。
-            }
+        HookRuntime.suspend();
+        // The new generation owns every unresolved old handle before attempting removal.
+        hooks.addAll(param.getOldHookHandles());
+        int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
+        if (failures != 0) {
+            teardownFailed = true;
+            clearRuntime();
+            diagnosticInfo("hot reload old hook removal failed count=" + failures
+                    + "; restart Discord required");
+            return;
         }
 
         // 宿主 loader 只从已保存 profile 的绑定 Hook 取得，排除 Application.attach。
 
-        // Drop old state and the old thread pool so stale results cannot leak in.
-        Scheduler.MainThread.clear();
-        Scheduler.reset();
-        StateStore.get().onNewGeneration();
-        HookBridge.get().reset();
-        TranslationCache.reset();
-        RerenderRegistry.clear();
-        RenderDispatcher.reset();
-        StructurableTextFactory.reset();
-        // 图标 Drawable 缓存在模块资源加载器里，热重载后必须重新解析：
-        // 否则旧代次持有的 Drawable 会被继续使用。
-        InlineIconSpan.resetAll();
-        ModuleResources.reset();
-        // reset() 会把框架引用置空；必须重新绑定，否则图标资源全部解析失败。
+        // Reuse the same generation teardown as rollback/release, then attach the new framework.
+        clearRuntime();
+        bootstrapInstalled = false;
         ModuleResources.attach(this);
 
         Object savedState = param.getSavedInstanceState();
@@ -174,10 +169,6 @@ public class ModuleEntry extends XposedModule {
             }
         }
 
-        hooks.clear();
-        installed = false;
-        bootstrapInstalled = false;
-        hookConfiguration = null;
         reloadConfig();
 
         ClassLoader recovered = restored == null ? null
@@ -221,8 +212,8 @@ public class ModuleEntry extends XposedModule {
                                 }
                             }
                         } catch (Throwable t) {
-                            android.util.Log.e("DiscordAutoTranslate",
-                                    "failed to select Discord hook profile", t);
+                            diagnosticInfo("hook profile selection failed errorClass="
+                                    + t.getClass().getSimpleName());
                         }
                         return result;
                     });
@@ -230,7 +221,8 @@ public class ModuleEntry extends XposedModule {
             bootstrapInstalled = true;
             diagnosticInfo("Application.attach bootstrap hook installed");
         } catch (Throwable t) {
-            android.util.Log.e("DiscordAutoTranslate", "failed to install app bootstrap hook", t);
+            diagnosticInfo("bootstrap hook installation failed errorClass="
+                    + t.getClass().getSimpleName());
             installed = false;
         }
     }
@@ -254,18 +246,21 @@ public class ModuleEntry extends XposedModule {
             install(cl, config);
             installed = true;
         } catch (Throwable t) {
-            android.util.Log.e("DiscordAutoTranslate", "failed to install configured hooks", t);
+            diagnosticInfo("configured hook installation failed errorClass="
+                    + t.getClass().getSimpleName());
             installed = false;
         }
     }
 
     private void install(ClassLoader cl, HookConfiguration config) {
+        if (teardownFailed) {
+            throw new IllegalStateException("Unremoved hooks remain; restart Discord required");
+        }
         if (!config.hasAllRequiredTargets(cl)) {
             throw new IllegalStateException("configured required hook target is unavailable");
         }
         HookRuntime.suspend();
         Set<String> installedHookIds = new HashSet<>();
-        List<XposedInterface.HookHandle> created = new ArrayList<>();
         try {
             ModuleResources.attach(this);
             HookConfiguration.activate(config);
@@ -273,24 +268,21 @@ public class ModuleEntry extends XposedModule {
             Scheduler.MainThread.install();
             RenderDispatcher.install();
             reloadConfig();
-            created.addAll(MessageHooks.install(this, cl, config, installedHookIds));
-            created.addAll(EmbedHooks.install(this, cl, config, installedHookIds));
-            created.addAll(PollHooks.install(this, cl, config, installedHookIds));
+            MessageHooks.install(this, cl, config, installedHookIds, hooks);
+            EmbedHooks.install(this, cl, config, installedHookIds, hooks);
+            PollHooks.install(this, cl, config, installedHookIds, hooks);
             if (!config.hasAllRequiredHooks(installedHookIds)) {
                 throw new IllegalStateException("incomplete configured hook installation");
             }
         } catch (Throwable failure) {
-            for (XposedInterface.HookHandle handle : created) {
-                try {
-                    handle.unhook();
-                } catch (Throwable ignored) {
-                    // Roll back incomplete required hook installation.
-                }
-            }
+            int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
+            teardownFailed = failures != 0;
+            bootstrapInstalled = false;
             clearRuntime();
+            if (failures != 0) diagnosticInfo("hook installation rollback failed count=" + failures
+                    + "; restart Discord required");
             throw new IllegalStateException("configured hook installation failed", failure);
         }
-        hooks.addAll(created);
         hookConfiguration = config;
         HookRuntime.activate();
         diagnosticInfo("installed hook profile versionCode=" + config.versionCode()
@@ -324,16 +316,14 @@ public class ModuleEntry extends XposedModule {
         if (!Scheduler.resetAndAwait(2000L)) {
             throw new IllegalStateException("Translation workers have not stopped; restart Discord required");
         }
-        for (XposedInterface.HookHandle h : hooks) {
-            try {
-                h.unhook();
-            } catch (Throwable ignored) {
-                // 尽力解绑，不中断后续清理。
-            }
-        }
-        hooks.clear();
+        int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
+        teardownFailed = failures != 0;
         clearRuntime();
         bootstrapInstalled = false;
+        if (failures != 0) {
+            diagnosticInfo("hook teardown failed count=" + failures);
+            throw new IllegalStateException("Hook removal incomplete; restart Discord required");
+        }
     }
 
     /** Installation failure and successful teardown clear the same runtime generation. */

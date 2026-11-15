@@ -13,7 +13,6 @@ import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 import org.json.JSONObject;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -23,7 +22,7 @@ import io.github.libxposed.api.XposedModule;
 /**
  * 根据活动版本配置安装消息绑定、正文渲染和文本转换 Hook。
  * 类名、方法签名及参数位置只保存在 {@code hook-config/<versionCode>.json}；
- * 本类负责稳定的翻译与重渲染行为，并返回句柄供热重载清理。
+ * 本类负责稳定的翻译与重渲染行为，句柄立即登记到入口拥有的唯一清理列表。
  */
 public final class MessageHooks {
 
@@ -32,26 +31,12 @@ public final class MessageHooks {
     private MessageHooks() {
     }
 
-    /** Install profile-selected hooks and return their handles for hot reload cleanup. */
-    public static List<XposedInterface.HookHandle> install(XposedModule module, ClassLoader cl,
-                                                            HookConfiguration config,
-                                                            Set<String> installedHookIds) {
-        List<XposedInterface.HookHandle> handles = new ArrayList<>(config.requiredHookCount());
-        try {
-            installBindHook(module, cl, config, handles, installedHookIds);
-            installBodyRenderHook(module, cl, config, handles, installedHookIds);
-            installTextConversionHook(module, cl, config, handles, installedHookIds);
-        } catch (Throwable t) {
-            for (XposedInterface.HookHandle handle : handles) {
-                try {
-                    handle.unhook();
-                } catch (Throwable ignored) {
-                    // 回滚尽力而为；单个 unhook 失败不应掩盖原始异常。
-                }
-            }
-            throw new IllegalStateException("Message hook installation failed", t);
-        }
-        return handles;
+    /** Register each installed hook in the caller's sole ownership list. */
+    public static void install(XposedModule module, ClassLoader cl, HookConfiguration config,
+                               Set<String> installedHookIds, List<XposedInterface.HookHandle> handles) {
+        installBindHook(module, cl, config, handles, installedHookIds);
+        installBodyRenderHook(module, cl, config, handles, installedHookIds);
+        installTextConversionHook(module, cl, config, handles, installedHookIds);
     }
 
     // ------------------------------------------------------------------ Hook 1: bind

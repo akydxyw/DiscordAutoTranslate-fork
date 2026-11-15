@@ -61,6 +61,11 @@ final class PollCardState {
         return card != null && card.active && card.keys.contains(key) ? card : null;
     }
 
+    /** The current view key and current card membership are the only positional replay authority. */
+    static synchronized boolean canReplay(String incomingKey, String boundKey) {
+        return incomingKey != null && incomingKey.equals(boundKey) && forKey(incomingKey) != null;
+    }
+
     /** Invalidate old membership before parsing a real root bind, retaining only its choice. */
     static synchronized void invalidate(String row) {
         Card card = CARDS.get(row);
