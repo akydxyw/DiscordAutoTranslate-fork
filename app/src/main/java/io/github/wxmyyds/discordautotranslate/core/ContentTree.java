@@ -69,8 +69,11 @@ public final class ContentTree {
         public final EventKind kind;
         public final Node node;
         public final boolean styled;
-        private Event(EventKind kind, Node node, boolean styled) {
+        /** Captured semantic container occurrences, root to leaf; no rereading host members. */
+        public final List<Node> containers;
+        private Event(EventKind kind, Node node, boolean styled, List<Node> containers) {
             this.kind = kind; this.node = node; this.styled = styled;
+            this.containers = Collections.unmodifiableList(new ArrayList<>(containers));
         }
     }
 
@@ -80,7 +83,7 @@ public final class ContentTree {
     private ContentTree(Node root) {
         this.root = root;
         List<Event> output = new ArrayList<>();
-        emit(root, false, output);
+        emit(root, false, new ArrayList<>(), output);
         events = Collections.unmodifiableList(output);
         int count = 0;
         for (Event event : events) if (event.kind == EventKind.NODE) count += event.node.segmentCount;
@@ -174,20 +177,26 @@ public final class ContentTree {
             for (Node child : node.children) appendText(child, out);
     }
 
-    private static void emit(Node node, boolean styled, List<Event> out) {
-        if (node.kind == Kind.SEQUENCE || node.kind == Kind.CONTAINER) {
+    private static void emit(Node node, boolean styled, List<Node> containers, List<Event> out) {
+        if (node.kind == Kind.SEQUENCE) {
+            for (Node child : node.children) emit(child, styled, containers, out);
+        } else if (node.kind == Kind.CONTAINER) {
             boolean nextStyle = styled || TextExtractor.isInlineStyleContainer(node.semantic);
-            for (Node child : node.children) emit(child, nextStyle, out);
+            containers.add(node);
+            for (Node child : node.children) emit(child, nextStyle, containers, out);
+            containers.remove(containers.size() - 1);
         } else if (node.kind == Kind.LIST) {
-            out.add(new Event(EventKind.LIST_START, node, styled));
+            out.add(new Event(EventKind.LIST_START, node, styled, containers));
+            containers.add(node);
             for (Node item : node.children) {
-                out.add(new Event(EventKind.ITEM_START, item, styled));
-                emit(item, styled, out);
-                out.add(new Event(EventKind.ITEM_END, item, styled));
+                out.add(new Event(EventKind.ITEM_START, item, styled, containers));
+                emit(item, styled, containers, out);
+                out.add(new Event(EventKind.ITEM_END, item, styled, containers));
             }
-            out.add(new Event(EventKind.LIST_END, node, styled));
+            containers.remove(containers.size() - 1);
+            out.add(new Event(EventKind.LIST_END, node, styled, containers));
         } else if (node.original != null) {
-            out.add(new Event(EventKind.NODE, node, styled));
+            out.add(new Event(EventKind.NODE, node, styled, containers));
         }
     }
 }

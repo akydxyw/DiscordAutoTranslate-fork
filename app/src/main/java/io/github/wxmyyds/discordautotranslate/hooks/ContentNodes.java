@@ -59,6 +59,9 @@ public final class ContentNodes {
         final RejectionReason reason;
         final int expected;
         final int actual;
+        /** Interval-local right-slot ordinal; not a message identity or text offset. */
+        int boundary = -1;
+        String structure = "";
 
         Rejection(RejectionReason reason, int expected, int actual) {
             super(reason.name());
@@ -79,7 +82,8 @@ public final class ContentNodes {
             return replaceChecked(tree, translated);
         } catch (Rejection rejection) {
             HookDiagnostics.info("content replacement rejected reason=" + rejection.reason.name()
-                    + " expected=" + rejection.expected + " actual=" + rejection.actual);
+                    + " expected=" + rejection.expected + " actual=" + rejection.actual
+                    + rejection.structure);
             return null;
         }
     }
@@ -411,11 +415,7 @@ public final class ContentNodes {
         }
         int first = pending.get(0);
         int last = pending.get(pending.size() - 1);
-        List<String> runParts = alignSpanToParts(run,
-                plan.groupIds.subList(first, last + 1),
-                plan.listFlagsIn(first, last + 1),
-                plan.lineBreakFlagsIn(first, last + 1),
-                plan.sourceLinesIn(first, last + 1));
+        List<String> runParts = alignInterval(run, plan, first, last + 1);
         for (int i = 0; i < runParts.size(); i++) {
             String p = runParts.get(i);
             if (p != null && !p.trim().isEmpty()) {
@@ -456,8 +456,7 @@ public final class ContentNodes {
     private static List<String> alignTokens(String plain, AlignmentPlan plan) {
         boolean hasAnchors = !plan.urls.isEmpty() || !plan.emojiAnchors.isEmpty();
         if (!hasAnchors) {
-            return alignSpanToParts(plain, plan.groupIds, plan.listFlags,
-                    plan.lineBreakFlagsIn(0, plan.groupIds.size()), plan.sourceLineCounts);
+            return alignInterval(plain, plan, 0, plan.groupIds.size());
         }
         // 逐个令牌定位。锚点只切间隔、不产出片段；片段在其后的间隔里分配。
         List<String> parts = new ArrayList<>(
@@ -476,22 +475,38 @@ public final class ContentNodes {
             int segEnd = t.emoji
                     ? plan.emojiSegIndex.get(emojiIndex++)
                     : plan.urlSegIndex.get(urlIndex++);
-            List<String> spanParts = alignSpanToParts(plain.substring(from, at),
-                    plan.groupIds.subList(segStart, segEnd),
-                    plan.listFlagsIn(segStart, segEnd),
-                    plan.lineBreakFlagsIn(segStart, segEnd),
-                    plan.sourceLinesIn(segStart, segEnd));
+            List<String> spanParts = alignInterval(plain.substring(from, at), plan, segStart, segEnd);
             copySpan(spanParts, parts, segStart);
             from = at + anchor.length();
             segStart = segEnd;
         }
-        List<String> tailParts = alignSpanToParts(plain.substring(from),
-                plan.groupIds.subList(segStart, plan.groupIds.size()),
-                plan.listFlagsIn(segStart, plan.groupIds.size()),
-                plan.lineBreakFlagsIn(segStart, plan.groupIds.size()),
-                plan.sourceLinesIn(segStart, plan.groupIds.size()));
+        List<String> tailParts = alignInterval(plain.substring(from), plan,
+                segStart, plan.groupIds.size());
         copySpan(tailParts, parts, segStart);
         return parts;
+    }
+
+    /** One interval operation; decoration consumes captured structure only, never the response. */
+    private static List<String> alignInterval(String span, AlignmentPlan plan, int start, int end) {
+        try {
+            return alignSpanToParts(span, plan.groupIds.subList(start, end),
+                    plan.listFlagsIn(start, end), plan.lineBreakFlagsIn(start, end),
+                    plan.sourceLinesIn(start, end));
+        } catch (Rejection rejection) {
+            if (rejection.reason == RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS) {
+                int right = start + rejection.boundary;
+                if (right > start && right < end) {
+                    BoundaryContext leftContext = plan.boundaries.get(right - 1);
+                    BoundaryContext rightContext = plan.boundaries.get(right);
+                    rejection.structure = " intervalSlots=" + (end - start)
+                            + " leftSlot=" + (right - 1) + " rightSlot=" + right
+                            + leftContext.describe("left") + rightContext.describe("right")
+                            + " sameContainerPath=" + leftContext.samePath(rightContext)
+                            + " sameTextOccurrence=" + (leftContext.event.node == rightContext.event.node);
+                }
+            }
+            throw rejection;
+        }
     }
 
     private static int countOccurrences(String text, String needle) {
@@ -531,7 +546,9 @@ public final class ContentNodes {
                 if (isLineBreakBefore(lineBreakBefore, end)) {
                     end++;
                 } else if (groups.get(end).equals(groups.get(end - 1))) {
-                    throw reject(RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
+                    Rejection rejection = reject(RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
+                    rejection.boundary = end;
+                    throw rejection;
                 } else {
                     break;
                 }
@@ -626,6 +643,8 @@ public final class ContentNodes {
         final List<Boolean> lineBreakBefore = new ArrayList<>();
         /** 与片段平行：该片段的源文本内部行数，不能假定每个槽只占一行。 */
         final List<Integer> sourceLineCounts = new ArrayList<>();
+        /** Source-only structural diagnostics for each slot; discarded with this alignment plan. */
+        final List<BoundaryContext> boundaries = new ArrayList<>();
         /** 按树序的 URL 定位标记（原样 URL 文本）。 */
         final List<String> urls = new ArrayList<>();
         /** 与 {@code urls} 平行：该 URL 之前的可翻译片段数（间隔边界）。 */
@@ -657,6 +676,64 @@ public final class ContentNodes {
         }
     }
 
+    /** Only captured kinds, type names, structural counts and occurrence-path equality reach logs. */
+    private static final class BoundaryContext {
+        final ContentTree.Event event;
+        final int sourceLf;
+        final int sourceLines;
+        final int listDepth;
+        final int[] gapKinds;
+        final int whitespaceNodes;
+        final int itemStarts;
+        final int listStarts;
+        final int listEnds;
+        final List<String> gapTypes;
+        final boolean gapTypesTruncated;
+
+        BoundaryContext(ContentTree.Event event, PlanWalk walk, int sourceLines) {
+            this.event = event;
+            this.sourceLf = walk.separatorNewlines;
+            this.sourceLines = sourceLines;
+            this.listDepth = walk.listLevel;
+            this.gapKinds = walk.gapKinds.clone();
+            this.whitespaceNodes = walk.whitespaceNodes;
+            this.itemStarts = walk.itemStarts;
+            this.listStarts = walk.listStarts;
+            this.listEnds = walk.listEnds;
+            this.gapTypes = new ArrayList<>(walk.gapTypes);
+            this.gapTypesTruncated = walk.gapTypesTruncated;
+        }
+
+        boolean samePath(BoundaryContext other) {
+            return event.containers.equals(other.event.containers);
+        }
+
+        String describe(String side) {
+            List<String> path = new ArrayList<>();
+            for (ContentTree.Node container : event.containers) {
+                path.add(container.semantic == null ? "UNKNOWN_CONTAINER" : container.semantic);
+            }
+            return " " + side + "Type=" + event.node.original.getClass().getName()
+                    + " " + side + "Path=" + (path.isEmpty() ? "ROOT" : String.join("/", path))
+                    + " " + side + "Styled=" + event.styled
+                    + " " + side + "ListDepth=" + listDepth
+                    + " " + side + "SourceLines=" + sourceLines
+                    + " " + side + "SourceLfBefore=" + sourceLf
+                    + " " + side + "GapWhitespaceNodes=" + whitespaceNodes
+                    + " " + side + "GapInlineCode=" + gapKinds[ContentTree.Kind.INLINE_CODE.ordinal()]
+                    + " " + side + "GapOpaque=" + gapKinds[ContentTree.Kind.OPAQUE.ordinal()]
+                    + " " + side + "GapCodeBlocks=" + gapKinds[ContentTree.Kind.CODE_BLOCK.ordinal()]
+                    + " " + side + "GapUrls=" + gapKinds[ContentTree.Kind.URL.ordinal()]
+                    + " " + side + "GapEmoji=" + gapKinds[ContentTree.Kind.EMOJI.ordinal()]
+                    + " " + side + "GapBreaks=" + gapKinds[ContentTree.Kind.BREAK.ordinal()]
+                    + " " + side + "GapListStarts=" + listStarts
+                    + " " + side + "GapItemStarts=" + itemStarts
+                    + " " + side + "GapListEnds=" + listEnds
+                    + " " + side + "GapTypes=" + (gapTypes.isEmpty() ? "NONE" : String.join(",", gapTypes))
+                    + " " + side + "GapTypesTruncated=" + gapTypesTruncated;
+        }
+    }
+
     /** 树序令牌：URL 定位标记 / emoji / 可翻译片段（样式号 &gt;0 表示包在 {@code <xN>…</xN>} 里）。 */
     static final class PlanToken {
         final String url;   // 非 null = URL 或 emoji 定位标记
@@ -685,9 +762,11 @@ public final class ContentNodes {
         for (ContentTree.Event event : tree.events) {
             switch (event.kind) {
                 case LIST_START:
+                    w.listStarts++;
                     listStarts.push(w.plan.groupIds.size());
                     continue;
                 case ITEM_START:
+                    w.itemStarts++;
                     if (!w.plan.groupIds.isEmpty()) w.forceNewGroup = true;
                     w.separatorNewlines++; // Native list-item line boundary, not opaque text.
                     w.listLevel++;
@@ -696,6 +775,7 @@ public final class ContentNodes {
                     w.listLevel--;
                     continue;
                 case LIST_END:
+                    w.listEnds++;
                     if (w.plan.groupIds.size() > listStarts.pop()) w.forceNewGroup = true;
                     continue;
                 case NODE: break;
@@ -708,6 +788,7 @@ public final class ContentNodes {
                     continue;
                 }
                 if (BlankLines.isBlank(s)) {
+                    w.whitespaceNodes++;
                     addSourceWhitespace(w, s, 0, s.length());
                     continue;
                 }
@@ -726,11 +807,13 @@ public final class ContentNodes {
                     }
                     if (TextExtractor.isUrlLike(chunk)) {
                         // 节点内的 URL 文本块：定位标记，与链接节点同口径。
+                        w.gapKinds[ContentTree.Kind.URL.ordinal()]++;
+                        recordGapType(w, node);
                         addUrlToken(w, chunk.trim());
                         continue;
                     }
                     int segIndex = w.plan.groupIds.size();
-                    addSegment(w, node.chunkLineCounts.get(i));
+                    addSegment(w, event, node.chunkLineCounts.get(i));
                     int styleId = 0;
                     if (event.styled) {
                         styleId = ++w.plan.styleMarkers;
@@ -740,6 +823,8 @@ public final class ContentNodes {
                 addSourceWhitespace(w, s, tail, s.length());
                 continue;
             }
+            w.gapKinds[node.kind.ordinal()]++;
+            recordGapType(w, node);
             switch (node.kind) {
                 case INLINE_CODE: case OPAQUE: case CODE_BLOCK: break;
                 case URL: addUrlToken(w, node.text); break;
@@ -757,6 +842,21 @@ public final class ContentNodes {
         int separatorNewlines;
         int listLevel;
         boolean forceNewGroup;
+        final int[] gapKinds = new int[ContentTree.Kind.values().length];
+        int whitespaceNodes;
+        int itemStarts;
+        int listStarts;
+        int listEnds;
+        final java.util.Set<String> gapTypes = new java.util.LinkedHashSet<>();
+        boolean gapTypesTruncated;
+    }
+
+    private static void recordGapType(PlanWalk walk, ContentTree.Node node) {
+        if (node.original == null) return;
+        String type = node.original.getClass().getName();
+        if (walk.gapTypes.contains(type)) return;
+        if (walk.gapTypes.size() < 4) walk.gapTypes.add(type);
+        else walk.gapTypesTruncated = true;
     }
 
     /**
@@ -784,7 +884,8 @@ public final class ContentNodes {
      * <p>URL 与 emoji 都作为必须保留的定位标记；列表项按独立行分组。
      * {@code forceNewGroup} 由列表项边界推进段落组。</p>
      */
-    private static void addSegment(PlanWalk w, int sourceLines) {
+    private static void addSegment(PlanWalk w, ContentTree.Event event, int sourceLines) {
+        w.plan.boundaries.add(new BoundaryContext(event, w, sourceLines));
         int separatorNewlines = w.separatorNewlines;
         boolean lineBoundary = separatorNewlines < 2
                 && (w.forceNewGroup || separatorNewlines == 1);
@@ -799,6 +900,13 @@ public final class ContentNodes {
         w.plan.lineBreakBefore.add(lineBoundary);
         w.plan.sourceLineCounts.add(sourceLines);
         w.separatorNewlines = 0;
+        java.util.Arrays.fill(w.gapKinds, 0);
+        w.whitespaceNodes = 0;
+        w.itemStarts = 0;
+        w.listStarts = 0;
+        w.listEnds = 0;
+        w.gapTypes.clear();
+        w.gapTypesTruncated = false;
     }
 
     /** Count only captured text whitespace; URL/emoji/opaque and synthetic code text give no proof. */
