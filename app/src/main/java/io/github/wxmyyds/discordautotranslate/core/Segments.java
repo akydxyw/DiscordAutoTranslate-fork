@@ -5,7 +5,7 @@ import androidx.annotation.Nullable;
 import java.util.regex.Pattern;
 
 /**
- * 单一文本翻译输入的防损坏校验（含样式与行内代码定位标记）。
+ * 单一文本翻译输入的防损坏校验（含格式与保留叶节点定位标记）。
  *
  * <p>引擎与渲染层共用 {@link #hasSegmentMarkers} 拒绝残留分段标记，
  * 不解析、剥离或修复标记。{@link #plainTextViolation} 还检查空文本、
@@ -33,7 +33,7 @@ public final class Segments {
     }
 
     /**
-     * 译文的防损坏校验：非空、无旧分段标记、原样保留代码定位、长度比例合理。
+     * 译文的防损坏校验：非空、无旧分段标记、原样保留结构定位、长度比例合理。
      *
      * <p>单链路在引擎侧返回前调用：复读刷屏（长度
      * 暴涨）、内容大面积丢失（长度骤减）、标记泄漏与模板占位符都在这里
@@ -56,13 +56,13 @@ public final class Segments {
         if (PLACEHOLDER_RUN.matcher(translated).find()) {
             return "译文含模板占位符";
         }
-        if (!InlineCodeMarkers.matchesSource(translated, source)) {
-            return "行内代码定位标记无效";
+        if (!RetainedNodeMarkers.matchesSource(translated, source)) {
+            return "保留节点定位标记无效";
         }
-        if (InlineCodeMarkers.withoutMarkers(translated).trim().isEmpty()) return "译文为空";
-        int n = InlineCodeMarkers.withoutMarkers(source).length();
+        if (RetainedNodeMarkers.withoutMarkers(translated).trim().isEmpty()) return "译文为空";
+        int n = RetainedNodeMarkers.withoutMarkers(source).length();
         if (n >= 40) {
-            int m = InlineCodeMarkers.withoutMarkers(translated).length();
+            int m = RetainedNodeMarkers.withoutMarkers(translated).length();
             if (m * 4 < n) {
                 return "译文长度异常（" + m + "/" + n + "）：疑似内容丢失";
             }

@@ -74,14 +74,14 @@ public final class ContentTree {
         public final List<Node> containers;
         /** Exact heading occurrence transition not already separated by captured source LF. */
         public final boolean headingBreakBefore;
-        /** Content-free anchor for this inline-code occurrence; null for other kinds. */
-        public final String inlineCodeMarker;
+        /** Content-free anchor for a retained opaque/code leaf; null for text/break/URL/emoji. */
+        public final String retainedMarker;
         private Event(EventKind kind, Node node, boolean styled, List<Node> containers,
-                      boolean headingBreakBefore, String inlineCodeMarker) {
+                      boolean headingBreakBefore, String retainedMarker) {
             this.kind = kind; this.node = node; this.styled = styled;
             this.containers = Collections.unmodifiableList(new ArrayList<>(containers));
             this.headingBreakBefore = headingBreakBefore;
-            this.inlineCodeMarker = inlineCodeMarker;
+            this.retainedMarker = retainedMarker;
         }
     }
 
@@ -191,7 +191,7 @@ public final class ContentTree {
         Node previousHeading;
         boolean hasContent;
         boolean separated;
-        int inlineCodeSequence;
+        int retainedSequence;
 
         void emit(Node node, boolean styled, List<Node> containers) {
             if (node.kind == Kind.SEQUENCE) {
@@ -238,10 +238,12 @@ public final class ContentTree {
                             && hasLf(node.text, node.trailingStart, node.text.length());
                 }
             }
-            String marker = kind == EventKind.NODE && node.kind == Kind.INLINE_CODE
-                    ? "<keep" + (++inlineCodeSequence) + "/>" : null;
-            if (kind == EventKind.NODE && InlineCodeMarkers.hasReservedPrefix(node.text))
-                throw new IllegalStateException("Reserved inline-code marker in source");
+            boolean retainedLeaf = node.kind == Kind.INLINE_CODE || node.kind == Kind.OPAQUE
+                    || node.kind == Kind.CODE_BLOCK;
+            String marker = kind == EventKind.NODE && retainedLeaf
+                    ? "<keep" + (++retainedSequence) + "/>" : null;
+            if (kind == EventKind.NODE && RetainedNodeMarkers.hasReservedPrefix(node.text))
+                throw new IllegalStateException("Reserved retained-node marker in source");
             output.add(new Event(kind, node, styled, containers, headingBreak, marker));
         }
 

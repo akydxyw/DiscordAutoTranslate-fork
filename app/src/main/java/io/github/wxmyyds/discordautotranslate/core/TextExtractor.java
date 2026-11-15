@@ -23,9 +23,9 @@ public final class TextExtractor {
     /** 提取结果。 */
     public static final class Result {
         /**
-         * 可翻译的纯文本（含换行与 URL 链接定位标记；结构节点仅贡献空白分隔）。
+         * 统一翻译输入：自然语言、源换行、格式范围与保留叶节点 occurrence 锚点。
          *
-         * <p>它是无标记请求（单链路）的正文，也用于语言检测与内容哈希。
+         * <p>它是单链路的正文，也用于语言检测与内容哈希。
          * URL 链接显示文本原样进入请求充当定位标记：模型必须原样保留它，
          * 回填按它切分对齐并删除回显，显示永远用原链接节点。URL 字符
          * 不会损坏，也不会重复显示。</p>
@@ -153,7 +153,7 @@ public final class TextExtractor {
                 return EMPTY;
             }
             // Primitive 整体就是一个片段，不应用 Annotated 文本节点的分块规则。
-            if (InlineCodeMarkers.hasReservedPrefix(s)) return null;
+            if (RetainedNodeMarkers.hasReservedPrefix(s)) return null;
             return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, false, null);
         }
 
@@ -247,7 +247,7 @@ public final class TextExtractor {
         if (tree == null) return null;
         StringBuilder out = new StringBuilder();
         int textNodes = 0, opaque = 0, codeBlocks = 0, styleSeq = 0;
-        java.util.List<String> inlineMarkers = new java.util.ArrayList<>();
+        java.util.List<String> retainedMarkers = new java.util.ArrayList<>();
         for (ContentTree.Event event : tree.events) {
             if (event.headingBreakBefore) out.append('\n');
             if (event.kind == ContentTree.EventKind.ITEM_START) {
@@ -282,13 +282,12 @@ public final class TextExtractor {
                     break;
                 case URL: case EMOJI:
                     opaque++; out.append(' ').append(node.text).append(' '); break;
-                case INLINE_CODE:
-                    inlineMarkers.add(event.inlineCodeMarker);
-                    opaque++; out.append(event.inlineCodeMarker); break;
-                case OPAQUE:
-                    opaque++; out.append(' '); break;
-                case CODE_BLOCK:
-                    codeBlocks++; out.append(' '); break;
+                case INLINE_CODE: case OPAQUE: case CODE_BLOCK:
+                    retainedMarkers.add(event.retainedMarker);
+                    if (node.kind == ContentTree.Kind.CODE_BLOCK) codeBlocks++;
+                    else opaque++;
+                    out.append(event.retainedMarker);
+                    break;
                 case BREAK:
                     out.append('\n'); break;
                 default: throw new IllegalStateException("Non-leaf content event");
@@ -296,7 +295,7 @@ public final class TextExtractor {
         }
         String extracted = out.toString();
         // Also catches reserved syntax assembled across adjacent captured text occurrences.
-        if (!InlineCodeMarkers.matchesExpected(extracted, inlineMarkers)) return null;
+        if (!RetainedNodeMarkers.matchesExpected(extracted, retainedMarkers)) return null;
         return new Result(extracted, tree.segmentCount, textNodes, opaque, codeBlocks > 0, tree);
     }
 }

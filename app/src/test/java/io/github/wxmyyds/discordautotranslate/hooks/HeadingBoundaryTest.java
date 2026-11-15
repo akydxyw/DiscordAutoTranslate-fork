@@ -214,12 +214,14 @@ public class HeadingBoundaryTest {
     @Test public void retainedCodeAtHeadingExitKeepsStructureAndBoundary() {
         CodeBlockContentNode code = new CodeBlockContentNode("secret", "java", false);
         ContentTree tree = tree(heading(text("Title")), code, text("Body"));
-        assertEquals("Title\n Body", extract(tree));
+        assertEquals("Title\n<keep1/>Body", extract(tree));
         assertEquals(1, breaks(tree));
         assertTrue(TextExtractor.extractTree(tree).codeHeavy);
-        List<Object> out = ContentNodes.replaceChecked(tree, "标题\n正文");
+        List<Object> out = ContentNodes.replaceChecked(tree, "标题\n<keep1/>正文");
         assertSame(code, out.get(1));
         assertEquals("正文", content(out.get(2)));
+        assertEquals("标题\n<keep1/>正文", extract(ContentTree.compile(out)));
+        reject(tree, "标题\n正文", ContentNodes.RejectionReason.RETAINED_MARKER);
     }
 
     @Test public void capturedHeadingBoundaryDoesNotRereadMutatedWhitespace() {

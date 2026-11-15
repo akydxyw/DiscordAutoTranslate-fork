@@ -41,7 +41,7 @@ public class InlineCodeMarkerTest {
         ContentTree tree = tree(text("Run "), code, text(" now"));
         assertEquals("Run <keep1/> now", extract(tree));
         assertEquals(2, tree.segmentCount);
-        assertEquals("<keep1/>", tree.events.get(1).inlineCodeMarker);
+        assertEquals("<keep1/>", tree.events.get(1).retainedMarker);
         List<Object> out = ContentNodes.replaceChecked(tree, "运行 <keep1/> 现在");
         assertEquals("运行 ", content(out.get(0)));
         assertSame(code, out.get(1));
@@ -49,7 +49,7 @@ public class InlineCodeMarkerTest {
         assertEquals("运行 <keep1/> 现在", extract(ContentTree.compile(out)));
         assertFalse(extract(tree).contains("private-code"));
         assertFalse(extract(tree).contains("\n"));
-        reject(tree, "运行现在", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
+        reject(tree, "运行现在", ContentNodes.RejectionReason.RETAINED_MARKER);
     }
 
     @Test public void repeatedHostCodeGetsDistinctOccurrenceAnchors() {
@@ -72,12 +72,12 @@ public class InlineCodeMarkerTest {
                 "甲<keep2/>乙<keep1/>丙", "甲<keep1/>乙<keep3/>丙", "甲<keep1 />乙<keep2/>丙",
                 "甲<keep1>乙<keep2/>丙", "甲<KEEP1/>乙<keep2/>丙", "甲<keep01/>乙<keep2/>丙",
                 "甲<keep1/>乙<keep2/>丙<keep", "甲<keep1/>乙<keep2/>丙</keep9>"}) {
-            reject(tree, response, ContentNodes.RejectionReason.INLINE_CODE_MARKER);
+            reject(tree, response, ContentNodes.RejectionReason.RETAINED_MARKER);
         }
     }
 
     @Test public void noCodeTreeRejectsFabricatedMarkers() {
-        reject(tree(text("Plain")), "正文<keep1/>", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
+        reject(tree(text("Plain")), "正文<keep1/>", ContentNodes.RejectionReason.RETAINED_MARKER);
     }
 
     @Test public void markersInsideStyleCannotLeakIntoTextNode() {
@@ -185,7 +185,7 @@ public class InlineCodeMarkerTest {
         assertNull(TextExtractor.extractTree(styledSplit));
         ContentTree styled = tree(new StrongContentNode(list(text("First"))),
                 new EmphasisContentNode(list(text("Second"))));
-        reject(styled, "<x1><ke</x1><x2>ep9/></x2>", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
+        reject(styled, "<x1><ke</x1><x2>ep9/></x2>", ContentNodes.RejectionReason.RETAINED_MARKER);
     }
 
     public static final class GetterFixture {
@@ -199,7 +199,7 @@ public class InlineCodeMarkerTest {
         GetterFixture.InlineCodeContentNode code = new GetterFixture.InlineCodeContentNode();
         ContentTree tree = tree(code, text("Body"));
         assertNull(tree.events.get(0).node.text);
-        assertEquals("<keep1/>", tree.events.get(0).inlineCodeMarker);
+        assertEquals("<keep1/>", tree.events.get(0).retainedMarker);
         assertEquals("<keep1/>Body", extract(tree));
         assertSame(code, ContentNodes.replaceChecked(tree, "<keep1/>正文").get(0));
         assertEquals(0, code.reads);

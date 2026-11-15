@@ -5,13 +5,13 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Reserved, content-free occurrence anchors for native inline-code nodes. Never repairs markers. */
-public final class InlineCodeMarkers {
+/** Reserved, content-free occurrence anchors for retained native leaves. Never repairs markers. */
+public final class RetainedNodeMarkers {
     private static final Pattern PREFIX = Pattern.compile("<\\s*/?\\s*keep", Pattern.CASE_INSENSITIVE);
     private static final Pattern EXACT = Pattern.compile("<keep[1-9][0-9]*/>");
     private static final Pattern STYLE = Pattern.compile("</?x[1-9][0-9]*>");
 
-    private InlineCodeMarkers() { }
+    private RetainedNodeMarkers() { }
 
     /** Source text must not collide with the native-node anchor namespace. */
     public static boolean hasReservedPrefix(String text) {

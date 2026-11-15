@@ -7,29 +7,29 @@ import java.util.Collections;
 import org.json.JSONObject;
 import org.junit.Test;
 
-public class InlineCodeMarkersTest {
+public class RetainedNodeMarkersTest {
     @Test public void exactSyntaxOrderAndMultiplicityAreRequired() {
-        assertTrue(InlineCodeMarkers.matchesExpected("a<keep1/>b<keep2/>c", Arrays.asList("<keep1/>", "<keep2/>")));
+        assertTrue(RetainedNodeMarkers.matchesExpected("a<keep1/>b<keep2/>c", Arrays.asList("<keep1/>", "<keep2/>")));
         for (String value : new String[]{"<keep1/><keep1/>", "<keep2/><keep1/>", "<keep1 />",
                 "<keep01/>", "<KEEP1/>", "<keep1>", "<keep", "</keep1/>", "< keep1/>", "<keep1/><keep999/>"}) {
-            assertFalse(value, InlineCodeMarkers.matchesExpected(value, Collections.singletonList("<keep1/>")));
+            assertFalse(value, RetainedNodeMarkers.matchesExpected(value, Collections.singletonList("<keep1/>")));
         }
-        assertTrue(InlineCodeMarkers.matchesExpected("hello", Collections.emptyList()));
-        assertFalse(InlineCodeMarkers.matchesExpected("<keep1/>", Collections.emptyList()));
+        assertTrue(RetainedNodeMarkers.matchesExpected("hello", Collections.emptyList()));
+        assertFalse(RetainedNodeMarkers.matchesExpected("<keep1/>", Collections.emptyList()));
     }
 
     @Test public void sourceAndTranslationShareOneGrammar() {
         String source = "run<keep1/>now";
-        assertTrue(InlineCodeMarkers.matchesSource("运行<keep1/>现在", source));
-        assertFalse(InlineCodeMarkers.matchesSource("运行现在", source));
-        assertFalse(InlineCodeMarkers.matchesSource("运行<keep1/>现在", "run<keep1>now"));
+        assertTrue(RetainedNodeMarkers.matchesSource("运行<keep1/>现在", source));
+        assertFalse(RetainedNodeMarkers.matchesSource("运行现在", source));
+        assertFalse(RetainedNodeMarkers.matchesSource("运行<keep1/>现在", "run<keep1>now"));
         assertNull(Segments.plainTextViolation("运行<keep1/>现在", source));
-        assertEquals("行内代码定位标记无效", Segments.plainTextViolation("运行现在", source));
-        assertEquals("行内代码定位标记无效", Segments.plainTextViolation("正文<keep1/>", "plain"));
+        assertEquals("保留节点定位标记无效", Segments.plainTextViolation("运行现在", source));
+        assertEquals("保留节点定位标记无效", Segments.plainTextViolation("正文<keep1/>", "plain"));
     }
 
     @Test public void markerCharactersCannotMakeShortTextTranslatable() {
-        assertEquals("run", InlineCodeMarkers.withoutMarkers("run<keep1/><keep2/>"));
+        assertEquals("run", RetainedNodeMarkers.withoutMarkers("run<keep1/><keep2/>"));
         EnglishDetector.Verdict raw = EnglishDetector.evaluate("ok", 1, 1, false, "简体中文");
         EnglishDetector.Verdict marked = EnglishDetector.evaluate("ok<keep1/>", 1, 1, false, "简体中文");
         assertFalse(marked.shouldTranslate);
@@ -49,7 +49,7 @@ public class InlineCodeMarkersTest {
         EnglishDetector.Verdict verdict = EnglishDetector.evaluate(
                 "https://example.invalid<keep1/>hello", 2, 1, false, "简体中文");
         assertTrue(verdict.reason, verdict.shouldTranslate);
-        assertEquals("url text", InlineCodeMarkers.maskedForDetection("url<keep1/>text"));
+        assertEquals("url text", RetainedNodeMarkers.maskedForDetection("url<keep1/>text"));
     }
 
     @Test public void markerOnlyOutputIsEmptyEvenForShortSources() {
@@ -58,10 +58,10 @@ public class InlineCodeMarkersTest {
     }
 
     @Test public void reservedPrefixAssembledAcrossStyleTagsIsRejected() {
-        assertFalse(InlineCodeMarkers.matchesExpected("<x1><ke</x1><x2>ep9/></x2>", Collections.emptyList()));
-        assertFalse(InlineCodeMarkers.matchesExpected("<x1><ke</x1><x2>ep9</x2>", Collections.emptyList()));
-        assertFalse(InlineCodeMarkers.matchesSource("正文", "<x1><ke</x1><x2>ep9/></x2>"));
-        assertTrue(InlineCodeMarkers.matchesSource("<x1>正文</x1><keep1/>", "<x1>Body</x1><keep1/>"));
+        assertFalse(RetainedNodeMarkers.matchesExpected("<x1><ke</x1><x2>ep9/></x2>", Collections.emptyList()));
+        assertFalse(RetainedNodeMarkers.matchesExpected("<x1><ke</x1><x2>ep9</x2>", Collections.emptyList()));
+        assertFalse(RetainedNodeMarkers.matchesSource("正文", "<x1><ke</x1><x2>ep9/></x2>"));
+        assertTrue(RetainedNodeMarkers.matchesSource("<x1>正文</x1><keep1/>", "<x1>Body</x1><keep1/>"));
     }
 
     @Test public void preservationRuleIsMandatoryForCustomPromptInEveryProtocol() throws Exception {

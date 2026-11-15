@@ -111,7 +111,7 @@ public class StructurableTextFactoryTest {
         ContentNodesTest.NewLineContentNode newline = new ContentNodesTest.NewLineContentNode();
         AnnotatedStructurableText original = new AnnotatedStructurableText(list(
                 new TextContentNode("first"), newline, new TextContentNode("second"), emoji));
-        Object replacement = planned(original, "第一\n第二");
+        Object replacement = planned(original, "第一\n第二<keep1/>");
         assertNotNull(replacement);
         List<?> nodes = ((AnnotatedStructurableText) replacement).getContent();
         assertSame(newline, nodes.get(1));
@@ -134,7 +134,7 @@ public class StructurableTextFactoryTest {
         AnnotatedStructurableText original = new AnnotatedStructurableText(nodes);
 
         // 返回 null 是计划重建的“不替换”协议，所有 Hook 调用方保留 original。
-        assertNull(planned(original, "第一\n你好"));
+        assertNull(planned(original, "第一\n你好<keep1/>"));
         assertSame(nodes, original.getContent());
         assertSame(emoji, original.getContent().get(2));
         assertEquals("hello", text.getContent());
@@ -147,7 +147,7 @@ public class StructurableTextFactoryTest {
         AnnotatedStructurableText original = new AnnotatedStructurableText(
                 list(new TextContentNode("hello"), emoji));
 
-        assertNull(planned(original, "你好"));
+        assertNull(planned(original, "你好<keep1/>"));
         assertSame(emoji, original.getContent().get(1));
     }
 
@@ -168,7 +168,7 @@ public class StructurableTextFactoryTest {
                 list(shared, emoji, new ContentNodesTest.NewLineContentNode(), shared));
 
         Object out = planned(original,
-                "你好\n你好");
+                "你好<keep1/>\n你好");
 
         assertTrue(out instanceof AnnotatedStructurableText);
         List<Object> nodes = ((AnnotatedStructurableText) out).getContent();
@@ -188,8 +188,11 @@ public class StructurableTextFactoryTest {
         EmojiContentNode emoji = new EmojiContentNode("1");
         AnnotatedStructurableText original = new AnnotatedStructurableText(
                 list(mention, new TextContentNode("hello world"), emoji));
+        TextExtractor.Result extracted = TextExtractor.extract(original);
+        assertNotNull(extracted);
+        assertEquals("<keep1/>hello world<keep2/>", extracted.text);
 
-        Object out = planned(original, "你好世界");
+        Object out = planned(original, "<keep1/>你好世界<keep2/>");
 
         assertTrue("有提及时也必须产出译文，不能只靠保留英文通过测试",
                 out instanceof AnnotatedStructurableText);
@@ -212,11 +215,11 @@ public class StructurableTextFactoryTest {
         String request = Protocols.requestBody(Config.PROTOCOL_OPENAI_COMPATIBLE,
                 extracted.text, Config.DEF_SYSTEM_PROMPT, Config.DEF_MODEL,
                 Config.DEF_STREAMING);
-        assertEquals(Protocols.WRAPPER_OPEN + " " + body + Protocols.WRAPPER_CLOSE,
+        assertEquals(Protocols.WRAPPER_OPEN + "<keep1/>" + body + Protocols.WRAPPER_CLOSE,
                 JsonPath.extractString(request, "messages.1.content"));
 
         // 模拟正常接口译文，仅验证本地回填；不声称测试了真实模型输出。
-        String translation = "兄弟，给我推荐一些设计系统技能";
+        String translation = "<keep1/>兄弟，给我推荐一些设计系统技能";
         Object out = planned(original, translation);
 
         assertTrue(out instanceof AnnotatedStructurableText);
@@ -225,7 +228,8 @@ public class StructurableTextFactoryTest {
         assertSame(mention, nodes.get(0));
         // body 以空格开头：该前导空白属于原节点结构，留在标记外，重建时从原节点取，
         // 因此译文前仍带一个空格。正文本身不得丢失。
-        assertEquals(" " + translation, ((TextContentNode) nodes.get(1)).getContent());
+        assertEquals(" 兄弟，给我推荐一些设计系统技能",
+                ((TextContentNode) nodes.get(1)).getContent());
         assertEquals("ExampleUser", ((TextContentNode) mention.getContent().get(0)).getContent());
     }
 

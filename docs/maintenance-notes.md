@@ -104,6 +104,14 @@
 - LINE_COUNT 在原五参数对齐拒绝点记录 failing block 的源槽范围，经 alignInterval 映射全计划，附捕获的首尾类型/路径、LF/heading/list信息。只补诊断，不放宽数量或把缺行塞入一个节点。协议统一补充原样保留行段规则，自定义提示词也适用。
 - 删除旧 isInlineStyleContainer 名称，Event.styled 注释明确为格式/链接标记，并非宿主字体样式。增加非URL链接/混合keep/样式/URL/共享实例回归与内容无关行数诊断；构建及实机结果另行验证。
 
+## 全部保留叶节点位置统一
+
+- `82c55e0` Actions 实际 622 项测试、0 失败/跳过；最新进程13:12:43 successful response 后 ROOT槽14→ROOT槽15，仅 GapOpaque=1 type=j7.h5，SOURCE_BOUNDARY_AMBIGUOUS。13:13:32 NETWORK/SocketException 是独立请求，不归因同一回填。此前链接分界修正不代表整条消息已成功。
+- smali/j7/h5 的 toString 常量及 kl.b 的类型分支核实其为 TimestampContentNode；宿主按格式文字添加点击/样式。模块不读取时间戳 getter、不重造模型。此次不新增版本映射或时间戳专用 hook，问题是所有原样保留叶的空格占位丢失位置。
+- 现将既有 `<keepN/>` 机制统一用于 INLINE_CODE/OPAQUE/CODE_BLOCK，事件字段 retainedMarker、公共语法 RetainedNodeMarkers、拒绝 RETAINED_MARKER。移除 InlineCodeMarkers/inlineCodeMarker/INLINE_CODE_MARKER 旧接口及空格占位路径；没有新旧标记协议同时运行。计数、源hash、请求/回填共用同次 occurrence，内部模型不读取/序列化。null 不产生标记，URL/实际emoji仍保留锚点规则，代码过滤不变。
+- 列表项以保留叶开头时，ITEM_START 记录首锚点项目符号归属，唯一token只消费紧邻首锚点且独占该行前缀的项目符号，不在无文字槽的间隔报UNASSIGNED_TEXT，也不吞掉前一项正文。源LF/标题逻辑边界仍沿当前计划，不补换行。
+- 回归覆盖时间戳样未知节点、共享/空/组合保留叶、代码/mention/URL/style/list混排、无getter读取、模型标记损坏和旧空格hash失效；原来缺标记拒绝保留，成功fixture显式回带标记，测试helper不偷偷补标记。CI和设备结果分别验证，不把测试成功当消息成功。
+
 ## 已确认的架构教训（改代码前先读）
 
 1. **文本转换目标按 profile 变化**：`340013` 使用 `TextUtilsKt.toSpannable`，

@@ -17,7 +17,7 @@ import java.util.List;
  * {@link TextExtractor} 产出的「纯文本请求正文」与「可翻译片段计数」。
  *
  * <p>约束：纯文本必须保持既有形态（语言检测、内容哈希与单链路请求都
- * 依赖它）；URL 定位标记与样式标记只出现在纯文本里。片段计数必须与
+ * 依赖它）；URL、保留叶节点定位标记与样式标记只出现在纯文本里。片段计数必须与
  * 回填消费口径（{@code ContentTree.segmentCount} 与捕获节点的分块）
  * 严格一致；提取、对齐与重建共享同一
  * 出现位置快照，否则片段会串位。</p>
@@ -160,6 +160,7 @@ public class TextExtractorSegmentsTest {
                         new TextContentNode("visible English text"))));
 
         assertNotNull(result);
+        assertEquals("<keep1/>visible English text", result.text);
         assertTrue(result.text.contains("visible English text"));
         assertFalse(result.text.contains("hidden"));
         assertEquals(1, result.opaqueNodeCount);
@@ -211,8 +212,8 @@ public class TextExtractorSegmentsTest {
         assertNotNull(r);
         assertFalse("代码不得进入请求正文", r.text.contains("npm install"));
         assertTrue("两侧文本必须仍在请求里", r.text.contains("run"));
-        assertEquals("行内代码仅输出定位标记，opaque 节点仍输出一个空格",
-                "run<keep1/> now", r.text);
+        assertEquals("代码与 opaque 叶节点仅输出连续定位标记，不新增空格",
+                "run<keep1/><keep2/>now", r.text);
         assertEquals("代码与 emoji 不占片段", 2, r.segmentCount);
         assertEquals(2, r.textNodeCount);
         assertEquals(2, r.opaqueNodeCount);

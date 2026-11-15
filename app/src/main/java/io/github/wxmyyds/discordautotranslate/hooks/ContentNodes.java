@@ -5,7 +5,7 @@ import androidx.annotation.Nullable;
 import io.github.wxmyyds.discordautotranslate.core.BlankLines;
 import io.github.wxmyyds.discordautotranslate.core.ContentTree;
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
-import io.github.wxmyyds.discordautotranslate.core.InlineCodeMarkers;
+import io.github.wxmyyds.discordautotranslate.core.RetainedNodeMarkers;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
 import io.github.wxmyyds.discordautotranslate.core.Segments;
 import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
@@ -50,7 +50,7 @@ public final class ContentNodes {
     /** Fixed classifications only; never carries source text, translation, anchors or identity. */
     enum RejectionReason {
         INVALID_INPUT, NO_TRANSLATABLE_SEGMENTS, SEGMENT_MARKER, EMPTY_TRANSLATION,
-        URL_COUNT, EMOJI_COUNT, INLINE_CODE_MARKER, ANCHOR_ORDER, STYLE_OPEN, STYLE_CLOSE, STYLE_EMPTY,
+        URL_COUNT, EMOJI_COUNT, RETAINED_MARKER, ANCHOR_ORDER, STYLE_OPEN, STYLE_CLOSE, STYLE_EMPTY,
         UNASSIGNED_TEXT, PARAGRAPH_MISSING, PARAGRAPH_EXTRA, SOURCE_BOUNDARY_AMBIGUOUS,
         LINE_COUNT, LINE_EMPTY, LIST_ITEM_EMPTY, PART_COUNT,
         RETAINED_STRUCTURE_CHANGED, TEXT_CONSTRUCTOR, CONTAINER_CONSTRUCTOR, CONSUMPTION_COUNT
@@ -112,8 +112,8 @@ public final class ContentNodes {
             throw new Rejection(RejectionReason.PART_COUNT, targetCount, parts.size());
         }
         // Do not allow reserved fragments split across adjacent styled text slots to reach rendering.
-        if (InlineCodeMarkers.hasReservedPrefix(String.join("", parts)))
-            throw reject(RejectionReason.INLINE_CODE_MARKER);
+        if (RetainedNodeMarkers.hasReservedPrefix(String.join("", parts)))
+            throw reject(RejectionReason.RETAINED_MARKER);
         // 按节点出现的位置分配片段，不能以实例身份为键：共享节点的后一次
         // 空片段会覆盖前一次译文，造成文字全部消失但 emoji 仍保留。
         Replacement replacement = new Replacement(parts);
@@ -365,8 +365,8 @@ public final class ContentNodes {
         if (plan.groupIds.isEmpty()) throw reject(RejectionReason.NO_TRANSLATABLE_SEGMENTS);
         requireAnchorCounts(plain, plan.urls, RejectionReason.URL_COUNT);
         requireAnchorCounts(plain, plan.emojiAnchors, RejectionReason.EMOJI_COUNT);
-        if (!InlineCodeMarkers.matchesExpected(plain, plan.inlineCodeMarkers))
-            throw reject(RejectionReason.INLINE_CODE_MARKER);
+        if (!RetainedNodeMarkers.matchesExpected(plain, plan.retainedMarkers))
+            throw reject(RejectionReason.RETAINED_MARKER);
         if (plan.hasStyleMarkers()) {
             return alignByStyleMarkers(plain, plan);
         }
@@ -387,7 +387,8 @@ public final class ContentNodes {
             if (t.anchor != null) {
                 int at = plain.indexOf(t.anchor, cursor);
                 if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
-                assignRun(plain.substring(cursor, at), pending, parts, plan);
+                String prefix = anchorPrefix(plain.substring(cursor, at), t);
+                assignRun(prefix, pending, parts, plan);
                 pending.clear();
                 cursor = at + t.anchor.length();
             } else if (t.styleId > 0) {
@@ -459,12 +460,12 @@ public final class ContentNodes {
     /**
      * 按树序令牌流切分译文并对齐片段。
      *
-     * <p>定位标记（URL / emoji / 行内代码）不消费译文片段。按树序依次定位标记，
+     * <p>定位标记（URL / emoji / 保留叶节点）不消费译文片段。按树序依次定位标记，
      * 标记之间的文本交给 {@link #alignSpanToParts} 按结构类型唯一切分。</p>
      */
     private static List<String> alignTokens(String plain, AlignmentPlan plan) {
         boolean hasAnchors = !plan.urls.isEmpty() || !plan.emojiAnchors.isEmpty()
-                || !plan.inlineCodeMarkers.isEmpty();
+                || !plan.retainedMarkers.isEmpty();
         if (!hasAnchors) {
             return alignInterval(plain, plan, 0, plan.groupIds.size());
         }
@@ -481,7 +482,8 @@ public final class ContentNodes {
             int at = plain.indexOf(anchor, from);
             if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
             int segEnd = t.segIndex;
-            List<String> spanParts = alignInterval(plain.substring(from, at), plan, segStart, segEnd);
+            String prefix = anchorPrefix(plain.substring(from, at), t);
+            List<String> spanParts = alignInterval(prefix, plan, segStart, segEnd);
             copySpan(spanParts, parts, segStart);
             from = at + anchor.length();
             segStart = segEnd;
@@ -490,6 +492,15 @@ public final class ContentNodes {
                 segStart, plan.groupIds.size());
         copySpan(tailParts, parts, segStart);
         return parts;
+    }
+
+    /** A list item can begin with a retained leaf; consume its native item prefix, never body text. */
+    private static String anchorPrefix(String prefix, PlanToken token) {
+        if (!token.listPrefix) return prefix;
+        int lineStart = prefix.lastIndexOf('\n') + 1;
+        // Only the item marker immediately before its first anchor can be consumed here.
+        return LIST_MARKER.matcher(prefix.substring(lineStart)).matches()
+                ? prefix.substring(0, lineStart) : prefix;
     }
 
     /** One interval operation; decoration consumes captured structure only, never the response. */
@@ -667,8 +678,8 @@ public final class ContentNodes {
         final List<BoundaryContext> boundaries = new ArrayList<>();
         /** 按树序的 URL 定位标记（原样 URL 文本）。 */
         final List<String> urls = new ArrayList<>();
-        /** Content-free inline-code anchors from captured occurrences. */
-        final List<String> inlineCodeMarkers = new ArrayList<>();
+        /** Content-free retained-leaf anchors from captured occurrences. */
+        final List<String> retainedMarkers = new ArrayList<>();
         /** 按树序的 emoji 定位标记：Unicode 字符或宿主提供的自定义 emoji alt。 */
         final List<String> emojiAnchors = new ArrayList<>();
         /** 按树序的定位与可翻译片段令牌。 */
@@ -755,22 +766,25 @@ public final class ContentNodes {
         }
     }
 
-    /** One tree-order token representation for URL, emoji, inline-code anchors and text slots. */
+    /** One tree-order token representation for URL, emoji, retained-leaf anchors and text slots. */
     static final class PlanToken {
         final String anchor; // Non-null anchors consume no text slot.
         final int segIndex; // Anchor boundary or text-slot index, captured in tree order.
         final int styleId;
+        final boolean listPrefix;
 
-        PlanToken(String anchor, int segIndex) {
+        PlanToken(String anchor, int segIndex, boolean listPrefix) {
             this.anchor = anchor;
             this.segIndex = segIndex;
             this.styleId = 0;
+            this.listPrefix = listPrefix;
         }
 
         PlanToken(int segIndex, int styleId) {
             this.anchor = null;
             this.segIndex = segIndex;
             this.styleId = styleId;
+            this.listPrefix = false;
         }
     }
 
@@ -789,11 +803,13 @@ public final class ContentNodes {
                     continue;
                 case ITEM_START:
                     w.itemStarts++;
+                    w.pendingListPrefix = true;
                     if (!w.plan.groupIds.isEmpty()) w.forceNewGroup = true;
                     w.separatorNewlines++; // Native list-item line boundary, not opaque text.
                     w.listLevel++;
                     continue;
                 case ITEM_END:
+                    w.pendingListPrefix = false;
                     w.listLevel--;
                     continue;
                 case LIST_END:
@@ -848,11 +864,10 @@ public final class ContentNodes {
             w.gapKinds[node.kind.ordinal()]++;
             recordGapType(w, node);
             switch (node.kind) {
-                case INLINE_CODE:
-                    w.plan.inlineCodeMarkers.add(event.inlineCodeMarker);
-                    w.plan.tokens.add(new PlanToken(event.inlineCodeMarker, w.plan.groupIds.size()));
+                case INLINE_CODE: case OPAQUE: case CODE_BLOCK:
+                    w.plan.retainedMarkers.add(event.retainedMarker);
+                    addAnchor(w, event.retainedMarker);
                     break;
-                case OPAQUE: case CODE_BLOCK: break;
                 case URL: addUrlToken(w, node.text); break;
                 case EMOJI: addEmojiToken(w, node.text); break;
                 case BREAK: w.separatorNewlines++; break;
@@ -869,6 +884,7 @@ public final class ContentNodes {
         int headingBreaks;
         int listLevel;
         boolean forceNewGroup;
+        boolean pendingListPrefix;
         final int[] gapKinds = new int[ContentTree.Kind.values().length];
         int whitespaceNodes;
         int itemStarts;
@@ -895,12 +911,17 @@ public final class ContentNodes {
      */
     private static void addEmojiToken(PlanWalk w, String emoji) {
         w.plan.emojiAnchors.add(emoji);
-        w.plan.tokens.add(new PlanToken(emoji, w.plan.groupIds.size()));
+        addAnchor(w, emoji);
     }
 
     private static void addUrlToken(PlanWalk w, String url) {
         w.plan.urls.add(url);
-        w.plan.tokens.add(new PlanToken(url, w.plan.groupIds.size()));
+        addAnchor(w, url);
+    }
+
+    private static void addAnchor(PlanWalk walk, String anchor) {
+        walk.plan.tokens.add(new PlanToken(anchor, walk.plan.groupIds.size(), walk.pendingListPrefix));
+        walk.pendingListPrefix = false;
     }
 
     /**
@@ -910,6 +931,7 @@ public final class ContentNodes {
      * {@code forceNewGroup} 由列表项边界推进段落组。</p>
      */
     private static void addSegment(PlanWalk w, ContentTree.Event event, int sourceLines) {
+        w.pendingListPrefix = false;
         w.plan.boundaries.add(new BoundaryContext(event, w, sourceLines));
         int separatorNewlines = w.separatorNewlines;
         boolean lineBoundary = separatorNewlines < 2

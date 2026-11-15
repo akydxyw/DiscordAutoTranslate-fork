@@ -302,14 +302,20 @@ public class SourceNewlineAlignmentTest {
     }
 
     @Test
-    public void twoCodeBlockPlaceholdersCannotInventParagraphBoundary() {
+    public void twoCodeBlockMarkersProveBoundaryWithoutInventingParagraph() {
         CodeBlockContentNode firstCode = new CodeBlockContentNode("one\nline", "java", false);
         CodeBlockContentNode secondCode = new CodeBlockContentNode("two", "text", true);
         ContentTree tree = compiled(list(text("first"), firstCode, secondCode, text("second")));
-        assertEquals("first  second", extracted(tree));
-        rejected(tree, "第一  第二", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
-        rejected(tree, "第一\n\n第二", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
-        rejected(tree, "第一\n第二", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
+        assertEquals("first<keep1/><keep2/>second", extracted(tree));
+        List<Object> out = replaced(tree, "第一<keep1/><keep2/>第二");
+        assertEquals("第一", content(out.get(0)));
+        assertSame(firstCode, out.get(1));
+        assertSame(secondCode, out.get(2));
+        assertEquals("第二", content(out.get(3)));
+        assertEquals("第一<keep1/><keep2/>第二", extracted(compiled(out)));
+        rejected(tree, "第一<keep1/>第二", ContentNodes.RejectionReason.RETAINED_MARKER);
+        rejected(tree, "第一<keep2/>第二", ContentNodes.RejectionReason.RETAINED_MARKER);
+        rejected(tree, "第一\n\n第二", ContentNodes.RejectionReason.RETAINED_MARKER);
         assertSame(firstCode, tree.root.children.get(1).original);
         assertSame(secondCode, tree.root.children.get(2).original);
     }
@@ -320,15 +326,14 @@ public class SourceNewlineAlignmentTest {
         CodeBlockContentNode secondCode = new CodeBlockContentNode("two", "text", false);
         ContentTree tree = compiled(list(text("first"), text("\n"), firstCode, secondCode,
                 text("second\ncontinuation")));
-        String request = extracted(tree);
-        assertEquals("first\n  second\ncontinuation", request);
-        String translated = request.replace("first", "第一").replace("second", "第二")
-                .replace("continuation", "续行");
-        List<Object> out = replaced(tree, translated);
+        assertEquals("first\n<keep1/><keep2/>second\ncontinuation", extracted(tree));
+        List<Object> out = replaced(tree, "第一\n<keep1/><keep2/>第二\n续行");
         assertEquals("第一", content(out.get(0)));
         assertSame(firstCode, out.get(2));
         assertSame(secondCode, out.get(3));
-        assertEquals("  第二\n续行", content(out.get(4)));
+        assertEquals("第二\n续行", content(out.get(4)));
+        assertEquals("第一\n<keep1/><keep2/>第二\n续行", extracted(compiled(out)));
+        rejected(tree, "第一\n第二\n续行", ContentNodes.RejectionReason.RETAINED_MARKER);
     }
 
     @Test
@@ -337,40 +342,35 @@ public class SourceNewlineAlignmentTest {
         CodeBlockContentNode code = new CodeBlockContentNode("hidden\n\ncode", "java", false);
         TextContentNode second = text("Second");
         ContentTree tree = compiled(list(first, code, second));
-        String request = extracted(tree);
-        assertEquals("First\n Second", request);
+        assertEquals("First\n<keep1/>Second", extracted(tree));
 
-        String translated = request.replace("First", "第一").replace("Second", "第二");
-        assertEquals("第一\n 第二", translated);
-        List<Object> out = replaced(tree, translated);
+        List<Object> out = replaced(tree, "第一\n<keep1/>第二");
         assertEquals("第一\n", content(out.get(0)));
         assertSame(code, out.get(1));
-        assertEquals(" 第二", content(out.get(2)));
+        assertEquals("第二", content(out.get(2)));
+        assertEquals("第一\n<keep1/>第二", extracted(compiled(out)));
+        rejected(tree, "第一\n第二", ContentNodes.RejectionReason.RETAINED_MARKER);
         assertEquals("First\n", first.getContent());
         assertEquals("Second", second.getContent());
     }
 
     @Test
-    public void inlineCodeMarkerProvesBoundaryButOpaqueHiddenLfStillCannot() {
+    public void retainedMarkersProveBoundaryWithoutUsingHiddenLf() {
         for (Object hidden : hiddenLfNodes()) {
             TextContentNode first = text("first");
             TextContentNode second = text("second");
             ContentTree tree = compiled(list(first, hidden, second));
+            assertEquals("first<keep1/>second", extracted(tree));
+            List<Object> out = replaced(tree, "第一<keep1/>第二");
+            assertEquals("第一", content(out.get(0)));
+            assertSame(hidden, out.get(1));
+            assertEquals("第二", content(out.get(2)));
+            assertEquals("第一<keep1/>第二", extracted(compiled(out)));
             if (hidden instanceof InlineCodeContentNode) {
-                assertEquals("first<keep1/>second", extracted(tree));
-                List<Object> out = replaced(tree, "第一<keep1/>第二");
-                assertEquals("第一", content(out.get(0)));
-                assertSame(hidden, out.get(1));
-                assertEquals("第二", content(out.get(2)));
-                assertEquals("第一<keep1/>第二", extracted(compiled(out)));
                 assertEquals("hidden\n\ncode", ((InlineCodeContentNode) hidden).getContent());
-                rejected(tree, "第一\n第二", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
-                rejected(tree, "第一\n\n第二", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
-            } else {
-                assertEquals("first second", extracted(tree));
-                rejected(tree, "第一\n第二", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
-                rejected(tree, "第一\n\n第二", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
             }
+            rejected(tree, "第一\n第二", ContentNodes.RejectionReason.RETAINED_MARKER);
+            rejected(tree, "第一\n\n第二", ContentNodes.RejectionReason.RETAINED_MARKER);
             assertEquals(2, tree.segmentCount);
             assertEquals("first", first.getContent());
             assertEquals("second", second.getContent());
@@ -382,16 +382,9 @@ public class SourceNewlineAlignmentTest {
         for (Object hidden : hiddenLfNodes()) {
             TextContentNode lf = text("\n");
             ContentTree tree = compiled(list(text("first\ncontinuation"), lf, hidden, text("second")));
-            String translated;
-            if (hidden instanceof InlineCodeContentNode) {
-                assertEquals("first\ncontinuation\n<keep1/>second", extracted(tree));
-                translated = "第一\n续行\n<keep1/>第二";
-                rejected(tree, "第一\n续行\n第二", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
-            } else {
-                assertEquals("first\ncontinuation\n second", extracted(tree));
-                translated = "第一\n续行\n第二";
-            }
-            List<Object> out = replaced(tree, translated);
+            assertEquals("first\ncontinuation\n<keep1/>second", extracted(tree));
+            List<Object> out = replaced(tree, "第一\n续行\n<keep1/>第二");
+            rejected(tree, "第一\n续行\n第二", ContentNodes.RejectionReason.RETAINED_MARKER);
             assertEquals("第一\n续行", content(out.get(0)));
             assertSame(lf, out.get(1));
             assertSame(hidden, out.get(2));
@@ -434,7 +427,7 @@ public class SourceNewlineAlignmentTest {
         assertEquals(3, borrowed.expected);
         assertEquals(2, borrowed.actual);
         rejected(tree, "第一\n首段续行\n中间第二\n末段\n末段续行",
-                ContentNodes.RejectionReason.INLINE_CODE_MARKER);
+                ContentNodes.RejectionReason.RETAINED_MARKER);
         assertEquals("first\ncontinuation\nmiddle<keep1/>second\nlast\ncontinuation", extracted(tree));
     }
 

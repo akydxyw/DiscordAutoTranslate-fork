@@ -101,14 +101,14 @@ public class BoundaryDiagnosticsTest {
         assertNotNull(tree);
         TextExtractor.Result request = TextExtractor.extractTree(tree);
         assertNotNull(request);
-        assertEquals("first<keep1/> second", request.text);
+        assertEquals("first<keep1/><keep2/>second", request.text);
         assertEquals(2, request.segmentCount);
         assertEquals(2, request.textNodeCount);
         assertEquals(2, request.opaqueNodeCount);
         assertFalse(request.text.contains("credential-secret"));
         assertFalse(request.text.contains("hidden-name"));
 
-        List<Object> output = ContentNodes.replaceChecked(tree, "第一<keep1/>第二");
+        List<Object> output = ContentNodes.replaceChecked(tree, "第一<keep1/><keep2/>第二");
         assertEquals(4, output.size());
         assertEquals("第一", ((TextContentNode) output.get(0)).getContent());
         assertSame(code, output.get(1));
@@ -120,21 +120,45 @@ public class BoundaryDiagnosticsTest {
 
         ContentNodes.Rejection missing = assertThrows(ContentNodes.Rejection.class,
                 () -> ContentNodes.replaceChecked(tree, "译文"));
-        assertEquals(ContentNodes.RejectionReason.INLINE_CODE_MARKER, missing.reason);
+        assertEquals(ContentNodes.RejectionReason.RETAINED_MARKER, missing.reason);
         assertEquals("", missing.structure);
         assertNull(ContentNodes.replacePlanned(tree, "译文"));
+        ContentNodes.Rejection missingOpaque = assertThrows(ContentNodes.Rejection.class,
+                () -> ContentNodes.replaceChecked(tree, "第一<keep1/>第二"));
+        assertEquals(ContentNodes.RejectionReason.RETAINED_MARKER, missingOpaque.reason);
+        assertEquals("", missingOpaque.structure);
+        assertNull(ContentNodes.replacePlanned(tree, "第一<keep1/>第二"));
     }
 
     @Test public void opaqueGapReportsKindsNotContents() {
-        String structure = ambiguous(Arrays.asList(new TextContentNode("first"),
+        OpaqueNodeTranslationTest.ChannelMentionContentNode mention =
                 new OpaqueNodeTranslationTest.ChannelMentionContentNode(
-                        Arrays.asList(new TextContentNode("hidden-name"))),
-                new TextContentNode("second")), "译文").structure;
-        assertTrue(structure.contains("rightGapInlineCode=0"));
-        assertTrue(structure.contains("rightGapOpaque=1"));
+                        Arrays.asList(new TextContentNode("hidden-name")));
+        ContentTree anchored = ContentTree.compile(Arrays.asList(new TextContentNode("first"),
+                mention, new TextContentNode("second")));
+        assertNotNull(anchored);
+        assertEquals("first<keep1/>second", TextExtractor.extractTree(anchored).text);
+        List<Object> output = ContentNodes.replaceChecked(anchored, "第一<keep1/>第二");
+        assertEquals("第一", ((TextContentNode) output.get(0)).getContent());
+        assertSame(mention, output.get(1));
+        assertEquals("第二", ((TextContentNode) output.get(2)).getContent());
+        ContentNodes.Rejection missing = assertThrows(ContentNodes.Rejection.class,
+                () -> ContentNodes.replaceChecked(anchored, "第一第二"));
+        assertEquals(ContentNodes.RejectionReason.RETAINED_MARKER, missing.reason);
+        assertNull(ContentNodes.replacePlanned(anchored, "第一第二"));
+
+        // The retained leaf is an anchor; only the following plain sibling slots are ambiguous.
+        String structure = ambiguous(Arrays.asList(new TextContentNode("first"), mention,
+                new TextContentNode("second"), new TextContentNode("third")),
+                "第一<keep1/>私密译文").structure;
+        assertTrue(structure.contains("intervalSlots=2 leftSlot=1 rightSlot=2"));
+        assertTrue(structure.contains("leftGapInlineCode=0"));
+        assertTrue(structure.contains("leftGapOpaque=1"));
         assertTrue(structure.contains("ChannelMentionContentNode"));
+        assertTrue(structure.contains("rightGapOpaque=0"));
         assertTrue(structure.contains("rightSourceLfBefore=0"));
         assertFalse(structure.contains("hidden-name"));
+        assertFalse(structure.contains("私密译文"));
     }
 
     @Test public void anchorIntervalLocalBoundaryMapsBackToGlobalSlot() {
@@ -234,12 +258,18 @@ public class BoundaryDiagnosticsTest {
     public static final class UnknownFive { }
 
     @Test public void gapTypesAreExplicitlyBoundedButCountsAreNotDropped() {
-        String structure = ambiguous(Arrays.asList(new TextContentNode("first"), new UnknownOne(),
+        String structure = ambiguous(Arrays.asList(new TextContentNode("private-first"), new UnknownOne(),
                 new UnknownTwo(), new UnknownThree(), new UnknownFour(), new UnknownFive(),
-                new TextContentNode("second")), "译文").structure;
-        assertTrue(structure.contains("rightGapOpaque=5"));
-        assertTrue(structure.contains("rightGapTypesTruncated=true"));
+                new TextContentNode("private-second"), new TextContentNode("private-third")),
+                "第一<keep1/><keep2/><keep3/><keep4/><keep5/>私密译文").structure;
+        assertTrue(structure.contains("intervalSlots=2 leftSlot=1 rightSlot=2"));
+        assertTrue(structure.contains("leftGapOpaque=5"));
+        assertTrue(structure.contains("leftGapTypesTruncated=true"));
+        assertTrue(structure.contains("rightGapOpaque=0"));
+        assertTrue(structure.contains("rightGapTypesTruncated=false"));
         assertTrue(structure.contains("UnknownOne"));
         assertFalse(structure.contains("UnknownFive"));
+        assertFalse(structure.contains("private-"));
+        assertFalse(structure.contains("私密译文"));
     }
 }
