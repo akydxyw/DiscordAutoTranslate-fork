@@ -146,7 +146,7 @@ public class InlineCodeMarkerTest {
         assertSame(link, out.get(3));
         assertSame(emoji, out.get(5));
         assertEquals("丁", content(out.get(6)));
-        reject(tree, "甲" + url + "乙<keep1/>丙:party:丁", ContentNodes.RejectionReason.ANCHOR_ORDER);
+        reject(tree, "甲" + url + "乙<keep1/>丙:party:丁", ContentNodes.RejectionReason.PARAGRAPH_MISSING);
     }
 
     @Test public void nativeListShapesAndTitleBoundaryRemainWithCodeMarkers() {
@@ -180,6 +180,12 @@ public class InlineCodeMarkerTest {
         }
         ContentTree split = tree(text("<"), text("keep1/>"), new InlineCodeContentNode("one"), text("Body"));
         assertNull(TextExtractor.extractTree(split));
+        ContentTree styledSplit = tree(new StrongContentNode(list(text("<ke"))),
+                new EmphasisContentNode(list(text("ep9/>"))), new InlineCodeContentNode("one"));
+        assertNull(TextExtractor.extractTree(styledSplit));
+        ContentTree styled = tree(new StrongContentNode(list(text("First"))),
+                new EmphasisContentNode(list(text("Second"))));
+        reject(styled, "<x1><ke</x1><x2>ep9/></x2>", ContentNodes.RejectionReason.INLINE_CODE_MARKER);
     }
 
     public static final class GetterFixture {

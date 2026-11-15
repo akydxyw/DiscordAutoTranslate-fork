@@ -59,6 +59,7 @@ public final class Segments {
         if (!InlineCodeMarkers.matchesSource(translated, source)) {
             return "行内代码定位标记无效";
         }
+        if (InlineCodeMarkers.withoutMarkers(translated).trim().isEmpty()) return "译文为空";
         int n = InlineCodeMarkers.withoutMarkers(source).length();
         if (n >= 40) {
             int m = InlineCodeMarkers.withoutMarkers(translated).length();

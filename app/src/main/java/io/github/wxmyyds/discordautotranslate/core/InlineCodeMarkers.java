@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 public final class InlineCodeMarkers {
     private static final Pattern PREFIX = Pattern.compile("<\\s*/?\\s*keep", Pattern.CASE_INSENSITIVE);
     private static final Pattern EXACT = Pattern.compile("<keep[1-9][0-9]*/>");
+    private static final Pattern STYLE = Pattern.compile("</?x[1-9][0-9]*>");
 
     private InlineCodeMarkers() { }
 
@@ -19,6 +20,8 @@ public final class InlineCodeMarkers {
 
     /** One syntax check shared by engine and reconstruction; null means malformed reserved syntax. */
     private static List<String> read(String text) {
+        // Validate reserved syntax across styled chunks too, not only within individual text nodes.
+        text = STYLE.matcher(text).replaceAll("");
         List<String> markers = new ArrayList<>();
         Matcher prefix = PREFIX.matcher(text);
         while (prefix.find()) {
@@ -39,6 +42,11 @@ public final class InlineCodeMarkers {
     /** Analysis only: generated anchor characters are not natural-language text. */
     public static String withoutMarkers(String text) {
         return EXACT.matcher(text).replaceAll("");
+    }
+
+    /** Detection only: preserve lexical separation so adjacent URL/text are not merged. */
+    public static String maskedForDetection(String text) {
+        return EXACT.matcher(text).replaceAll(" ");
     }
 
     public static boolean matchesSource(String translated, String source) {

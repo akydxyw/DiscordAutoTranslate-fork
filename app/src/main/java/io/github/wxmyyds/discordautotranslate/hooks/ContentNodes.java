@@ -108,9 +108,9 @@ public final class ContentNodes {
         if (parts.size() != targetCount) {
             throw new Rejection(RejectionReason.PART_COUNT, targetCount, parts.size());
         }
-        for (String part : parts) {
-            if (InlineCodeMarkers.hasReservedPrefix(part)) throw reject(RejectionReason.INLINE_CODE_MARKER);
-        }
+        // Do not allow reserved fragments split across adjacent styled text slots to reach rendering.
+        if (InlineCodeMarkers.hasReservedPrefix(String.join("", parts)))
+            throw reject(RejectionReason.INLINE_CODE_MARKER);
         // 按节点出现的位置分配片段，不能以实例身份为键：共享节点的后一次
         // 空片段会覆盖前一次译文，造成文字全部消失但 emoji 仍保留。
         Replacement replacement = new Replacement(parts);

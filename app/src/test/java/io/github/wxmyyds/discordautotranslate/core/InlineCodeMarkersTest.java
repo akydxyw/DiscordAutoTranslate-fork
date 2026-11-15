@@ -45,6 +45,25 @@ public class InlineCodeMarkersTest {
         assertNotNull(Segments.plainTextViolation("短<keep1/>", source));
     }
 
+    @Test public void detectorDoesNotSwallowTextAfterUrlCodeBoundary() {
+        EnglishDetector.Verdict verdict = EnglishDetector.evaluate(
+                "https://example.invalid<keep1/>hello", 2, 1, false, "简体中文");
+        assertTrue(verdict.reason, verdict.shouldTranslate);
+        assertEquals("url text", InlineCodeMarkers.maskedForDetection("url<keep1/>text"));
+    }
+
+    @Test public void markerOnlyOutputIsEmptyEvenForShortSources() {
+        assertEquals("译文为空", Segments.plainTextViolation("<keep1/>", "hello<keep1/>world"));
+        assertNull(Segments.plainTextViolation("你好<keep1/>世界", "hello<keep1/>world"));
+    }
+
+    @Test public void reservedPrefixAssembledAcrossStyleTagsIsRejected() {
+        assertFalse(InlineCodeMarkers.matchesExpected("<x1><ke</x1><x2>ep9/></x2>", Collections.emptyList()));
+        assertFalse(InlineCodeMarkers.matchesExpected("<x1><ke</x1><x2>ep9</x2>", Collections.emptyList()));
+        assertFalse(InlineCodeMarkers.matchesSource("正文", "<x1><ke</x1><x2>ep9/></x2>"));
+        assertTrue(InlineCodeMarkers.matchesSource("<x1>正文</x1><keep1/>", "<x1>Body</x1><keep1/>"));
+    }
+
     @Test public void preservationRuleIsMandatoryForCustomPromptInEveryProtocol() throws Exception {
         for (String protocol : new String[]{Config.PROTOCOL_OPENAI_COMPATIBLE,
                 Config.PROTOCOL_OPENAI_RESPONSES, Config.PROTOCOL_ANTHROPIC_MESSAGES}) {
