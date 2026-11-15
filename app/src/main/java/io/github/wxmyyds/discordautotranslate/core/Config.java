@@ -23,6 +23,10 @@ public final class Config {
     public static final String KEY_ENABLED = "auto_translate_enabled";
     public static final boolean DEF_ENABLED = true;
 
+    // ---- 项目日志（不参与翻译配置版本）----
+    public static final String KEY_LOGGING_ENABLED = "logging_enabled";
+    public static final boolean DEF_LOGGING_ENABLED = false;
+
     // ---- API 配置（URL 只填基础地址，端点后缀由所选协议追加）----
     public static final String KEY_API_URL = "api_url";
     /** 基础地址默认值；实际端点由协议追加 {@code /chat/completions} 或 {@code /responses}。 */
@@ -126,6 +130,7 @@ public final class Config {
     /** 配置快照，读取一次后供本次使用，避免渲染路径反复访问 SharedPreferences。 */
     public static class Snapshot {
         public final boolean enabled;
+        public final boolean loggingEnabled;
         public final String apiUrl;
         public final String apiKey;
         public final String model;
@@ -144,6 +149,7 @@ public final class Config {
 
         Snapshot(SharedPreferences p) {
             enabled = readBoolean(p, KEY_ENABLED, DEF_ENABLED);
+            loggingEnabled = readBoolean(p, KEY_LOGGING_ENABLED, DEF_LOGGING_ENABLED);
             apiUrl = str(p, KEY_API_URL, DEF_API_URL);
             apiKey = str(p, KEY_API_KEY, DEF_API_KEY);
             model = str(p, KEY_MODEL, DEF_MODEL);
@@ -160,6 +166,7 @@ public final class Config {
         /** 仅承载错误状态；其余字段是不可使用的占位值，不是可编辑的默认配置。 */
         private Snapshot(String error) {
             enabled = DEF_ENABLED;
+            loggingEnabled = DEF_LOGGING_ENABLED;
             apiUrl = DEF_API_URL;
             apiKey = DEF_API_KEY;
             model = DEF_MODEL;

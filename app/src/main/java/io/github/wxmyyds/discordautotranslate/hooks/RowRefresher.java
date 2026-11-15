@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.view.View;
 
 import androidx.annotation.Nullable;
@@ -122,7 +124,7 @@ final class RowRefresher {
     }
 
     private static void reportRowRefreshFailure(String stage) {
-        HookDiagnostics.infoOnce("rowRefresh.failure." + stage,
+        ProjectLog.infoOnce("rowRefresh.failure." + stage,
                 "row adapter refresh lookup failed at " + stage);
     }
 
@@ -205,7 +207,7 @@ final class RowRefresher {
                 return false;
             }
             boolean bindCacheCleared = invalidateMessageContentBindCache(contentHolder);
-            HookDiagnostics.info("row refresh content bind cache cleared=" + bindCacheCleared
+            ProjectLog.info("row refresh content bind cache cleared=" + bindCacheCleared
                     + " holderClass=" + contentHolder.getClass().getName());
             // Notify both the nested content adapter and the outer row adapter. In the
             // minified host, adapter notifications are exposed through the adapter's
@@ -226,14 +228,14 @@ final class RowRefresher {
                 reportRowRefreshFailure("notifyRowItemChanged");
                 return false;
             }
-            HookDiagnostics.info("row refresh adapters notified content=" + contentNotified
+            ProjectLog.info("row refresh adapters notified content=" + contentNotified
                     + " row=" + rowNotified);
             boolean contentUpdatesConsumed = contentNotified
                     && consumeRecyclerPendingUpdates(contentRecycler);
             boolean rowUpdatesConsumed = consumeRecyclerPendingUpdates(rowRecycler);
-            HookDiagnostics.info("row refresh RecyclerView updates consumed content="
+            ProjectLog.info("row refresh RecyclerView updates consumed content="
                     + contentUpdatesConsumed + " outer=" + rowUpdatesConsumed);
-            HookDiagnostics.infoOnce("rowRefresh.outerAdapterNotified",
+            ProjectLog.infoOnce("rowRefresh.outerAdapterNotified",
                     "outer chat adapter notified; recyclerClass="
                             + rowRecycler.getClass().getName());
             requestLayoutChain(messageRow);
@@ -416,20 +418,20 @@ final class RowRefresher {
                     || !(interceptDepth instanceof Integer)
                     || ((Integer) interceptDepth) != 0
                     || !Boolean.FALSE.equals(computing)) {
-                HookDiagnostics.info("RecyclerView pending updates deferred"
+                ProjectLog.info("RecyclerView pending updates deferred"
                         + " suppressed=" + suppressed + " interceptDepth=" + interceptDepth
                         + " computing=" + computing);
                 return false;
             }
             Method consumeUpdates = recyclerAccessor(recycler, "consumePendingUpdates");
             if (consumeUpdates == null) {
-                HookDiagnostics.info("RecyclerView consume pending updates target missing");
+                ProjectLog.info("RecyclerView consume pending updates target missing");
                 return false;
             }
             consumeUpdates.invoke(recycler);
             return true;
         } catch (Throwable t) {
-            HookDiagnostics.info("RecyclerView consume pending updates failed error="
+            ProjectLog.info("RecyclerView consume pending updates failed error="
                     + t.getClass().getSimpleName());
             return false;
         }

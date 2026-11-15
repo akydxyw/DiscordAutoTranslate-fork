@@ -24,6 +24,9 @@ public class ConfigTest {
         Config.Snapshot s = Config.read(new MemoryPrefs());
         assertTrue(s.configError == null);
         assertEquals(Config.DEF_ENABLED, s.enabled);
+        assertEquals("logging_enabled", Config.KEY_LOGGING_ENABLED);
+        assertFalse(Config.DEF_LOGGING_ENABLED);
+        assertFalse(s.loggingEnabled);
         assertEquals(Config.DEF_API_URL, s.apiUrl);
         assertEquals(Config.DEF_MODEL, s.model);
         assertEquals(Config.DEF_TARGET_LANG, s.targetLang);
@@ -31,6 +34,36 @@ public class ConfigTest {
         assertEquals(Config.DEF_PROTOCOL, s.protocol);
         assertEquals(Config.DEF_TIMEOUT_MS, s.timeoutMs);
         assertEquals(Config.DEF_MAX_CONCURRENCY, s.maxConcurrency);
+    }
+
+    @Test
+    public void loggingAcceptsExplicitBooleansWithoutChangingRequestVersion() {
+        Config.Snapshot defaults = Config.read(new MemoryPrefs());
+        for (boolean enabled : new boolean[]{false, true}) {
+            Config.Snapshot snapshot = Config.read(new MemoryPrefs()
+                    .put(Config.KEY_LOGGING_ENABLED, enabled));
+            assertTrue(snapshot.isUsable());
+            assertEquals(enabled, snapshot.loggingEnabled);
+            assertEquals(defaults.version(), snapshot.version());
+        }
+    }
+
+    @Test
+    public void loggingRejectsWrongTypesAndInvalidSnapshotsDisableLogging() {
+        for (Object value : new Object[]{"true", "false", 1, 0}) {
+            MemoryPrefs prefs = new MemoryPrefs().put(Config.KEY_LOGGING_ENABLED, value);
+            Map<String, ?> before = new HashMap<>(prefs.getAll());
+            Config.Snapshot snapshot = Config.read(prefs);
+            assertTrue(snapshot.configError != null);
+            assertFalse(snapshot.isUsable());
+            assertFalse(snapshot.loggingEnabled);
+            assertEquals(before, prefs.getAll());
+        }
+        Config.Snapshot invalid = Config.read(new MemoryPrefs()
+                .put(Config.KEY_LOGGING_ENABLED, true)
+                .put(Config.KEY_PROTOCOL, "invalid"));
+        assertFalse(invalid.loggingEnabled);
+        assertFalse(Config.invalidSnapshot().loggingEnabled);
     }
 
     @Test

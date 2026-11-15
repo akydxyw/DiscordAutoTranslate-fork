@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.view.View;
 
 import org.json.JSONObject;
@@ -29,7 +31,7 @@ public final class EmbedHooks {
         if (bind == null || spec == null) {
             throw new IllegalStateException("Configured Embed binding target unavailable");
         }
-        HookDiagnostics.infoOnce("embed.bind.target", "embed.bind target=" + bind.toGenericString());
+        ProjectLog.infoOnce("embed.bind.target", "embed.bind target=" + bind.toGenericString());
         handles.add(module.hook(bind)
                 .setId("dat.embedBind")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -51,7 +53,7 @@ public final class EmbedHooks {
                                     chain.getArgs().toArray());
                         }
                     } catch (Throwable t) {
-                        HookDiagnostics.warnOnce("embed.bind.failed", "embed binding failed error="
+                        ProjectLog.warnOnce("embed.bind.failed", "embed binding failed error="
                                 + t.getClass().getSimpleName());
                     }
                     try (InlineIconInjector.HostScope scope =

@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.text.Editable;
 import android.view.View;
 
@@ -28,6 +30,19 @@ public final class MessageHooks {
 
     private static final ThreadLocal<ReplyBinding> REPLY_CONVERSION = new ThreadLocal<>();
 
+    /** Host class/method names only; no arguments or message contents. */
+    private static String discordCallers() {
+        StringBuilder callers = new StringBuilder();
+        for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+            String className = frame.getClassName();
+            if (!className.startsWith("com.discord.")) continue;
+            if (callers.length() > 0) callers.append(" <- ");
+            callers.append(className).append('#').append(frame.getMethodName());
+            if (callers.length() >= 700) break;
+        }
+        return callers.length() == 0 ? "none" : callers.toString();
+    }
+
     private MessageHooks() {
     }
 
@@ -53,7 +68,7 @@ public final class MessageHooks {
         if (bind == null || spec == null) {
             return;
         }
-        HookDiagnostics.infoOnce("message.bind.target", "message.bind target="
+        ProjectLog.infoOnce("message.bind.target", "message.bind target="
                 + bind.toGenericString());
         out.add(module.hook(bind)
                 .setId("dat.bind")
@@ -67,7 +82,7 @@ public final class MessageHooks {
                     try {
                         bindPre(chain, spec);
                     } catch (Throwable t) {
-                        HookDiagnostics.warnOnce("message.bind.exception", "message.bind processing failed with "
+                        ProjectLog.warnOnce("message.bind.exception", "message.bind processing failed with "
                                 + t.getClass().getName());
                     }
                     Object[] bindArgs = chain.getArgs().toArray();
@@ -83,7 +98,7 @@ public final class MessageHooks {
                         }
                     } catch (Throwable t) {
                         REPLY_CONVERSION.remove();
-                        HookDiagnostics.warnOnce("message.bind.replyScope",
+                        ProjectLog.warnOnce("message.bind.replyScope",
                                 "reply conversion scope unavailable errorClass="
                                         + t.getClass().getSimpleName());
                     }
@@ -100,7 +115,7 @@ public final class MessageHooks {
                     try {
                         bindPost(chain, bind, spec, bindArgs);
                     } catch (Throwable t) {
-                        HookDiagnostics.warnOnce("message.bind.postException",
+                        ProjectLog.warnOnce("message.bind.postException",
                                 "message.bind post-processing failed with "
                                         + t.getClass().getName());
                     }
@@ -128,7 +143,7 @@ public final class MessageHooks {
         String messageId = Reflect.callString(model, idGetter);
         Object content = Reflect.call(Reflect.findMethodExact(model.getClass(), contentGetter, 0), model);
         boolean validMessageId = messageId != null && HookBridge.looksLikeSnowflake(messageId);
-        HookDiagnostics.infoOnce("message.bind", "message.bind invoked idValid="
+        ProjectLog.infoOnce("message.bind", "message.bind invoked idValid="
                 + validMessageId + " contentClass="
                 + (content == null ? "null" : content.getClass().getName()));
         if (!validMessageId) {
@@ -160,7 +175,7 @@ public final class MessageHooks {
             HookBridge.get().rememberContent(referenced.messageId, referenced.systemContent);
             HookBridge.get().rememberContent(referenced.messageId, referenced.messageContent);
         }
-        HookDiagnostics.infoOnce("message.bind.replyMapping." + validMessageId + "."
+        ProjectLog.infoOnce("message.bind.replyMapping." + validMessageId + "."
                         + (referenced.systemContent != null) + "." + (referenced.messageContent != null),
                 "message.bind referenced preview identity idValid=" + validMessageId
                         + " systemContentPresent=" + (referenced.systemContent != null)
@@ -235,7 +250,7 @@ public final class MessageHooks {
         if (render == null || spec == null) {
             return;
         }
-        HookDiagnostics.infoOnce("message.render.target", "message.render target="
+        ProjectLog.infoOnce("message.render.target", "message.render target="
                 + render.toGenericString());
         boolean isStatic = java.lang.reflect.Modifier.isStatic(render.getModifiers());
         String identitySource = spec.optString("identitySource", "");
@@ -263,7 +278,7 @@ public final class MessageHooks {
                             String messageId = configuredId instanceof String
                                     && HookBridge.looksLikeSnowflake((String) configuredId)
                                     ? (String) configuredId : null;
-                            HookDiagnostics.infoOnce("message.render", "message.render invoked host="
+                            ProjectLog.infoOnce("message.render", "message.render invoked host="
                                     + (view != null) + " idResolved=" + (messageId != null)
                                     + " idSource=" + identitySource
                                     + " contentClass="
@@ -279,7 +294,7 @@ public final class MessageHooks {
                             }
                         }
                     } catch (Throwable t) {
-                        HookDiagnostics.warnOnce("message.render.exception", "message.render processing failed with "
+                        ProjectLog.warnOnce("message.render.exception", "message.render processing failed with "
                                 + t.getClass().getName());
                     }
                     try {
@@ -309,7 +324,7 @@ public final class MessageHooks {
         if (conversionMethod == null || spec == null) {
             return;
         }
-        HookDiagnostics.infoOnce("message.textConversion.target", "message.textConversion target="
+        ProjectLog.infoOnce("message.textConversion.target", "message.textConversion target="
                 + conversionMethod.toGenericString());
         int contentArgument = spec.optInt("contentArgument", -1);
         int contextArgument = spec.optInt("contextArgument", -1);
@@ -329,13 +344,13 @@ public final class MessageHooks {
                     String resolvedMessageId = replyConversion
                             ? reply.matchesConversion(source, configuredId) ? reply.messageId : null
                             : HookBridge.get().resolveMessageId(source);
-                    HookDiagnostics.infoOnce("message.textConversion.idResolved." + (resolvedMessageId != null),
+                    ProjectLog.infoOnce("message.textConversion.idResolved." + (resolvedMessageId != null),
                             "message.textConversion identity resolved=" + (resolvedMessageId != null)
                                     + " sourceClass="
                                     + (source == null ? "null" : source.getClass().getName()));
-                    HookDiagnostics.infoOnce("message.textConversion.callers",
+                    ProjectLog.infoOnce("message.textConversion.callers",
                             "message.textConversion Discord callers="
-                                    + HookDiagnostics.discordCallers());
+                                    + discordCallers());
                     boolean replyTranslationApplied = false;
                     TextExtractor.Result extracted = null;
                     try {
@@ -357,14 +372,14 @@ public final class MessageHooks {
                                 Object replacement = StructurableTextFactory.forPlannedTranslation(
                                         original, translated, extracted);
                                 if (replacement != null) {
-                                    HookDiagnostics.info("message translation replacement applied"
+                                    ProjectLog.info("message translation replacement applied"
                                             + " route=" + (replyConversion ? "reply-canonical" : "body")
                                             + " sourceClass=" + original.getClass().getName()
                                             + " replacementClass=" + replacement.getClass().getName());
                                     renderArgs[contentArgument] = replacement;
                                     replyTranslationApplied = replyConversion;
                                 } else {
-                                    HookDiagnostics.info("message translation replacement rejected"
+                                    ProjectLog.info("message translation replacement rejected"
                                             + " sourceClass=" + source.getClass().getName());
                                     HookBridge.get().onTranslationRenderRejected(
                                             messageId, translated);
@@ -372,7 +387,7 @@ public final class MessageHooks {
                             }
                         }
                     } catch (Throwable t) {
-                        HookDiagnostics.warnOnce("message.textConversion.exception",
+                        ProjectLog.warnOnce("message.textConversion.exception",
                                 "message.textConversion processing failed with "
                                         + t.getClass().getName());
                         renderArgs[contentArgument] = source;

@@ -31,6 +31,7 @@ import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
 import io.github.wxmyyds.discordautotranslate.core.PreferenceCommit;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
 import io.github.wxmyyds.discordautotranslate.translate.ApiTester;
 
 import java.util.ArrayList;
@@ -119,6 +120,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private EditText timeoutInput;
     private EditText concurrencyInput;
     private CheckBox enabledInput;
+    private CheckBox loggingInput;
     private CheckBox streamingInput;
     private TextView statusText;
     private TextView resultText;
@@ -197,6 +199,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             draft.putString("field_" + i, fields[i].getText().toString());
         }
         draft.putBoolean("enabled", enabledInput.isChecked());
+        draft.putBoolean("logging", loggingInput.isChecked());
         draft.putBoolean("streaming", streamingInput.isChecked());
         draft.putInt("protocol", protocolSpinner.getSelectedItemPosition());
         draft.putString("language", selectedTargetLanguage());
@@ -218,6 +221,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 fields[i].setText(draft.getString("field_" + i));
             }
             enabledInput.setChecked(draft.getBoolean("enabled"));
+            loggingInput.setChecked(draft.getBoolean("logging", Config.DEF_LOGGING_ENABLED));
             protocolSpinner.setSelection(draft.getInt("protocol"));
             streamingInput.setChecked(draft.getBoolean("streaming"));
             String language = draft.getString("language");
@@ -372,6 +376,14 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         enabledInput = new CheckBox(this);
         enabledInput.setText(R.string.label_enabled);
         root.addView(enabledInput, matchWrap());
+
+        loggingInput = new CheckBox(this);
+        loggingInput.setText(R.string.label_logging_enabled);
+        root.addView(loggingInput, matchWrap());
+        TextView loggingHint = new TextView(this);
+        loggingHint.setTextSize(12f);
+        loggingHint.setText(R.string.hint_logging_enabled);
+        root.addView(loggingHint, matchWrap());
 
         // 供应商协议：请求体与译文解析按所选协议内置实现，
         // 不再让用户手写 JSON 请求模板与译文提取路径。
@@ -585,6 +597,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         concurrencyInput.addTextChangedListener(watcher);
         testTextInput.addTextChangedListener(watcher);
         enabledInput.setOnCheckedChangeListener((button, checked) -> markDirty());
+        loggingInput.setOnCheckedChangeListener((button, checked) -> markDirty());
         streamingInput.setOnCheckedChangeListener((button, checked) -> markDirty());
     }
 
@@ -665,7 +678,9 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         loadingUi = true;
         try {
             cancelPendingTest();
+            ProjectLog.configure(Config.invalidSnapshot());
             enabledInput.setChecked(false);
+            loggingInput.setChecked(false);
             streamingInput.setChecked(false);
             protocolSpinner.setSelection(AdapterView.INVALID_POSITION);
             targetLanguageSpinner.setSelection(AdapterView.INVALID_POSITION);
@@ -710,7 +725,9 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             for (int i = 0; i < fields.length; i++) {
                 fields[i].setHint(fieldHints[i]);
             }
+            ProjectLog.configure(snapshot);
             enabledInput.setChecked(snapshot.enabled);
+            loggingInput.setChecked(snapshot.loggingEnabled);
             protocolSpinner.setSelection(positionOf(snapshot.protocol));
             streamingInput.setChecked(snapshot.streaming);
             updateStreamingAvailability();
@@ -795,6 +812,9 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         try {
             saveExecutor.execute(() -> {
                 ConfigurationSync.Result saveResult = ConfigurationSync.save(local, remote, snapshot);
+                if (saveResult.localCommitted) {
+                    ProjectLog.configure(snapshot == null ? Config.read(null) : snapshot);
+                }
                 final boolean localResult = saveResult.localCommitted;
                 final boolean remoteResult = remote != null && saveResult.succeeded();
                 final Throwable saveFailure = saveResult.failure;
@@ -876,6 +896,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             resetButton.setEnabled(available && persistedConfigInvalid);
         }
         enabledInput.setEnabled(!persistedConfigInvalid);
+        loggingInput.setEnabled(!persistedConfigInvalid);
         protocolSpinner.setEnabled(!persistedConfigInvalid);
         protocolSpinner.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         targetLanguageSpinner.setEnabled(!persistedConfigInvalid);
@@ -921,6 +942,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         MemoryPrefs memoryPrefs = new MemoryPrefs();
         memoryPrefs.put(Config.KEY_ENABLED, enabledInput.isChecked());
+        memoryPrefs.put(Config.KEY_LOGGING_ENABLED, loggingInput.isChecked());
         memoryPrefs.put(Config.KEY_PROTOCOL,
                 protocolAt(protocolSpinner.getSelectedItemPosition()));
         memoryPrefs.put(Config.KEY_STREAMING, streamingInput.isChecked());

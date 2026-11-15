@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.text.style.ClickableSpan;
 
 import androidx.annotation.Nullable;
@@ -37,12 +39,12 @@ public final class IconClickSpanFactory {
             }
             Object span = createByConstructor(hostCl, messageId, spec);
             if (span == null) {
-                HookDiagnostics.warnOnce("icon.click.span-unavailable",
+                ProjectLog.warnOnce("icon.click.span-unavailable",
                         "icon click span unavailable: configured protocol could not be created");
             }
             return span;
         } catch (Throwable t) {
-            HookDiagnostics.warnOnce("icon.click.span-create-failed",
+            ProjectLog.warnOnce("icon.click.span-create-failed",
                     "icon click span creation failed: " + t.getClass().getSimpleName());
             return null;
         }
@@ -91,7 +93,7 @@ public final class IconClickSpanFactory {
         Constructor<?> constructor = spanClass.getDeclaredConstructor(parameterTypes);
         constructor.setAccessible(true);
         Object result = constructor.newInstance(arguments);
-        HookDiagnostics.infoOnce("icon.click.span-ready",
+        ProjectLog.infoOnce("icon.click.span-ready",
                 "icon click span created with configured constructor protocol");
         return result;
     }
@@ -125,7 +127,7 @@ public final class IconClickSpanFactory {
                                 return objectMethod(proxy, method, args);
                             }
                             if (!HookRuntime.isActive()) return null;
-                            HookDiagnostics.infoOnce("icon.click.callback-reached",
+                            ProjectLog.infoOnce("icon.click.callback-reached",
                                     "icon click callback reached configured host span handler");
                             HookBridge.get().onIconClicked(messageId);
                             return null;

@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.text.SpannableStringBuilder;
@@ -123,12 +125,12 @@ public final class InlineIconInjector {
             HostScope scope = CURRENT_HOST.get();
             View host = scope == null ? null : scope.view;
             if (host == null) {
-                HookDiagnostics.warnOnce("icon.noHost", "icon injection skipped: no active render host");
+                ProjectLog.warnOnce("icon.noHost", "icon injection skipped: no active render host");
                 return rendered; // 回复引用等无宿主路径：不注入
             }
             Context context = rawContext instanceof Context ? (Context) rawContext : null;
             if (!(rendered instanceof SpannableStringBuilder) || context == null) {
-                HookDiagnostics.warnOnce("icon.invalidResult", "icon injection skipped: invalid result/context"
+                ProjectLog.warnOnce("icon.invalidResult", "icon injection skipped: invalid result/context"
                         + " renderedClass=" + (rendered == null ? "null" : rendered.getClass().getName())
                         + " contextValid=" + (context != null));
                 return rendered;
@@ -136,7 +138,7 @@ public final class InlineIconInjector {
             String messageId = HookBridge.get().resolveMessageId(structurable);
             boolean iconAllowed = scope.allows(messageId);
             if (!iconAllowed) {
-                HookDiagnostics.warnOnce("icon.noMessageIdentity", "icon injection skipped: message identity not resolved");
+                ProjectLog.warnOnce("icon.noMessageIdentity", "icon injection skipped: message identity not resolved");
                 return rendered;
             }
             StateStore.Entry entry = StateStore.get().peek(messageId);
@@ -145,7 +147,7 @@ public final class InlineIconInjector {
             if (HookBridge.isPollKey(messageId)
                     && (poll == null || !messageId.equals(poll.titleKey))) return rendered;
             if (poll == null && entry == null) {
-                HookDiagnostics.warnOnce("icon.noState", "icon injection skipped: no translation state exists");
+                ProjectLog.warnOnce("icon.noState", "icon injection skipped: no translation state exists");
                 return rendered;
             }
             StateStore.Status status = poll == null ? entry.status : poll.status();
@@ -153,12 +155,12 @@ public final class InlineIconInjector {
             // 未翻译（IDLE）不显示图标：既符合「待翻译不显示」的要求，
             // 也使非英文消息、纯表情消息自然不出图标。
             if (status == StateStore.Status.IDLE) {
-                HookDiagnostics.infoOnce("icon.idle", "icon injection skipped: translation state is IDLE");
+                ProjectLog.infoOnce("icon.idle", "icon injection skipped: translation state is IDLE");
                 return rendered;
             }
             // 需求：纯图片 / 纯表情等无可翻译正文的消息不注入。
             if (extracted == null || extracted.textNodeCount == 0) {
-                HookDiagnostics.infoOnce("icon.noTextNodes", "icon injection skipped: no extractable text nodes");
+                ProjectLog.infoOnce("icon.noTextNodes", "icon injection skipped: no extractable text nodes");
                 return rendered;
             }
 
@@ -173,7 +175,7 @@ public final class InlineIconInjector {
                     tinted, context.getResources().getDisplayMetrics().density,
                     status);
             if (icon == null) {
-                HookDiagnostics.warnOnce("icon.spanCreation", "icon injection skipped: icon span creation failed");
+                ProjectLog.warnOnce("icon.spanCreation", "icon injection skipped: icon span creation failed");
                 return rendered;
             }
 
@@ -195,11 +197,11 @@ public final class InlineIconInjector {
             // 启动/续接旋转动画（仅翻译中状态）。
             icon.bindHost(host);
             scope.recordInjection(messageId);
-            HookDiagnostics.infoOnce("icon.injected", "translation icon injected successfully");
+            ProjectLog.infoOnce("icon.injected", "translation icon injected successfully");
 
             return ssb;
         } catch (Throwable t) {
-            HookDiagnostics.warnOnce("icon.exception", "icon injection failed with "
+            ProjectLog.warnOnce("icon.exception", "icon injection failed with "
                     + t.getClass().getName());
             return rendered;
         }

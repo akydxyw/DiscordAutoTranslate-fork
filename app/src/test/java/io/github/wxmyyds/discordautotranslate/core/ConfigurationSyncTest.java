@@ -282,6 +282,103 @@ public class ConfigurationSyncTest {
         assertTrue(ConfigurationSync.save(local.prefs, remote.prefs, null).localCommitted);
     }
 
+    @Test
+    public void loggingBooleanImportsAndExportsBothValues() {
+        assertTrue(ConfigurationSync.CONFIG_KEYS.contains(Config.KEY_LOGGING_ENABLED));
+        for (boolean enabled : new boolean[]{true, false}) {
+            FakePrefs local = localBeforeImport();
+            FakePrefs remote = remoteValues();
+            remote.memory.put(Config.KEY_LOGGING_ENABLED, enabled);
+            local.outcomes.add(true);
+
+            assertTrue(ConfigurationSync.synchronize(local.prefs, remote.prefs).imported());
+            assertEquals(enabled, local.memory.get(Config.KEY_LOGGING_ENABLED));
+            assertEquals(enabled, local.disk.get(Config.KEY_LOGGING_ENABLED));
+
+            FakePrefs reconnected = remoteValues();
+            reconnected.memory.put(Config.KEY_LOGGING_ENABLED, !enabled);
+            reconnected.outcomes.add(true);
+            ConfigurationSync.Result exported =
+                    ConfigurationSync.synchronize(local.prefs, reconnected.prefs);
+            assertTrue(exported.succeeded());
+            assertEquals(ConfigurationSync.Direction.EXPORT, exported.direction);
+            assertEquals(enabled, reconnected.disk.get(Config.KEY_LOGGING_ENABLED));
+            assertEquals(1, local.commits);
+        }
+    }
+
+    @Test
+    public void savePersistsLoggingAndResetRemovesItFromBothStores() {
+        for (boolean enabled : new boolean[]{true, false}) {
+            FakePrefs local = localBeforeImport();
+            FakePrefs remote = remoteValues();
+            Config.Snapshot snapshot = Config.read(new MemoryPrefs()
+                    .put(Config.KEY_LOGGING_ENABLED, enabled));
+            local.outcomes.add(true);
+            remote.outcomes.add(true);
+
+            assertTrue(ConfigurationSync.save(local.prefs, remote.prefs, snapshot).succeeded());
+            assertEquals(enabled, local.disk.get(Config.KEY_LOGGING_ENABLED));
+            assertEquals(enabled, remote.disk.get(Config.KEY_LOGGING_ENABLED));
+            assertEquals(Boolean.TRUE, local.disk.get(INITIALIZED));
+
+            local.outcomes.add(true);
+            remote.outcomes.add(true);
+            assertTrue(ConfigurationSync.save(local.prefs, remote.prefs, null).succeeded());
+            assertFalse(local.memory.containsKey(Config.KEY_LOGGING_ENABLED));
+            assertFalse(local.disk.containsKey(Config.KEY_LOGGING_ENABLED));
+            assertFalse(remote.memory.containsKey(Config.KEY_LOGGING_ENABLED));
+            assertFalse(remote.disk.containsKey(Config.KEY_LOGGING_ENABLED));
+            assertEquals(Boolean.TRUE, local.disk.get(INITIALIZED));
+        }
+    }
+
+    @Test
+    public void failedLocalSaveRestoresPreviousLoggingValueAndNeverExports() {
+        for (boolean previous : new boolean[]{true, false}) {
+            FakePrefs local = localBeforeImport();
+            local.memory.put(INITIALIZED, true);
+            local.memory.put(Config.KEY_LOGGING_ENABLED, previous);
+            local.disk.putAll(local.memory);
+            Map<String, Object> before = new HashMap<>(local.memory);
+            FakePrefs remote = remoteValues();
+            local.outcomes.add(false);
+            local.outcomes.add(true);
+
+            ConfigurationSync.Result failed = ConfigurationSync.save(local.prefs, remote.prefs,
+                    Config.read(new MemoryPrefs().put(Config.KEY_LOGGING_ENABLED, !previous)));
+
+            assertEquals(ConfigurationSync.Status.LOCAL_COMMIT_FAILED, failed.status);
+            assertFalse(failed.localCommitted);
+            assertFalse(failed.transaction.rollbackFailed);
+            assertEquals(before, local.memory);
+            assertEquals(before, local.disk);
+            assertEquals(previous, local.disk.get(Config.KEY_LOGGING_ENABLED));
+            assertEquals(2, local.commits);
+            assertEquals(1, local.editors);
+            assertEquals(0, remote.editors);
+            assertFalse(PreferenceCommit.isPoisoned(local.prefs));
+        }
+    }
+
+    @Test
+    public void invalidLoggingBooleanIsRejectedBeforeImportOrExportWrites() {
+        for (Object value : new Object[]{"true", 1, null}) {
+            FakePrefs local = localBeforeImport();
+            FakePrefs remote = remoteValues();
+            remote.memory.put(Config.KEY_LOGGING_ENABLED, value);
+            assertEquals(ConfigurationSync.Status.INVALID_SOURCE,
+                    ConfigurationSync.synchronize(local.prefs, remote.prefs).status);
+            assertEquals(0, local.editors);
+
+            local.memory.put(INITIALIZED, true);
+            local.memory.put(Config.KEY_LOGGING_ENABLED, value);
+            assertEquals(ConfigurationSync.Status.INVALID_SOURCE,
+                    ConfigurationSync.synchronize(local.prefs, remote.prefs).status);
+            assertEquals(0, remote.editors);
+        }
+    }
+
     private static FakePrefs localBeforeImport() {
         FakePrefs fake = new FakePrefs();
         fake.memory.put(Config.KEY_API_URL, "https://old.example/v1");

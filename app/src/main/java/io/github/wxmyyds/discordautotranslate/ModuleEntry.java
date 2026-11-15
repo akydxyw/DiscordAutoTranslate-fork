@@ -14,6 +14,7 @@ import io.github.wxmyyds.discordautotranslate.core.HookCleanup;
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.HookConfigurationLoader;
 import io.github.wxmyyds.discordautotranslate.core.ModuleResources;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
 import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
 import io.github.wxmyyds.discordautotranslate.core.TranslationCache;
@@ -66,20 +67,13 @@ public class ModuleEntry extends XposedModule {
     private volatile boolean bootstrapInstalled;
     private volatile HookConfiguration hookConfiguration;
 
-    private void diagnosticInfo(String message) {
-        android.util.Log.i("DiscordAutoTranslate", message);
-        try {
-            log(android.util.Log.INFO, "DiscordAutoTranslate", message);
-        } catch (Throwable ignored) {
-            // The framework log is supplemental; Android log remains available.
-        }
-    }
-
     // ------------------------------------------------------------ 生命周期
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
-        diagnosticInfo("onModuleLoaded lifecycle callback received");
+        ProjectLog.attach(this::log);
+        configureLogging();
+        ProjectLog.info("onModuleLoaded lifecycle callback received");
         ModuleResources.attach(this);
         // 目标进程才需要初始化；其他进程立即停止接收回调，减少无谓开销。
         if (param.isSystemServer()) {
@@ -92,7 +86,7 @@ public class ModuleEntry extends XposedModule {
         if (!TARGET_PACKAGE.equals(param.getPackageName())) {
             return;
         }
-        diagnosticInfo("onPackageReady received for Discord");
+        ProjectLog.info("onPackageReady received for Discord");
         if (installed || bootstrapInstalled || restartRequired) {
             // 防止重复注册启动钩子。
             return;
@@ -108,7 +102,7 @@ public class ModuleEntry extends XposedModule {
     public boolean onHotReloading(@NonNull XposedModuleInterface.HotReloadingParam param) {
         try {
             if (!installed) {
-                diagnosticInfo("hot reload rejected: no successfully installed runtime; restart Discord required");
+                ProjectLog.info("hot reload rejected: no successfully installed runtime; restart Discord required");
                 return false;
             }
             Bundle state = new Bundle();
@@ -119,7 +113,7 @@ public class ModuleEntry extends XposedModule {
             release();
             return true;
         } catch (Throwable failure) {
-            diagnosticInfo("hot reload teardown incomplete error="
+            ProjectLog.info("hot reload teardown incomplete error="
                     + failure.getClass().getSimpleName() + "; restart Discord required");
             return false;
         }
@@ -131,6 +125,8 @@ public class ModuleEntry extends XposedModule {
      */
     @Override
     public void onHotReloaded(@NonNull XposedModuleInterface.HotReloadedParam param) {
+        ProjectLog.attach(this::log);
+        configureLogging();
         HookRuntime.suspend();
         // Recover profile and loader while the old handles still describe their targets.
         // Snapshot once; removal mutates only the sole ownership list, never this metadata view.
@@ -149,7 +145,7 @@ public class ModuleEntry extends XposedModule {
                     restored = HookConfigurationLoader.load(
                             getModuleApplicationInfo().sourceDir, restoredVersionCode);
                 } catch (Throwable t) {
-                    diagnosticInfo("hot reload profile restoration failed error="
+                    ProjectLog.info("hot reload profile restoration failed error="
                             + t.getClass().getSimpleName());
                 }
             }
@@ -162,7 +158,7 @@ public class ModuleEntry extends XposedModule {
         bootstrapInstalled = false;
         if (failures != 0) {
             restartRequired = true;
-            diagnosticInfo("hot reload old hook removal failed count=" + failures
+            ProjectLog.info("hot reload old hook removal failed count=" + failures
                     + "; restart Discord required");
             return;
         }
@@ -175,12 +171,12 @@ public class ModuleEntry extends XposedModule {
             } catch (Throwable t) {
                 installed = false;
                 restartRequired = true;
-                diagnosticInfo("hot reload hook installation failed error="
+                ProjectLog.info("hot reload hook installation failed error="
                         + t.getClass().getSimpleName() + "; restart Discord required");
             }
         } else {
             restartRequired = true;
-            diagnosticInfo("hot reload restoration unavailable; restart Discord required");
+            ProjectLog.info("hot reload restoration unavailable; restart Discord required");
         }
     }
 
@@ -204,21 +200,21 @@ public class ModuleEntry extends XposedModule {
                             if (contextObject instanceof Context) {
                                 Context context = (Context) contextObject;
                                 if (TARGET_PACKAGE.equals(context.getPackageName())) {
-                                    diagnosticInfo("Application.attach reached for Discord");
+                                    ProjectLog.info("Application.attach reached for Discord");
                                     installForApplication(context, context.getClassLoader());
                                 }
                             }
                         } catch (Throwable t) {
-                            diagnosticInfo("hook profile selection failed errorClass="
+                            ProjectLog.info("hook profile selection failed errorClass="
                                     + t.getClass().getSimpleName());
                         }
                         return result;
                     });
             hooks.add(handle);
             bootstrapInstalled = true;
-            diagnosticInfo("Application.attach bootstrap hook installed");
+            ProjectLog.info("Application.attach bootstrap hook installed");
         } catch (Throwable t) {
-            diagnosticInfo("bootstrap hook installation failed errorClass="
+            ProjectLog.info("bootstrap hook installation failed errorClass="
                     + t.getClass().getSimpleName());
             installed = false;
         }
@@ -232,18 +228,17 @@ public class ModuleEntry extends XposedModule {
             PackageInfo packageInfo = context.getPackageManager().getPackageInfo(
                     TARGET_PACKAGE, 0);
             int versionCode = packageInfo.versionCode;
-            diagnosticInfo("selecting hook profile for versionCode=" + versionCode);
+            ProjectLog.info("selecting hook profile for versionCode=" + versionCode);
             HookConfiguration config = HookConfigurationLoader.load(
                     getModuleApplicationInfo().sourceDir, versionCode);
             if (config == null) {
-                android.util.Log.w("DiscordAutoTranslate",
-                        "no hook profile for Discord versionCode=" + versionCode);
+                ProjectLog.warn("no hook profile for Discord versionCode=" + versionCode);
                 return;
             }
             install(cl, config);
             installed = true;
         } catch (Throwable t) {
-            diagnosticInfo("configured hook installation failed errorClass="
+            ProjectLog.info("configured hook installation failed errorClass="
                     + t.getClass().getSimpleName() + "; restart Discord required");
             installed = false;
             restartRequired = true;
@@ -261,6 +256,7 @@ public class ModuleEntry extends XposedModule {
         Set<String> installedHookIds = new HashSet<>();
         try {
             ModuleResources.attach(this);
+            ProjectLog.attach(this::log);
             HookConfiguration.activate(config);
             StructurableTextFactory.init(cl, config);
             Scheduler.MainThread.install();
@@ -277,13 +273,13 @@ public class ModuleEntry extends XposedModule {
             restartRequired = true;
             bootstrapInstalled = false;
             clearRuntime();
-            if (failures != 0) diagnosticInfo("hook installation rollback failed count=" + failures
+            if (failures != 0) ProjectLog.info("hook installation rollback failed count=" + failures
                     + "; restart Discord required");
             throw new IllegalStateException("configured hook installation failed", failure);
         }
         hookConfiguration = config;
         HookRuntime.activate();
-        diagnosticInfo("installed hook profile versionCode=" + config.versionCode()
+        ProjectLog.info("installed hook profile versionCode=" + config.versionCode()
                 + " requiredHookIds=" + installedHookIds);
     }
 
@@ -300,7 +296,7 @@ public class ModuleEntry extends XposedModule {
                     return loader;
                 }
             } catch (Throwable t) {
-                diagnosticInfo("hot reload class loader inspection failed error="
+                ProjectLog.info("hot reload class loader inspection failed error="
                         + t.getClass().getSimpleName());
             }
         }
@@ -321,9 +317,10 @@ public class ModuleEntry extends XposedModule {
         clearRuntime();
         bootstrapInstalled = false;
         if (failures != 0) {
-            diagnosticInfo("hook teardown failed count=" + failures);
+            ProjectLog.info("hook teardown failed count=" + failures);
             throw new IllegalStateException("Hook removal incomplete; restart Discord required");
         }
+        ProjectLog.attach(null);
     }
 
     /** Installation failure and successful teardown clear the same runtime generation. */
@@ -344,12 +341,23 @@ public class ModuleEntry extends XposedModule {
         HookConfiguration.activate(null);
     }
 
+    /** Read the log gate before any startup diagnostics, including unsupported versions. */
+    private void configureLogging() {
+        try {
+            ProjectLog.configure(Config.read(getRemotePreferences(Config.GROUP)));
+        } catch (Throwable failure) {
+            ProjectLog.configure(Config.invalidSnapshot());
+        }
+    }
+
     private void reloadConfig() {
         try {
             final SharedPreferences prefs = getRemotePreferences(Config.GROUP);
             Config.Snapshot snapshot = Config.read(prefs);
+            ProjectLog.configure(snapshot);
             HookBridge.get().updateConfig(snapshot);
         } catch (Throwable t) {
+            ProjectLog.configure(Config.invalidSnapshot());
             HookBridge.get().updateConfig(Config.invalidSnapshot());
         }
     }

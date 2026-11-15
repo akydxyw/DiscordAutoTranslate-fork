@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.view.View;
 
 import androidx.annotation.Nullable;
@@ -332,10 +334,10 @@ public final class HookBridge {
         }
         TextExtractor.Result ex = TextExtractor.extract(structurableText);
         String nodeTypes = TextExtractor.typeSummary(structurableText, ex);
-        HookDiagnostics.infoOnce("translation.nodeTypes." + nodeTypes,
+        ProjectLog.infoOnce("translation.nodeTypes." + nodeTypes,
                 "translation content node types=" + nodeTypes);
         if (ex == null || ex.text.trim().isEmpty()) {
-            HookDiagnostics.warnOnce("translation.noText", "translation skipped: extracted text is empty"
+            ProjectLog.warnOnce("translation.noText", "translation skipped: extracted text is empty"
                     + " structurableClass=" + structurableText.getClass().getName());
             return;
         }
@@ -348,7 +350,7 @@ public final class HookBridge {
         StateStore.Entry entry = StateStore.get().obtain(messageId, hash);
         rememberCanonicalContent(messageId, structurableText);
         if (!cfg.enabled) {
-            HookDiagnostics.warnOnce("translation.disabled", "translation skipped: auto-translate is disabled");
+            ProjectLog.warnOnce("translation.disabled", "translation skipped: auto-translate is disabled");
             // 总开关关闭：不发起新翻译，保留已有译文（需求 §2.7）。
             return;
         }
@@ -370,7 +372,7 @@ public final class HookBridge {
         }
 
         if (!cfg.isUsable()) {
-            HookDiagnostics.warnOnce("translation.config", "translation API configuration is unusable"
+            ProjectLog.warnOnce("translation.config", "translation API configuration is unusable"
                     + " configErrorPresent=" + (cfg.configError != null));
             if (StateStore.get().failIdle(entry,
                     cfg.configError != null ? cfg.configError : "API 未配置"))
@@ -381,14 +383,14 @@ public final class HookBridge {
         EnglishDetector.Verdict v = EnglishDetector.evaluate(
                 ex.text, ex.textNodeCount, cfg.targetLang);
         if (!v.shouldTranslate) {
-            HookDiagnostics.infoOnce("translation.languageSkip." + v.reason.name(),
+            ProjectLog.infoOnce("translation.languageSkip." + v.reason.name(),
                     "translation skipped by language detector"
                     + " reason=" + v.reason.name() + " textNodes=" + ex.textNodeCount
                     + " opaqueNodes=" + ex.opaqueNodeCount);
             return;
         }
 
-        HookDiagnostics.infoOnce("translation.started", "translation request started"
+        ProjectLog.infoOnce("translation.started", "translation request started"
                 + " textNodes=" + ex.textNodeCount + " segments=" + ex.segmentCount);
         TranslationTaskId task = StateStore.get().begin(entry);
         if (task == null) return;
@@ -401,7 +403,7 @@ public final class HookBridge {
     /** Complete task ownership is validated before every transition, including discarded results. */
     void onTranslateResult(TranslationTaskId task, boolean accepted,
                            @Nullable String translated, @Nullable Throwable error) {
-        HookDiagnostics.info("translation result received accepted=" + accepted
+        ProjectLog.info("translation result received accepted=" + accepted
                 + " translatedPresent=" + (translated != null && !translated.isEmpty())
                 + " errorClass=" + (error == null ? "none" : error.getClass().getSimpleName())
                 + " errorKind=" + (error instanceof TranslationException
@@ -443,7 +445,7 @@ public final class HookBridge {
         }
         TranslationCache.get().remove(entry.contentHash);
         if (StateStore.get().rejectRender(id, translated)) {
-            HookDiagnostics.info("translation render rejected: native structure reconstruction failed");
+            ProjectLog.info("translation render rejected: native structure reconstruction failed");
             refreshTranslation(id);
         }
     }

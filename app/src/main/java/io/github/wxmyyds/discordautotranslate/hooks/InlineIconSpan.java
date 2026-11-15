@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.drawable.Drawable;
@@ -191,13 +193,13 @@ public final class InlineIconSpan extends ImageSpan {
         try {
             Drawable.ConstantState cs = source.getConstantState();
             if (cs == null) {
-                HookDiagnostics.warnOnce("icon.constantState.missing",
+                ProjectLog.warnOnce("icon.constantState.missing",
                         "icon duplication rejected: ConstantState missing");
                 return null;
             }
             copy = cs.newDrawable().mutate();
         } catch (Throwable t) {
-            HookDiagnostics.warnOnce("icon.copy.failed", "icon duplication failed error="
+            ProjectLog.warnOnce("icon.copy.failed", "icon duplication failed error="
                     + t.getClass().getSimpleName());
             return null;
         }
@@ -217,7 +219,7 @@ public final class InlineIconSpan extends ImageSpan {
         try {
             copy.setTint(color);
         } catch (Throwable t) {
-            HookDiagnostics.warnOnce("icon.tint.failed", "icon tint failed error="
+            ProjectLog.warnOnce("icon.tint.failed", "icon tint failed error="
                     + t.getClass().getSimpleName());
             return null;
         }

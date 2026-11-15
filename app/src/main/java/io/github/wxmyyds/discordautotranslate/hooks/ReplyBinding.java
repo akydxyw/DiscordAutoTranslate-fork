@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import androidx.annotation.Nullable;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
 import java.lang.reflect.Method;
@@ -40,7 +42,7 @@ final class ReplyBinding {
             referenced = method.invoke(model);
         } catch (Throwable failure) {
             Throwable cause = failure.getCause() == null ? failure : failure.getCause();
-            HookDiagnostics.warnOnce("message.bind.replyAccessor",
+            ProjectLog.warnOnce("message.bind.replyAccessor",
                     "referenced message accessor failed with " + cause.getClass().getName());
             return null;
         }

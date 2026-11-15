@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
@@ -122,7 +124,7 @@ public final class StructurableTextFactory {
 
     @Nullable
     private static Object rejectFactory(String reason) {
-        HookDiagnostics.info("structurable replacement rejected reason=" + reason);
+        ProjectLog.info("structurable replacement rejected reason=" + reason);
         return null;
     }
 }

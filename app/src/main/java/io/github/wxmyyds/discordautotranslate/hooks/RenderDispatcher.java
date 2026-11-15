@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
@@ -71,7 +73,7 @@ public final class RenderDispatcher {
             return;
         }
         String bound = HookBridge.get().messageIdOf(contentView);
-        HookDiagnostics.info("rerender queued targetValid="
+        ProjectLog.info("rerender queued targetValid="
                 + (contentView == null || messageId == null
                 || RerenderRegistry.stillBound(messageId, bound))
                 + " viewAttached=" + (contentView != null && contentView.isAttachedToWindow()));
@@ -89,7 +91,7 @@ public final class RenderDispatcher {
                     && !RerenderRegistry.stillBound(messageId, currentBound)) {
                 return;
             }
-            HookDiagnostics.info("rerender dispatched viewAttached="
+            ProjectLog.info("rerender dispatched viewAttached="
                     + (contentView != null && contentView.isAttachedToWindow())
                     + " viewClass=" + (contentView == null
                     ? "null" : contentView.getClass().getName()));
@@ -111,13 +113,13 @@ public final class RenderDispatcher {
         try {
             method.invoke(invocationTarget, args);
         } catch (Throwable t) {
-            HookDiagnostics.warnOnce("rerender.invoke.failed", "rerender invocation failed error="
+            ProjectLog.warnOnce("rerender.invoke.failed", "rerender invocation failed error="
                     + t.getClass().getSimpleName());
             return;
         } finally {
             if (previous == null) RERENDERING.remove(); else RERENDERING.set(previous);
         }
-        HookDiagnostics.info("rerender method completed viewAttached="
+        ProjectLog.info("rerender method completed viewAttached="
                 + (view != null && view.isAttachedToWindow()));
         // 回复引用的调用目标是容器，真正需要重新绑定的是内部正文视图。
         RowRefresher.postInvalidateRow(HookBridge.get()::messageIdOf, messageId, view);

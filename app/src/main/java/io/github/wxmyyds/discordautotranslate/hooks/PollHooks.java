@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.view.View;
 import android.widget.TextView;
 
@@ -113,7 +115,7 @@ public final class PollHooks {
                         }
                         if (key != null) bridge.rememberContent(key, original);
                     } catch (Throwable failure) {
-                        HookDiagnostics.warnOnce("poll.bind.failed." + answer,
+                        ProjectLog.warnOnce("poll.bind.failed." + answer,
                                 "poll binding failed error=" + failure.getClass().getSimpleName());
                         // Stale positional replays must not reach the native bind with invalid args.
                         if (RenderDispatcher.isRerendering()) return null;
@@ -126,7 +128,7 @@ public final class PollHooks {
                     }
                 }));
         installedHookIds.add(id);
-        HookDiagnostics.infoOnce(id + ".target", id + " target=" + method.toGenericString());
+        ProjectLog.infoOnce(id + ".target", id + " target=" + method.toGenericString());
     }
 
     /** Capture every option before native list diff/individual row binding; no per-option producer. */
@@ -190,7 +192,7 @@ public final class PollHooks {
                         }
                         args[contentArgument] = display;
                     } catch (Throwable failure) {
-                        HookDiagnostics.warnOnce("poll.text.failed", "poll text projection failed error="
+                        ProjectLog.warnOnce("poll.text.failed", "poll text projection failed error="
                                 + failure.getClass().getSimpleName());
                         return chain.proceed(); // Reject the projection before the one native write.
                     }
@@ -200,7 +202,7 @@ public final class PollHooks {
                             PollIconTouch.attach((TextView) scope.binding.receiver,
                                     (android.text.Spanned) display);
                         } catch (Throwable failure) {
-                            HookDiagnostics.warnOnce("poll.icon.touch.failed",
+                            ProjectLog.warnOnce("poll.icon.touch.failed",
                                     "poll icon touch installation failed error="
                                             + failure.getClass().getSimpleName());
                         }

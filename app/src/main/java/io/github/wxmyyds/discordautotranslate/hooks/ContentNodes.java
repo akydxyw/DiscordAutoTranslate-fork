@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.BlankLines;
@@ -85,7 +87,7 @@ public final class ContentNodes {
         try {
             return replaceChecked(tree, translated);
         } catch (Rejection rejection) {
-            HookDiagnostics.info("content replacement rejected reason=" + rejection.reason.name()
+            ProjectLog.info("content replacement rejected reason=" + rejection.reason.name()
                     + " expected=" + rejection.expected + " actual=" + rejection.actual
                     + rejection.structure);
             return null;
