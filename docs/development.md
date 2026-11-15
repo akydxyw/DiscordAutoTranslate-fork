@@ -6,10 +6,10 @@
 
 | 工作流 | 用途与触发方式 |
 |---|---|
-| [build.yml](../.github/workflows/build.yml) | 推送 `app/**`、根 Gradle 配置或 `.github/workflows/**` 时运行 Debug 构建；手动可选 Debug/Release |
+| [build.yml](../.github/workflows/build.yml) | 非 `main` 分支 push，或面向 `main` 的 PR，在变更匹配 `app/**`、`build.gradle`、`settings.gradle`、`gradle.properties`、`.github/workflows/**` 时自动运行 Debug 构建；手动可选 Debug/Release |
 | [release.yml](../.github/workflows/release.yml) | 仅手动发布；stable 固定来源 main，prerelease 使用指定分支或完整 SHA |
 
-纯文档/Skill 改动不触发自动构建；如需验证，手动选择对应分支。构建工作流执行单元测试、上传 HTML 报告、检查 Xposed 元数据及图标资源、验证 APK 签名并上传 APK。发布工作流执行测试、Release 打包及签名验证后创建 tag/Release。
+纯文档/Skill 改动不触发自动构建，合并后的 `main` push 也不触发；如需验证，手动选择对应分支。构建工作流执行单元测试、上传 HTML 报告、检查 Xposed 元数据及图标资源、验证 APK 签名并上传 APK。发布工作流执行测试、Release 打包及签名验证后创建 tag/Release。
 
 报告验证时提供来源完整 SHA、Actions run 链接及实际结果；下载并读取测试报告中的 tests/failures/skipped。CI 绿色只代表已执行检查通过，不代表所有版本签名、Android 生命周期或设备行为已验证。交付 APK 时核对 artifact 来源，复制后比较 SHA-256。
 
@@ -43,11 +43,11 @@ JVM 单测无真实 Android 布局/Hook 环境。它可以验证纯逻辑、配�
 | 正文及编辑 | 开关、语言检测、相同正文不同消息、旧结果隔离、长文及编辑重译 |
 | 富文本 | 标题、列表、多种样式、链接/emoji、提及、时间戳、代码、共享节点；损坏标记必须整树拒绝 |
 | 回复 | 普通/图片/Embed 引用跟随规范译文及切换；编辑版本、系统内容、两行省略和用户名避让 |
-| Embed | 标题/描述/字段、多卡、空卡、编辑、滚动复用及每卡单图标 |
+| Embed | 标题/描述/字段、多卡、空卡、编辑、滚动复用；主段为中文时仍显示其他段状态，每卡单图标切换全部段，只重试当前失败成员 |
 | Poll | 完整选项、整卡切换、重排/增删/编辑、结果更新、图片无障碍、原生点击/长按、滚动复用 |
 | 图标/刷新 | 进度动画、切换、失败手动重试、行高及绑定缓存失效 |
-| 生命周期 | 安装失败清理、热重载、取消及 worker 退出确认、无重复 Hook/回调 |
-| 配置/日志 | 保存、同步失败、重置、旋转/草稿；开启/关闭日志后重启 Discord，检查启动及业务日志均受控 |
+| 生命周期 | 安装失败清理、热重载、取消及 worker 退出确认、无重复 Hook/回调；折叠选项变化及无图标复用后无旧动画，私有测量文本无模块 span；长列表滚动后仍能恢复最新原生绑定 |
+| 配置/日志 | 保存、同步失败、重置、旋转/草稿；后台提交期间重建页面不阻塞，停止页面主动断开测试请求；开启/关闭日志后重启 Discord，检查启动及业务日志均受控 |
 
 设备记录应包含 Discord versionCode、模块提交/产物 SHA、复现步骤、预期与实测结果。区分静态核对、Actions、设备已验证及未验证项，不用整体“正常”推定全部边界通过。
 

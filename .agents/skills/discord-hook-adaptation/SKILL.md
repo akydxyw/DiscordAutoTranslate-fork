@@ -25,7 +25,7 @@ description: 当需要为新的 Discord Android versionCode 新增 Hook 版本�
 - `hooks/MessageHooks.java`、`ReplyBinding.java`、`EmbedBinding.java`
 - `hooks/PollHooks.java`、`PollBinding.java`
 - `hooks/StructurableTextFactory.java`、`ContentNodes.java`
-- `hooks/IconClickSpanFactory.java`、`RowRefresher.java`
+- `hooks/IconClickSpanFactory.java`、`InlineIconInjector.java`、`InlineIconSpan.java`、`RerenderRegistry.java`、`RowRefresher.java`
 
 已有 profile 只能作为结构参考，不能作为新版本签名证据。
 
@@ -35,7 +35,7 @@ description: 当需要为新的 Discord Android versionCode 新增 Hook 版本�
 
 | 区域 | 必须核实 |
 |---|---|
-| 正文 | 外层 Message 绑定、Message ID/content/edit getter；正文渲染 View/content/ID 参数；文本转换入口、返回类型及完整调用链 |
+| 正文 | 外层 Message 绑定、Message ID/content/edit getter；正文渲染 View/content/ID 参数；文本转换入口、返回类型及完整调用链；正文 View 私有折叠测量 TextView 的无参 getter、原生更新条件及注入 builder 的持有关系 |
 | 回复 | Loaded 引用类、引用 Message 与 systemContent、预览 View 字段链；转换是否同步处于外层 bind scope；Drawee、margin 和省略仍由宿主执行 |
 | 结构节点 | Primitive(String)、Annotated(List)、Text(String)；各语义容器/列表/emoji 的真实类型；公开 copy/componentN 或唯一配置构造器 |
 | Embed | 唯一模型/消息 ID 来源与宿主来源；描述/标题/字段名值实际是 StructurableText；继承字段的声明位置 |
@@ -71,6 +71,7 @@ poll.accessibilitySet
 - `types` 映射语义名到真实类；`typeAliases` 反向映射真实类到已支持语义名。
 - 类型专属 getter 用 `accessors`，字段用 `fields`，已支持的公共语义 getter 用 `members`；读取策略由消费者决定，不配置竞争路径。
 - 正文 render 的身份使用既有 `identitySource=argument`，明确 View/content/ID 参数；静态渲染额外配置 `viewArgument`。
+- `message.render.shadowViewGetter` 填写正文 View 上声明的精确无参方法名，返回私有折叠测量 `TextView`。当前消费者仅在宿主运行时类名等于 `message.render.target.class` 时捕获该视图；静态入口也须核实该类与 `viewArgument` 的实际 View 一致。必须证明原生主文本与测量文本的更新路径，不能假定遍历子 View 即覆盖全部文本。getter 无法表达或返回类型不符时记录适配阻塞。
 - Embed 只选 `inputSource=arguments`（模型/ID 参数）或 `accessory`（accessory 参数），宿主只选 `this` 或指定 `field`，不同时保留两套。
 - Poll 四项须完整、启用且为实例入口。字段 path 是真实字段链，不是任意 getter 表达式。根 `optionsPath` 必须是完整答案 accessory 列表；文本和图片 binding 类不同。
 - 未配置 `nodeConstructors` 的类型必须证明可用现有公开 copy 策略；配置构造器只支持当前 `children/field/integer` 参数，每个恰好一个 List children。参数顺序、mask 和保留字段逐项核实，不凭声明顺序猜测。
@@ -86,7 +87,7 @@ node .agents/skills/discord-hook-adaptation/scripts/validate-profile.cjs <versio
 
 脚本检查文件/版本一致、八项必需入口、精确完整 selector、参数索引和现有构造元数据形态。它不读取目标 APK，不能证明 Hook 唯一命中、成员真实存在或业务成功；逐项对照步骤 2 的证据表补足这些核实。
 
-检查每个 selector 在目标资料中恰好命中一个完整签名；沿原生调用链检查 getter、字段类型、setter 时机、点击和刷新。不从失败中挑选另一个重载。
+检查每个 selector 在目标资料中恰好命中一个完整签名；沿原生调用链检查 getter、字段类型、setter 时机、点击和刷新。不从失败中挑选另一个重载。脚本当前不校验 `shadowViewGetter`，需单独核实其精确声明、返回类型及实际调用对象；图标注入还要求该宿主已有最新原生绑定登记，以供退出时恢复。
 
 检查 Git diff 仅新增目标 JSON；不得夹带改旧版本、业务源码、测试、临时资料或被忽略内容。未知版本不复用旧配置，必需失败仍整体拒绝。
 

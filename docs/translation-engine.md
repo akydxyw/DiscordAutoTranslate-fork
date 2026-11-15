@@ -16,13 +16,15 @@
 | `openai-responses` | `/responses` | JSON message/output_text 或 SSE response.output_text.delta |
 | `anthropic-messages` | `/messages` | JSON text 块或 SSE；请求 `max_tokens=8192` |
 
-请求按所选协议构造，使用系统 `org.json` 和 `HttpURLConnection`。配置校验解析一次额外请求头，实际请求复用并追加协议认证头。默认提示词按目标语言生成，自定义提示词保持原文；协议层统一附加行段及保留标记规则。
+请求按所选协议构造，使用系统 `org.json` 和 `HttpURLConnection`。配置校验解析一次额外请求头，实际请求复用并追加协议认证头。默认提示词按目标语言生成；自定义提示词不随目标语言改写。协议层去除提示词首尾空白后，统一附加行段及保留标记规则。
 
-每次请求只创建一个协议 decoder，不切换解析模式。`SseReader` 以空行提交完整事件，支持多行 data、event、注释和 CR/LF/CRLF。Compatible 必须收到 `[DONE]`，Responses 必须收到 `response.completed`，Anthropic 必须收到 `message_stop`；结束后不等待 EOF。缺结束事件、错误帧、截断、字段类型错误或包装污染均失败，不接受部分译文。
+每次请求只创建一个协议 decoder，不切换解析模式。`SseReader` 以空行提交完整事件，支持多行 data、event、注释和 CR/LF/CRLF。Compatible 必须收到 `[DONE]`，Responses 必须收到 `response.completed`，Anthropic 必须收到 `message_stop`；结束后不等待 EOF。缺结束事件、已识别的错误帧、异常停止原因、所读取文本字段类型错误或包装污染会失败，不返回该请求已收集的部分译文。这些检查不构成完整响应 schema 校验。
 
-非流式 Chat 必须显式返回 `finish_reason:"stop"`；Anthropic 必须返回字符串 `stop_reason:"end_turn"` 或 `"stop_sequence"`。JSON 与 SSE 共用正常结束原因校验，拒绝截断、拒绝生成、工具调用及错误包装，不能从部分正文推断成功。
+非流式 Chat 必须显式返回 `finish_reason:"stop"`，并拒绝非 null 的 `message.refusal`、`tool_calls` 和 `function_call`；Anthropic 必须返回字符串 `stop_reason:"end_turn"` 或 `"stop_sequence"`，只拼接 text 内容块，跳过非对象及非 text 项。
 
-Responses 按 `output_index`、`content_index` 和 `item_id` 收集文本增量，校验递增事件序号，并逐段核对完成响应；按 output/content 顺序拼接全部 `message/output_text`，跳过 reasoning，拒绝 refusal、failed、incomplete 和完成文本不一致。流式和非流式共用同一个完成文本提取操作，不用 `.done` 快照重复追加或补齐缺失增量。事件格式参见 [OpenAI 流式响应文档](https://developers.openai.com/api/docs/guides/streaming-responses)。
+Chat 与 Anthropic SSE 必须收到各自结束事件，但不强制出现停止原因；原因缺失、null 或空字符串时不检查取值，非空时与 JSON 共用正常停止原因校验。Chat SSE 只提取 `delta.content`，当前不检查 `delta.refusal`、`tool_calls` 或 `function_call`，不能把结束事件当作这些字段均已校验的证明。
+
+Responses 按 `output_index`、`content_index` 和 `item_id` 收集文本增量，校验递增事件序号，并逐段核对完成响应；按 output/content 顺序拼接全部 `message/output_text`，跳过 reasoning、工具等非 message output 项，拒绝 message 内容中的 refusal、流式 refusal 事件、failed、incomplete 和完成文本不一致。流式和非流式共用同一个完成文本提取操作，不用 `.done` 快照重复追加或补齐缺失增量。事件格式参见 [OpenAI 流式响应文档](https://developers.openai.com/api/docs/guides/streaming-responses)。
 
 HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单位，UTF-8 严格校验，禁止跟随重定向。非 2xx 仅读取有界 body 供错误分类，不输出 body。引擎在配置校验和构造请求体前登记 `Http.Request`，取消与连接 attach 原子协调，finally 才释放；实际 worker 是否退出由生命周期另行确认。
 
