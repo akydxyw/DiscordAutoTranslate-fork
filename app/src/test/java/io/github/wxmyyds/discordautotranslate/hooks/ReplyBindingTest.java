@@ -53,9 +53,10 @@ public class ReplyBindingTest {
                 .put("Message", Message.class.getName())
                 .put("PrimitiveStructurableText", ContentNodesTest.PrimitiveStructurableText.class.getName());
         root.getJSONObject("accessors").getJSONObject("Message").put("getId", "getIdNative");
+        root.getJSONObject("accessors").put("PrimitiveStructurableText",
+                new JSONObject().put("getContent", "getContent"));
         if (root.getJSONObject("fields").has("PrimitiveStructurableText"))
             root.getJSONObject("fields").remove("PrimitiveStructurableText");
-        root.getJSONObject("members").put("getContent", "getContent");
         JSONObject spec = root.getJSONObject("hooks").getJSONObject("message.bind")
                 .getJSONObject("referencedMessage");
         spec.put("loadedClass", version == 340013 ? OlderReference.class.getName() : CurrentReference.class.getName());
