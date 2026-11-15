@@ -19,7 +19,7 @@
 - 352017 的 `smali/q9/q.smali:764` 为 `b` 的完整描述符；按 Java 参数计数为 34（`J`/`D` 各一个参数），返回 `void`。目标中的 0–33 每个参数类型都必须精确配置，不能只按数量或部分签名匹配。
 - `inputSource=arguments`、`modelArgument=1`、`messageIdArgument=3`、`host.source=this` 与该实例方法对应。描述 `n7.c.j`、标题 `n7.c.f`、字段 `n7.c.g`；结构化字段名/值为 `n7.o.c/d`，不是原始字符串 `a/b`。
 - 340013 保留原目标和 accessory 参数 1；`inputSource=accessory`、宿主字段 `itemView`、语义 getter `getMessageId/getEmbed/getDescription/getTitle/getFields/getName/getValue` 由 profile 明确声明。旧模型源码未找到，不猜测 `Embed` 或 `EmbedField` 全限定名。
-- 专用全局 `embedHolderViewField` 与 `embed*Getter` 已移除，两版复用同一个配置选择的绑定入口。需要实机核查多卡片、描述/标题/字段、编辑、切换及回收复用；本次未确认设备回归。
+- 专用全局 `embedHolderViewField` 与 `embed*Getter` 已移除，两版复用同一个配置选择的绑定入口。当前 `4493cee` 已获用户整体功能正常确认；多卡片、全部字段、编辑及回收复用边界未逐项记录，不声称穷尽验证。
 
 ## 投票配置核实
 
@@ -28,7 +28,7 @@
 - 无 `B0` 转换：只在精确绑定作用域匹配当前 receiver 和捕获的原始字符串，作用域在 finally 恢复。不能修改投票模型制造差分，更不能改答案 ID、图片、投票状态、结果或回调。
 - 先解析视图并清理旧登记，再读取新文本/构造 Primitive；重放参数前核对当前槽位/文本键。每次绑定和重放都登记包装内容的身份；只有实际根标题绑定发起统一翻译流程，选项绑定只读状态并登记显示/重渲染，不另发请求。
 - 每行仅有一个 `PollCardState` 显示选择和当前段键列表；重复绑定、标题/选项编辑保留选择并删除旧键，段 Entry 的 `showingOriginal` 不控制显示，完成回调不重置选择；新代次与桥接重置清空整组。仅当前标题图标汇总段状态、按卡片选择着色并控制整组切换/失败段重试，刷新全部当前键。选项无图标和独立切换触摸；图片选项无障碍文本也跟随标题，原生投票点击不变。340013 投票仍未接入。
-- `PollCardStateTest` 与 `PollTextProjectionTest` 使用现有 StateStore 和假 Primitive 模型，覆盖整组选择、迟到译文、编辑/旧键隔离与代次清理，不代替设备投票/点击/布局回归。构建及单测需要通过 GitHub Actions 执行，设备回归尚未确认。
+- `PollCardStateTest` 与 `PollTextProjectionTest` 使用现有 StateStore 和假 Primitive 模型，覆盖整组选择、迟到译文、编辑/旧键隔离与代次清理，不代替设备投票/点击/布局回归。构建及单测需要通过 GitHub Actions 执行；`4493cee` 已获用户整体功能正常确认，特殊投票组合仍须针对性验证。
 
 ## 架构优化第一阶段
 
@@ -43,8 +43,18 @@
 
 - `ContentTree` 是提取、片段计数、alignment plan 和原生重建的唯一结构定义。按出现位置而非对象身份处理共享节点；语义容器深度 12，列表包装不加深，循环/路径/出现次数超限整体拒绝。诊断消费已捕获计划，不再次遍历宿主树。旧 walker/countTextNodes 与重新发现子节点的路径已删除。
 - 每次转换重新捕获当前输入，哈希验证和回填使用同一份计划；不把跨绑定的生产快照当成当前内容。Embed 同文不同对象可共享结果，但必须各自捕获和重建，不能因 Source 最后登记了另一对象而使共享译文 FAILED。原生未改分支保持对象身份，捕获的列表形状变化时拒绝提交；不声称完全克隆宿主可变模型。
-- `Http.Request` 协调取消与连接 attach，引擎先登记后构造请求，finally 删除；删除 HTTP 的全局线程→连接表。SSE 由协议 decoder 主导结束，`SseReader` 是网络和字符串提取唯一分帧器，删除 HTTP `[DONE]` 与协议独立逐行 parser。
+- `Http.Request` 协调取消与连接 attach，引擎先登记后构造请求，finally 删除；删除 HTTP 的全局线程→连接表。SSE 由协议 decoder 主导结束，`SseReader` 是协议 decoder 的唯一分帧器，字符串 fixture 仅在 test source set 喂入同一 decoder，删除 HTTP `[DONE]` 与协议独立逐行 parser。
 - SSE 必须收到完整空行帧和协议结束事件，完成后不继续读；严格 UTF-8 与累计响应上限拒绝损坏/超量内容，不切换响应模式。非 2xx 保留有界原始响应供错误分类，不输出正文。真实服务协议/断开连接、深层宿主树、正文/回复/Embed/Poll 仍需设备回归。
+
+## 实机确认后的旧代码清理
+
+- `4493cee`（Actions 511 项测试、0 失败/跳过）已由用户确认功能正常；保留 340013 精确 profile，不将受支持版本配置当作旧实现删除。
+- 删除 `ContentNodes.replaceText` 旧列表入口与三参数对齐重载；生产只接受已捕获、已校验的 ContentTree。测试在 test source set 建立输入计划，仍覆盖相同严格拒绝和重建逻辑，不将测试辅助入口留在 APK。
+- 删除 HookBridge 的 `lastView` 平行反向视图簿记及 producer 的 View 参数；显示登记/刷新仍唯一由 RerenderRegistry → RenderDispatcher 负责。删除旧可缺正文的 reply-state 接口，回复必须核对规范来源及编辑版本，retry 使用同一当前捕获/哈希校验。
+- 删除重建计划的重复样式计数器、仅初始化使用的宿主 Class 缓存、无调用 `HookConfiguration.member` 和 340013 的 `viewSource`。成员元数据和该版本 boundView 选择仍由现有精确配置消费，不删仍有反射用途的类型/访问器。
+- 删除仅供协议测试的字符串解析入口，测试直接喂入 createDecoder；真实测试请求只经引擎校验一次，离线自检仍独立保留。ApiTester 不再构造设置页从未读取的 message 文本，界面现有成功/失败、耗时与译文显示不变。服务订阅只建立弱分发快照，不再生成随后丢弃的强引用快照。
+- StateStore 删除无人消费的原文 String 副本和 obtain 第三个参数；规范源仍保存在同生命周期的 Source 中，请求文本仅在请求任务中保留。Poll 显示原文来自真实绑定输入，不依赖旧 Entry 字段；测试原文由 test-only fixture 保存。
+- 删除旧服务单槽时期的无调用提示资源，以及未使用的 BuildConfig 生成和未启用混淆的 ProGuard 配置。原生反射签名、构造器缓存、错误拒绝/事务及取消守卫不能按“旧”字样删除。
 
 ## 已确认的架构教训（改代码前先读）
 

@@ -539,7 +539,7 @@ public class ContentTreeTest {
     public void nullInputsAreRejectedWithoutDereferencingATree() {
         assertNull(ContentTree.compile(null));
         assertNull(TextExtractor.extractTree(null));
-        assertNull(ContentNodes.replaceText(null, "译文"));
+        assertNull(ContentPlanTestSupport.replace(null, "译文"));
         assertNull(ContentNodes.replacePlanned(null, "译文"));
         assertNull(ContentNodes.replacePlanned(null, null));
         ContentTree tree = compiled(list(new TextContentNode("hello")));
@@ -723,8 +723,8 @@ public class ContentTreeTest {
         assertNull("invalid tree must not return a partial snapshot", ContentTree.compile(source));
         assertNull("invalid annotated extraction must not expose prefix/suffix text",
                 TextExtractor.extract(new ContentNodesTest.AnnotatedStructurableText(source)));
-        assertNull("the list entry point must use the same rejecting compiler",
-                ContentNodes.replaceText(source, "译文"));
+        assertNull("test-only list setup must use the same rejecting compiler",
+                ContentPlanTestSupport.replace(source, "译文"));
     }
 
     private static void assertEventKinds(ContentTree tree, ContentTree.EventKind... kinds) {

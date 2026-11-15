@@ -39,7 +39,6 @@
         "selection": "mostParameters"
       },
       "identitySource": "boundView",
-      "viewSource": "this",
       "contentArgument": 1
     },
     "message.textConversion": {

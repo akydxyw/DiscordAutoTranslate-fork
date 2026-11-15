@@ -23,8 +23,6 @@ import java.util.List;
  */
 public final class StructurableTextFactory {
 
-    private static volatile Class<?> sPrimitiveClass;
-    private static volatile Class<?> sAnnotatedClass;
     private static volatile Constructor<?> sPrimitiveCtor;
     private static volatile Constructor<?> sAnnotatedCtor;
 
@@ -33,11 +31,10 @@ public final class StructurableTextFactory {
 
     /** 由模块入口在拿到目标 ClassLoader 后初始化。 */
     public static void init(@Nullable ClassLoader cl, HookConfiguration config) {
-        sPrimitiveClass = Reflect.loadClass(cl, config.typeClass("PrimitiveStructurableText"));
-        sAnnotatedClass = Reflect.loadClass(cl, config.typeClass("AnnotatedStructurableText"));
-
-        sPrimitiveCtor = ctorOf(sPrimitiveClass, String.class);
-        sAnnotatedCtor = ctorOf(sAnnotatedClass, List.class);
+        Class<?> primitiveClass = Reflect.loadClass(cl, config.typeClass("PrimitiveStructurableText"));
+        Class<?> annotatedClass = Reflect.loadClass(cl, config.typeClass("AnnotatedStructurableText"));
+        sPrimitiveCtor = ctorOf(primitiveClass, String.class);
+        sAnnotatedCtor = ctorOf(annotatedClass, List.class);
 
     }
 
@@ -56,8 +53,6 @@ public final class StructurableTextFactory {
     }
 
     public static void reset() {
-        sPrimitiveClass = null;
-        sAnnotatedClass = null;
         sPrimitiveCtor = null;
         sAnnotatedCtor = null;
     }

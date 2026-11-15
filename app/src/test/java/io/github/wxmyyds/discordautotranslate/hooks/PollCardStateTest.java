@@ -12,7 +12,9 @@ import org.junit.Test;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Shared Poll card choice and current membership; fake Primitive input, no Android views. */
 public class PollCardStateTest {
@@ -20,6 +22,7 @@ public class PollCardStateTest {
     private static final String OTHER_ROW = "987654321098765432";
     private final HookBridge bridge = HookBridge.get();
     private final StateStore store = StateStore.get();
+    private final Map<StateStore.Entry, String> originals = new IdentityHashMap<>();
 
     @Before
     public void setup() {
@@ -58,7 +61,8 @@ public class PollCardStateTest {
     private StateStore.Entry state(String key, String original, StateStore.Status status,
                                    String translated, boolean entryOriginal) {
         StateStore.Entry entry = store.obtain(key,
-                key.substring(key.lastIndexOf('\u0000') + 1), original);
+                key.substring(key.lastIndexOf('\u0000') + 1));
+        originals.put(entry, original);
         entry.status = status;
         entry.translatedText = translated;
         entry.showingOriginal = entryOriginal;
@@ -68,6 +72,11 @@ public class PollCardStateTest {
     private StateStore.Entry translated(String key, String original, String translation,
                                         boolean entryOriginal) {
         return state(key, original, StateStore.Status.TRANSLATED, translation, entryOriginal);
+    }
+
+    private String original(StateStore.Entry entry) {
+        assertTrue("Missing test source fixture", originals.containsKey(entry));
+        return originals.get(entry);
     }
 
     private String display(String key, String original) {
@@ -129,14 +138,14 @@ public class PollCardStateTest {
         StateStore.Entry a = translated(first, "First option", "第一个选项", false);
         StateStore.Entry b = translated(second, "Image option description", "图片选项说明", true);
         PollCardState.Card card = PollCardState.bind(ROW, title, Arrays.asList(title, first, second));
-        assertEquals("哪个选项？", display(title, question.originalText));
-        assertEquals("第一个选项", display(first, a.originalText));
-        assertEquals("图片选项说明", display(second, b.originalText));
+        assertEquals("哪个选项？", display(title, original(question)));
+        assertEquals("第一个选项", display(first, original(a)));
+        assertEquals("图片选项说明", display(second, original(b)));
 
         bridge.toggleShowingOriginal(title);
         assertTrue(card.showingOriginal());
         for (StateStore.Entry entry : Arrays.asList(question, a, b)) {
-            assertSame(entry.originalText, display(entry.messageId, entry.originalText));
+            assertSame(original(entry), display(entry.messageId, original(entry)));
         }
         for (String answer : Arrays.asList(first, second)) {
             bridge.toggleShowingOriginal(answer);
@@ -146,7 +155,7 @@ public class PollCardStateTest {
         bridge.onIconClicked(title);
         assertFalse(card.showingOriginal());
         for (StateStore.Entry entry : Arrays.asList(question, a, b)) {
-            assertSame(entry.translatedText, display(entry.messageId, entry.originalText));
+            assertSame(entry.translatedText, display(entry.messageId, original(entry)));
             assertEquals(StateStore.Status.TRANSLATED, entry.status);
         }
         assertTrue(question.showingOriginal);
@@ -164,19 +173,19 @@ public class PollCardStateTest {
         PollCardState.Card card = PollCardState.bind(ROW, title, Arrays.asList(title, answer));
         bridge.toggleShowingOriginal(title);
         assertTrue(card.showingOriginal());
-        assertEquals("Late answer", display(answer, late.originalText));
+        assertEquals("Late answer", display(answer, original(late)));
 
         late.translatedText = "迟到的答案译文";
         late.showingOriginal = false; // Scheduler completion changes the entry, not the card.
         late.status = StateStore.Status.TRANSLATED;
-        assertSame(late.originalText, display(answer, late.originalText));
-        assertSame(question.originalText, display(title, question.originalText));
+        assertSame(original(late), display(answer, original(late)));
+        assertSame(original(question), display(title, original(question)));
         PollCardState.Card rebound = PollCardState.bind(ROW, title, Arrays.asList(title, answer));
         assertTrue(rebound.showingOriginal());
-        assertSame(late.originalText, display(answer, late.originalText));
+        assertSame(original(late), display(answer, original(late)));
         bridge.toggleShowingOriginal(title);
-        assertSame(late.translatedText, display(answer, late.originalText));
-        assertSame(question.translatedText, display(title, question.originalText));
+        assertSame(late.translatedText, display(answer, original(late)));
+        assertSame(question.translatedText, display(title, original(question)));
     }
 
     @Test
@@ -201,10 +210,10 @@ public class PollCardStateTest {
         for (boolean original : new boolean[] {false, true, false}) {
             if (card.showingOriginal() != original) bridge.toggleShowingOriginal(title);
             assertEquals(original, card.showingOriginal());
-            assertSame(original ? translated.originalText : translated.translatedText,
-                    display(ready, translated.originalText));
+            assertSame(original ? original(translated) : translated.translatedText,
+                    display(ready, original(translated)));
             for (StateStore.Entry entry : Arrays.asList(question, targetLanguage, translating, failure)) {
-                assertSame(entry.originalText, display(entry.messageId, entry.originalText));
+                assertSame(original(entry), display(entry.messageId, original(entry)));
             }
             assertEquals("Unregistered state", display(absent, "Unregistered state"));
         }
@@ -238,7 +247,7 @@ public class PollCardStateTest {
             assertTrue(edited.showingOriginal());
         }
         assertSame(stale, store.peek(removed));
-        assertSame(stale.originalText, display(removed, stale.originalText));
+        assertSame(original(stale), display(removed, original(stale)));
         bridge.toggleShowingOriginal(newTitle);
         assertFalse(edited.showingOriginal());
         PollCardState.Card reordered = PollCardState.bind(ROW, newTitle,
@@ -290,8 +299,8 @@ public class PollCardStateTest {
         bridge.toggleShowingOriginal(title);
         assertTrue(card.showingOriginal());
         assertFalse(other.showingOriginal());
-        assertSame(first.originalText, display(answer, first.originalText));
-        assertSame(second.translatedText, display(otherAnswer, second.originalText));
+        assertSame(original(first), display(answer, original(first)));
+        assertSame(second.translatedText, display(otherAnswer, original(second)));
         PollCardState.Card otherRebound = PollCardState.bind(OTHER_ROW, otherTitle,
                 Arrays.asList(otherTitle, otherAnswer));
         assertFalse(otherRebound.showingOriginal());
@@ -362,10 +371,10 @@ public class PollCardStateTest {
         }
         assertSame(entry, store.peek(answer));
         assertTrue(entry.showingOriginal);
-        assertSame(entry.originalText, display(answer, entry.originalText));
+        assertSame(original(entry), display(answer, original(entry)));
         PollCardState.Card rebound = PollCardState.bind(ROW, title, Arrays.asList(title, answer));
         assertFalse(rebound.showingOriginal());
-        assertSame(entry.translatedText, display(answer, entry.originalText));
+        assertSame(entry.translatedText, display(answer, original(entry)));
         PollCardState.Card other = PollCardState.bind(OTHER_ROW, otherTitle, Arrays.asList(otherTitle));
         assertFalse(other.showingOriginal());
     }
@@ -384,7 +393,7 @@ public class PollCardStateTest {
         assertNull(PollCardState.forKey(answer));
         assertNull(PollCardState.toggle(title));
         assertSame(entry, store.peek(answer));
-        assertSame(entry.originalText, display(answer, entry.originalText));
+        assertSame(original(entry), display(answer, original(entry)));
         assertFalse(PollCardState.bind(ROW, title, Arrays.asList(title, answer)).showingOriginal());
     }
 

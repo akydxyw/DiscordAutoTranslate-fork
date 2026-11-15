@@ -24,12 +24,25 @@ public class ProtocolsTest {
         return Protocols.requestBody(protocol, text, prompt, model, streaming);
     }
 
+    /** Test source feeds the same request decoder that HTTP uses; no APK string adapter. */
+    private static String decodeFixture(String protocol, String body, boolean streaming)
+            throws TranslationException {
+        Http.ResponseDecoder decoder = Protocols.createDecoder(protocol, streaming);
+        if (body == null) {
+            throw new TranslationException(TranslationException.Kind.PARSE, "响应体为空");
+        }
+        for (int i = 0; i < body.length() && !decoder.isComplete(); i++) {
+            decoder.accept(body.charAt(i));
+        }
+        return decoder.finish();
+    }
+
     private static String extractByFixtureMode(String protocol, String body)
             throws TranslationException {
         String response = body == null ? "" : body.trim();
         boolean streaming = Protocols.supportsStreaming(protocol)
                 && (response.startsWith("data:") || response.startsWith("event:"));
-        return Protocols.extractTranslation(protocol, body, streaming);
+        return decodeFixture(protocol, body, streaming);
     }
 
     // ------------------------------------------------------------ 请求体
@@ -65,7 +78,7 @@ public class ProtocolsTest {
         JSONObject body = new JSONObject(Protocols.requestBody(
                 Config.PROTOCOL_OPENAI_COMPATIBLE, "hello", "prompt", "model", false));
         assertFalse(body.getBoolean("stream"));
-        assertEquals("你好", Protocols.extractTranslation(Config.PROTOCOL_OPENAI_COMPATIBLE,
+        assertEquals("你好", decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
                 "{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}", false));
     }
 
@@ -150,7 +163,7 @@ public class ProtocolsTest {
     public void streamingModeRejectsNonStreamingJson() throws Exception {
         String json = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"普通\"}}]}";
         try {
-            Protocols.extractTranslation(Config.PROTOCOL_OPENAI_COMPATIBLE, json, true);
+            decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE, json, true);
             fail("流式模式必须拒绝 JSON 响应");
         } catch (TranslationException e) {
             assertEquals(TranslationException.Kind.PARSE, e.kind());
@@ -205,7 +218,7 @@ public class ProtocolsTest {
                 + "{\"type\":\"text\",\"text\":\"，世界\"}],"
                 + "\"model\":\"claude\",\"stop_reason\":\"end_turn\"}";
         assertEquals("你好，世界",
-                Protocols.extractTranslation(Config.PROTOCOL_ANTHROPIC_MESSAGES, resp, false));
+                decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES, resp, false));
     }
 
     /** stop_reason=max_tokens：输出被 max_tokens 掐断，非流式同样拒绝。 */
@@ -227,7 +240,7 @@ public class ProtocolsTest {
         JSONObject body = new JSONObject(Protocols.requestBody(
                 Config.PROTOCOL_ANTHROPIC_MESSAGES, "hello", "prompt", "model", false));
         assertFalse(body.getBoolean("stream"));
-        assertEquals("你好", Protocols.extractTranslation(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+        assertEquals("你好", decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                 "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}],"
                         + "\"stop_reason\":\"end_turn\"}", false));
     }
@@ -237,7 +250,7 @@ public class ProtocolsTest {
         String json = "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}],"
                 + "\"stop_reason\":\"end_turn\"}";
         try {
-            Protocols.extractTranslation(Config.PROTOCOL_ANTHROPIC_MESSAGES, json, true);
+            decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES, json, true);
             fail("流式模式必须拒绝 JSON 响应");
         } catch (TranslationException e) {
             assertEquals(TranslationException.Kind.PARSE, e.kind());
@@ -283,7 +296,7 @@ public class ProtocolsTest {
         String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
                 + "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n";
         try {
-            Protocols.extractTranslation(Config.PROTOCOL_OPENAI_COMPATIBLE, sse, true);
+            decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE, sse, true);
             fail("finish_reason 不能替代 [DONE]");
         } catch (TranslationException e) {
             assertEquals(TranslationException.Kind.PARSE, e.kind());
@@ -467,7 +480,7 @@ public class ProtocolsTest {
                 + "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n"
                 + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
                 + "data: [DONE]\n\n";
-        assertEquals("你好", Protocols.extractTranslation(
+        assertEquals("你好", decodeFixture(
                 Config.PROTOCOL_OPENAI_COMPATIBLE, chat, true));
         String anthropic = "data: {\"type\":\"content_block_delta\","
                 + "\"delta\":{\"type\":\"thinking_delta\",\"text\":null}}\n\n"
@@ -478,7 +491,7 @@ public class ProtocolsTest {
                 + "data: {\"type\":\"content_block_delta\","
                 + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
                 + "data: {\"type\":\"message_stop\"}\n\n";
-        assertEquals("你好", Protocols.extractTranslation(
+        assertEquals("你好", decodeFixture(
                 Config.PROTOCOL_ANTHROPIC_MESSAGES, anthropic, true));
     }
 
@@ -519,7 +532,7 @@ public class ProtocolsTest {
         String body = "{\"output\":[{\"type\":\"reasoning\"},"
                 + "{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"x\"}]},"
                 + "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好\"}]}]}";
-        assertEquals("你好", Protocols.extractTranslation(
+        assertEquals("你好", decodeFixture(
                 Config.PROTOCOL_OPENAI_RESPONSES, body, false));
     }
 
@@ -532,7 +545,7 @@ public class ProtocolsTest {
                         + "{\"type\":\"output_text\",\"text\":\"你好\"}]}]}",
                 "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}]}"};
         for (int i = 0; i < protocols.length; i++) {
-            assertEquals("你好", Protocols.extractTranslation(protocols[i], bodies[i] + " \n", false));
+            assertEquals("你好", decodeFixture(protocols[i], bodies[i] + " \n", false));
             assertParseError(protocols[i], bodies[i] + " garbage", false);
             assertParseError(protocols[i], bodies[i] + " {}", false);
         }
@@ -544,7 +557,7 @@ public class ProtocolsTest {
                 + "data: {\"choices\":[\r\n"
                 + "data: {\"delta\":{\"content\":\"你好\"}}]}\r\n\r\n"
                 + "data: [DONE]\r\n\r\ndata: invalid trailing input\n\n";
-        assertEquals("你好", Protocols.extractTranslation(
+        assertEquals("你好", decodeFixture(
                 Config.PROTOCOL_OPENAI_COMPATIBLE, sse, true));
         Http.ResponseDecoder decoder = Protocols.createDecoder(
                 Config.PROTOCOL_OPENAI_COMPATIBLE, true);
@@ -571,7 +584,7 @@ public class ProtocolsTest {
         assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES, "data: [DONE]\n\n", true);
         assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                 "data: {\"type\":\"ping\",\"note\":\"[DONE]\"}\n\n", true);
-        assertEquals("你好", Protocols.extractTranslation(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+        assertEquals("你好", decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                 ": [DONE]\n\ndata: {\"type\":\"ping\",\"note\":\"[DONE]\"}\n\n"
                         + "data: {\"type\":\"content_block_delta\","
                         + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
@@ -588,7 +601,7 @@ public class ProtocolsTest {
                 "data: {\n\n", "data: {}\n\n", "data: []\n\n",
                 "data: {\"choices\":[]} garbage\n\n"}) {
             try {
-                Protocols.extractTranslation(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
                         prefix + event + "data: [DONE]\n\n", true);
                 fail("Expected rejection");
             } catch (TranslationException e) {
@@ -659,7 +672,7 @@ public class ProtocolsTest {
 
     private static void assertParseError(String protocol, String body, boolean streaming) {
         try {
-            Protocols.extractTranslation(protocol, body, streaming);
+            decodeFixture(protocol, body, streaming);
             fail("应抛出 TranslationException: " + body);
         } catch (TranslationException e) {
             assertEquals(TranslationException.Kind.PARSE, e.kind());
@@ -711,7 +724,7 @@ public class ProtocolsTest {
     @Test
     public void unknownProtocolIsRejected() {
         try {
-            Protocols.extractTranslation("unknown", "{}", false);
+            decodeFixture("unknown", "{}", false);
             fail("未知协议必须明确失败");
         } catch (TranslationException e) {
             assertEquals(TranslationException.Kind.CONFIG, e.kind());

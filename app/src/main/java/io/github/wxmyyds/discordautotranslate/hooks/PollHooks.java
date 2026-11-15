@@ -117,7 +117,7 @@ public final class PollHooks {
                                         chain.getArgs().toArray());
                             }
                             if (!answer) {
-                                registerCard(binding.messageId, key, original, view, chain.getArgs(),
+                                registerCard(binding.messageId, key, original, chain.getArgs(),
                                         spec, config.hook("poll.answerBind"));
                             }
                         }
@@ -140,7 +140,7 @@ public final class PollHooks {
     }
 
     /** Capture every option before native list diff/individual row binding; no per-option producer. */
-    private static void registerCard(String row, String titleKey, Object title, View titleView,
+    private static void registerCard(String row, String titleKey, Object title,
             List<?> args, JSONObject questionSpec, JSONObject answerSpec) throws Exception {
         if (!HookBridge.looksLikeSnowflake(row)) return;
         HookBridge bridge = HookBridge.get();
@@ -160,8 +160,7 @@ public final class PollHooks {
         PollCardState.bind(row, titleKey, keys);
         for (int i = 0; i < keys.size(); i++) {
             bridge.rememberContent(keys.get(i), originals.get(i));
-            bridge.onMessageBound(keys.get(i).equals(titleKey) ? titleView : null,
-                    keys.get(i), originals.get(i));
+            bridge.onMessageBound(keys.get(i), originals.get(i));
         }
     }
 

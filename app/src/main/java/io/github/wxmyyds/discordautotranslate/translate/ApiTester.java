@@ -3,29 +3,26 @@ package io.github.wxmyyds.discordautotranslate.translate;
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.Config;
-import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 
 /**
  * 连接测试与测试翻译（需求 §3.1、§5.5、§8：可测试 API 连接和实际翻译）。
  *
  * <p>由设置界面调用，同步执行，调用方需自行放到后台线程。
- * 返回结构化结果以便界面显示明确错误。</p>
+ * 返回设置页实际消费的成功标志、译文与耗时。</p>
  */
 public final class ApiTester {
 
     /** 测试结果。 */
     public static final class Result {
         public final boolean ok;
-        public final String message;
         /** 测试翻译时的译文（仅成功时有值）。 */
         @Nullable
         public final String translated;
         /** 耗时毫秒。 */
         public final long elapsedMs;
 
-        Result(boolean ok, String message, @Nullable String translated, long elapsedMs) {
+        Result(boolean ok, @Nullable String translated, long elapsedMs) {
             this.ok = ok;
-            this.message = message;
             this.translated = translated;
             this.elapsedMs = elapsedMs;
         }
@@ -49,28 +46,19 @@ public final class ApiTester {
         return testTranslation(cfg, DEFAULT_TEST_TEXT);
     }
 
-    /** 测试翻译：用指定文本走完整流程，返回译文或明确的错误信息。 */
+    /** 测试翻译：用指定文本走完整流程，失败返回 unsuccessful result。 */
     public static Result testTranslation(Config.Snapshot cfg, String text) {
         long start = System.currentTimeMillis();
         try {
-            // 与真实请求共用同一套配置校验，避免规则不一致。
-            JsonApiEngine.validateConfig(cfg);
-
+            // Real tests use the engine's one validation/request chain; selfCheck stays offline.
             JsonApiEngine engine = new JsonApiEngine(cfg);
             String translated = engine.translate(text);
 
             long ms = System.currentTimeMillis() - start;
-            return new Result(true, "成功（" + ms + "ms）", translated, ms);
+            return new Result(true, translated, ms);
 
-        } catch (TranslationException e) {
-            long ms = System.currentTimeMillis() - start;
-            return new Result(false, e.userMessage(), null, ms);
-        } catch (Throwable t) {
-            long ms = System.currentTimeMillis() - start;
-            return new Result(false,
-                    "失败：" + t.getClass().getSimpleName()
-                            + (t.getMessage() == null ? "" : "：" + t.getMessage()),
-                    null, ms);
+        } catch (Throwable failure) {
+            return new Result(false, null, System.currentTimeMillis() - start);
         }
     }
 
@@ -84,13 +72,9 @@ public final class ApiTester {
             // 与真实请求共用同一套配置校验，避免两处规则不一致。
             JsonApiEngine.validateConfig(cfg);
             long ms = System.currentTimeMillis() - start;
-            return new Result(true, "配置检查通过（" + ms + "ms）", null, ms);
-        } catch (TranslationException e) {
-            return new Result(false, e.userMessage(), null,
-                    System.currentTimeMillis() - start);
-        } catch (Throwable t) {
-            return new Result(false, "配置检查失败：" + t.getClass().getSimpleName(),
-                    null, System.currentTimeMillis() - start);
+            return new Result(true, null, ms);
+        } catch (Throwable failure) {
+            return new Result(false, null, System.currentTimeMillis() - start);
         }
     }
 }

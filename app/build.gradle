@@ -59,8 +59,6 @@ android {
             // Hook 依赖宿主类名和反射成员，当前不启用混淆。
             minifyEnabled false
             shrinkResources false
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"),
-                    "proguard-rules.pro"
             signingConfig signingConfigs.release
         }
     }
@@ -68,10 +66,6 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
-    }
-
-    buildFeatures {
-        buildConfig true
     }
 
     testOptions {

@@ -243,11 +243,6 @@ public final class HookConfiguration {
         return active;
     }
 
-    public static String member(String key) {
-        HookConfiguration configuration = active;
-        return configuration == null ? null : configuration.string("members", key);
-    }
-
     /** Returns a semantic type only when the active profile explicitly maps the runtime class. */
     @Nullable
     public static String semanticTypeName(Class<?> runtimeType) {

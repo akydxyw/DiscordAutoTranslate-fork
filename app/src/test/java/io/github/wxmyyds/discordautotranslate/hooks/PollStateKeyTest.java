@@ -3,6 +3,7 @@ package io.github.wxmyyds.discordautotranslate.hooks;
 import static org.junit.Assert.*;
 
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
+import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 
 import org.junit.After;
 import org.junit.Before;
@@ -75,7 +76,7 @@ public class PollStateKeyTest {
                 key(OTHER_ROW, "answer:a", "same label"));
         for (int i = 0; i < keys.size(); i++) {
             String id = keys.get(i);
-            StateStore.Entry entry = store.obtain(id, finalHash(question), "same label");
+            StateStore.Entry entry = store.obtain(id, finalHash(question));
             entry.translatedText = "translation-" + i;
             entry.status = StateStore.Status.TRANSLATED;
         }
@@ -93,14 +94,17 @@ public class PollStateKeyTest {
     @Test
     public void editedTextChangesOnlyThatSlotsKeyAndDoesNotMutateExistingState() {
         String oldQuestion = key(ROW, "question", "original question");
-        String oldAnswer = key(ROW, "answer:a", "original answer");
+        Object originalAnswer = text("original answer");
+        String oldAnswer = bridge.pollStateKey(ROW, "answer:a", originalAnswer);
         String newQuestion = key(ROW, "question", "edited question");
         String newAnswer = key(ROW, "answer:a", "edited answer");
         assertNotEquals(oldQuestion, newQuestion);
         assertNotEquals(oldAnswer, newAnswer);
         assertNotEquals(finalHash(oldQuestion), finalHash(newQuestion));
         assertNotEquals(finalHash(oldAnswer), finalHash(newAnswer));
-        StateStore.Entry old = store.obtain(oldAnswer, finalHash(oldAnswer), "original answer");
+        StateStore.Entry old = store.obtain(oldAnswer, finalHash(oldAnswer));
+        StateStore.Source source = new StateStore.Source(originalAnswer, false, null);
+        store.rememberSource(oldAnswer, source);
         old.status = StateStore.Status.TRANSLATED;
         old.translatedText = "旧答案译文";
         old.showingOriginal = true;
@@ -109,7 +113,9 @@ public class PollStateKeyTest {
         assertNull(store.peek(newAnswer));
         assertSame(old, store.peek(oldAnswer));
         assertEquals(finalHash(oldAnswer), old.contentHash);
-        assertEquals("original answer", old.originalText);
+        assertSame(source, store.source(oldAnswer));
+        assertSame(originalAnswer, source.content);
+        assertEquals("original answer", TextExtractor.extract(source.content).text);
         assertEquals("旧答案译文", old.translatedText);
         assertEquals(StateStore.Status.TRANSLATED, old.status);
         assertTrue(old.showingOriginal);

@@ -108,7 +108,7 @@ public class OpaqueNodeTranslationTest {
             assertEquals(" hello world ", extracted.text);
             assertEquals(2, extracted.opaqueNodeCount);
             assertFalse(extracted.text.contains("AliceDisplayName"));
-            List<Object> out = ContentNodes.replaceText(nodes, "你好世界");
+            List<Object> out = ContentPlanTestSupport.replace(nodes, "你好世界");
 
             assertNotNull("正文应当翻译，而不是整条回退为英文：" + opaque.getClass().getSimpleName(), out);
             assertSame(opaque, out.get(0));
@@ -124,7 +124,7 @@ public class OpaqueNodeTranslationTest {
         UserOrRoleMentionContentNode mention = new UserOrRoleMentionContentNode(
                 list(new TextContentNode("Alice")));
         assertNull("未提供 mention 边界标记时拒绝猜测两段译文位置",
-                ContentNodes.replaceText(list(new TextContentNode("hello"), mention,
+                ContentPlanTestSupport.replace(list(new TextContentNode("hello"), mention,
                         new TextContentNode("welcome")), "你好\n欢迎"));
     }
 
@@ -137,7 +137,7 @@ public class OpaqueNodeTranslationTest {
                 new StrongContentNode(list(new TextContentNode("hello"))), emoji));
 
         assertNull("缺少样式标记时拒绝回填，不改变原富文本节点",
-                ContentNodes.replaceText(list(original), "你好"));
+                ContentPlanTestSupport.replace(list(original), "你好"));
         assertSame(mention, original.getContent().get(0));
         assertSame(emoji, original.getContent().get(2));
     }
@@ -150,7 +150,7 @@ public class OpaqueNodeTranslationTest {
         items.add(list(channel, new TextContentNode("read the guide")));
         BulletListContentNode original = new BulletListContentNode(null, false, items);
 
-        List<Object> out = ContentNodes.replaceText(list(original), "阅读指南");
+        List<Object> out = ContentPlanTestSupport.replace(list(original), "阅读指南");
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(0);
@@ -169,7 +169,7 @@ public class OpaqueNodeTranslationTest {
             assertFalse(EnglishDetector.evaluate(extracted.text, extracted.textNodeCount,
                     extracted.opaqueNodeCount, extracted.codeHeavy,
                     io.github.wxmyyds.discordautotranslate.core.Config.DEF_TARGET_LANG).shouldTranslate);
-            assertNull(ContentNodes.replaceText(nodes, "不应写入名称"));
+            assertNull(ContentPlanTestSupport.replace(nodes, "不应写入名称"));
         }
     }
 
@@ -178,7 +178,7 @@ public class OpaqueNodeTranslationTest {
         TextContentNode shared = new TextContentNode("hello");
         UserOrRoleMentionContentNode mention = new UserOrRoleMentionContentNode(list(shared));
 
-        List<Object> out = ContentNodes.replaceText(list(mention, shared), "你好");
+        List<Object> out = ContentPlanTestSupport.replace(list(mention, shared), "你好");
 
         assertNotNull(out);
         assertSame(mention, out.get(0));
@@ -258,7 +258,7 @@ public class OpaqueNodeTranslationTest {
         assertNotNull(extracted);
         assertEquals(1, extracted.textNodeCount);
 
-        List<Object> out = ContentNodes.replaceText(nodes, "你好");
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "你好");
 
         assertNotNull(out);
         assertSame(absent, out.get(0));

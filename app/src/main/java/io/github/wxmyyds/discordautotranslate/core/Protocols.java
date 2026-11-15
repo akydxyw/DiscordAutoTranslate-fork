@@ -183,22 +183,6 @@ public final class Protocols {
                 || Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol);
     }
 
-    /**
-     * 从响应体提取译文，解析模式必须与请求模式一致。
-     */
-    public static String extractTranslation(String protocol, String responseBody,
-                                            boolean streaming)
-            throws TranslationException {
-        Http.ResponseDecoder decoder = createDecoder(protocol, streaming);
-        if (responseBody == null) {
-            throw parseError("响应体为空");
-        }
-        for (int i = 0; i < responseBody.length() && !decoder.isComplete(); i++) {
-            decoder.accept(responseBody.charAt(i));
-        }
-        return decoder.finish();
-    }
-
     /** Select one strict mode once. The decoder is stateful and must never be shared. */
     public static Http.ResponseDecoder createDecoder(String protocol, boolean streaming)
             throws TranslationException {

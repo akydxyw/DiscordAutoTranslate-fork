@@ -16,8 +16,8 @@ public class TranslationResultOwnershipTest {
     @After public void cleanup() { store.onNewGeneration(); bridge.reset(); TranslationCache.get().clear(); }
 
     @Test public void discardedOldResultCannotResetNewTranslationOrPopulateCache() {
-        TranslationTaskId old = store.begin(store.obtain("row", "old", "old text"));
-        StateStore.Entry next = store.obtain("row", "new", "new text");
+        TranslationTaskId old = store.begin(store.obtain("row", "old"));
+        StateStore.Entry next = store.obtain("row", "new");
         TranslationTaskId current = store.begin(next);
         bridge.onTranslateResult(old, false, "old result", null);
         assertEquals(StateStore.Status.TRANSLATING, next.status);
@@ -31,18 +31,18 @@ public class TranslationResultOwnershipTest {
     @Test public void inactiveRuntimeCannotCreateStateOrRetryFailedWork() {
         HookRuntime.suspend();
         Object input = new ContentNodesTest.PrimitiveStructurableText("Must not translate");
-        bridge.onMessageBound(null, "row", input);
+        bridge.onMessageBound("row", input);
         assertNull(store.peek("row"));
-        StateStore.Entry failed = store.obtain("row", "hash", "text");
+        StateStore.Entry failed = store.obtain("row", "hash");
         failed.status = StateStore.Status.FAILED;
         bridge.retry("row");
         assertEquals(StateStore.Status.FAILED, failed.status);
     }
 
     @Test public void oldGenerationCannotResetNewStateOrWriteItsCache() {
-        TranslationTaskId old = store.begin(store.obtain("row", "hash", "text"));
+        TranslationTaskId old = store.begin(store.obtain("row", "hash"));
         store.onNewGeneration();
-        StateStore.Entry next = store.obtain("row", "hash", "text");
+        StateStore.Entry next = store.obtain("row", "hash");
         TranslationTaskId current = store.begin(next);
         bridge.onTranslateResult(old, false, null, null);
         assertEquals(StateStore.Status.TRANSLATING, next.status);

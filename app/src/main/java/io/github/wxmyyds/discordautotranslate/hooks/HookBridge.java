@@ -101,9 +101,6 @@ public final class HookBridge {
         return currentTranslation(messageId, original.content);
     }
 
-    /** 消息 ID → 最近承载它的视图（弱引用，避免消息状态反向固定 View）。 */
-    private final Map<String, java.lang.ref.WeakReference<View>> lastView = boundedMap(512);
-
     /** 按引用身份反查消息 ID；Discord StructurableText 的 equals() 是按内容比较。 */
     private final IdentityMessageMap contentIdentityToMessageId = new IdentityMessageMap();
 
@@ -146,14 +143,7 @@ public final class HookBridge {
         if (contentView == null || messageId == null) {
             return;
         }
-        String prev = viewToMessageId.put(contentView, messageId);
-        if (prev != null && !prev.equals(messageId)) {
-            java.lang.ref.WeakReference<View> last = lastView.get(prev);
-            if (last != null && last.get() == contentView) {
-                lastView.remove(prev);
-            }
-        }
-        lastView.put(messageId, new java.lang.ref.WeakReference<>(contentView));
+        viewToMessageId.put(contentView, messageId);
     }
 
     /** Remove a stale direct binding when a recycled preview has no resolvable message ID. */
@@ -161,14 +151,7 @@ public final class HookBridge {
         if (contentView == null) {
             return;
         }
-        String previous = viewToMessageId.remove(contentView);
-        if (previous == null) {
-            return;
-        }
-        java.lang.ref.WeakReference<View> last = lastView.get(previous);
-        if (last != null && last.get() == contentView) {
-            lastView.remove(previous, last);
-        }
+        viewToMessageId.remove(contentView);
     }
 
     @Nullable
@@ -195,7 +178,6 @@ public final class HookBridge {
     public void reset() {
         viewToMessageId.clear();
         messageRevisions.clear();
-        lastView.clear();
         contentIdentityToMessageId.clear();
         PollCardState.clear();
     }
@@ -260,25 +242,6 @@ public final class HookBridge {
             return null;
         }
         return stateKey(rowMessageId, EMBED_KEY_PREFIX, contentHashOf(ex, config));
-    }
-
-    /**
-     * Read only the referenced message's canonical state. A preview is a projection,
-     * not a second message body: its displayed string must never be used as a cache
-     * key or to create/reset state. When the model supplies the complete body, reject
-     * a stale state after an edit using the normal body/configuration hash.
-     */
-    @Nullable
-    public StateStore.Entry existingReferencedMessageState(String messageId,
-                                                           @Nullable Object messageContent) {
-        if (messageId == null) {
-            return null;
-        }
-        StateStore.Entry entry = StateStore.get().peek(messageId);
-        if (entry == null || messageContent == null) {
-            return entry;
-        }
-        return matchingState(messageId, TextExtractor.extract(messageContent));
     }
 
     /** One current capture feeds identity verification, native reconstruction and icon eligibility. */
@@ -364,8 +327,7 @@ public final class HookBridge {
     /**
      * 消息绑定后的处理入口：识别英文、查缓存、按需发起翻译。
      */
-    public void onMessageBound(@Nullable View contentView, String messageId,
-                               @Nullable Object structurableText) {
+    public void onMessageBound(String messageId, @Nullable Object structurableText) {
         if (!HookRuntime.isActive() || messageId == null || structurableText == null) {
             return;
         }
@@ -385,12 +347,8 @@ public final class HookBridge {
         // 旧缓存条目隔离）。
         String requestText = ex.text;
         String hash = contentHashOf(ex, cfg);
-        StateStore.Entry entry = StateStore.get().obtain(messageId, hash, ex.text);
+        StateStore.Entry entry = StateStore.get().obtain(messageId, hash);
         rememberCanonicalContent(messageId, structurableText);
-        if (contentView != null) {
-            lastView.put(messageId, new java.lang.ref.WeakReference<>(contentView));
-        }
-
         if (!cfg.enabled) {
             HookDiagnostics.warnOnce("translation.disabled", "translation skipped: auto-translate is disabled");
             // 总开关关闭：不发起新翻译，保留已有译文（需求 §2.7）。
@@ -549,7 +507,7 @@ public final class HookBridge {
                 ? current == null
                 : current != null && java.util.Objects.equals(
                         original.editedTimestamp, current.editedTimestamp));
-        if (!sameRevision || existingReferencedMessageState(messageId, original.content) != e) {
+        if (!sameRevision || matchingState(messageId, TextExtractor.extract(original.content)) != e) {
             // A new model may have bound before its body renderer. Do not relabel
             // the previous body's retry with the latest model revision or reset state.
             return;
@@ -559,9 +517,7 @@ public final class HookBridge {
         if (!StateStore.get().prepareRetry(e)) return;
         refreshTranslation(messageId);
 
-        java.lang.ref.WeakReference<View> viewRef = lastView.get(messageId);
-        View last = viewRef == null ? null : viewRef.get();
-        onMessageBound(last, messageId, structurable);
+        onMessageBound(messageId, structurable);
     }
 
     // ---------------------------------------------------------------- 工具

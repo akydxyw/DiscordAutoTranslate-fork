@@ -81,7 +81,7 @@ public class EmojiHeadingMentionRegressionTest {
     @Test
     public void modelKeepingEmojiAnchorsTranslatesEveryLine() {
         List<Object> nodes = reportedTree();
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "宣布 2 款新的 abliterated 模型：\n"
                         + ":qwen: Qwen 3 27b\n"
                         + ":deepseek: Deepseek V4.1 Flash");
@@ -107,7 +107,7 @@ public class EmojiHeadingMentionRegressionTest {
     public void modelDroppingEmojiAnchorsRejectsLinewiseTranslation() {
         List<Object> nodes = reportedTree();
         assertNull("emoji 锚点丢失时必须保持原消息",
-                ContentNodes.replaceText(nodes,
+                ContentPlanTestSupport.replace(nodes,
                         "宣布 2 款新的 abliterated 模型：\nQwen 3 27b\nDeepseek V4.1 Flash"));
         assertEquals("Announcing 2 new abliterated models:",
                 ((TextContentNode) ((HeadingContentNode) nodes.get(2))
@@ -120,7 +120,7 @@ public class EmojiHeadingMentionRegressionTest {
     @Test
     public void mergedTranslationWithDroppedAnchorsKeepsOriginal() {
         List<Object> nodes = reportedTree();
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "宣布 2 款新模型：Qwen 3 27b 与 Deepseek V4.1 Flash");
 
         assertNull("段落/行结构对不上时必须保留原文", out);

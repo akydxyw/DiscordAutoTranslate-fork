@@ -372,7 +372,7 @@ public final class MessageHooks {
                                         isStatic ? null : chain.getThisObject(), render, renderArgs);
                                 if (content != null) {
                                     HookBridge.get().rememberContent(messageId, content);
-                                    HookBridge.get().onMessageBound(view, messageId, content);
+                                    HookBridge.get().onMessageBound(messageId, content);
                                 }
                             }
                         }

@@ -46,27 +46,7 @@ public final class ContentNodes {
 
     // ---------------------------------------------------------------- 变换
 
-    /**
-     * 把节点列表中的自然语言文本片段替换为译文。
-     *
-     * <p>译文按唯一结构规则回填：URL、emoji 与样式标记必须按请求原样保留；
-     * 每个列表项按一行对应，其余文本按段落块逐片段对应。任一锚点或结构
-     * 不匹配就拒绝整条回填，原节点树不变。</p>
-     *
-     * @param nodes        原始节点列表
-     * @param translated   协议返回的译文（引擎侧已通过防损坏校验）
-     * @return 新的节点列表；无需变化、对齐失败或任一节点重建失败时返回
-     *         null，调用方应保留原文
-     */
-    @Nullable
-    public static List<Object> replaceText(@Nullable List<?> nodes, String translated) {
-        if (nodes == null || translated == null || translated.trim().isEmpty()) {
-            return null;
-        }
-        ContentTree tree = ContentTree.compile(nodes);
-        return tree == null ? null : replacePlanned(tree, translated);
-    }
-
+    /** Rebuild only from the caller's captured, identity-verified occurrence plan. */
     @Nullable
     public static List<Object> replacePlanned(ContentTree tree, String translated) {
         if (tree == null || translated == null || translated.trim().isEmpty()) return null;
@@ -540,12 +520,6 @@ public final class ContentNodes {
      */
     @Nullable
     static List<String> alignSpanToParts(String span, List<Integer> groups,
-                                         @Nullable List<Boolean> listFlags) {
-        return alignSpanToParts(span, groups, listFlags, null);
-    }
-
-    @Nullable
-    static List<String> alignSpanToParts(String span, List<Integer> groups,
                                          @Nullable List<Boolean> listFlags,
                                          @Nullable List<Boolean> lineBreakBefore) {
         int segments = groups.size();
@@ -760,9 +734,7 @@ public final class ContentNodes {
                     addSegment(w);
                     int styleId = 0;
                     if (event.styled) {
-                        w.styleSeq[0]++;
-                        styleId = w.styleSeq[0];
-                        w.plan.styleMarkers++;
+                        styleId = ++w.plan.styleMarkers;
                     }
                     w.plan.tokens.add(new PlanToken(segIndex, styleId));
                 }
@@ -789,7 +761,6 @@ public final class ContentNodes {
         int listLevel;
         boolean forceNewGroup;
         boolean lineBreakBefore;
-        final int[] styleSeq = new int[1];
     }
 
     /**

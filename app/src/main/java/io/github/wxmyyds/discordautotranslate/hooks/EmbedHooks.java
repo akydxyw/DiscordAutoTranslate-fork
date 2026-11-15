@@ -89,7 +89,7 @@ public final class EmbedHooks {
         if (!RenderDispatcher.isRerendering()) {
             for (int i = 0; i < keys.size(); i++) {
                 if (keys.get(i) != null) {
-                    bridge.onMessageBound(view, keys.get(i), binding.texts.get(i));
+                    bridge.onMessageBound(keys.get(i), binding.texts.get(i));
                 }
             }
         }

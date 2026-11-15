@@ -192,7 +192,7 @@ public class ContentNodeConstructorTest {
         q0.calls = 0;
         q0.copyCalls = 0;
 
-        List<Object> output = ContentNodes.replaceText(nodes, "你好");
+        List<Object> output = ContentPlanTestSupport.replace(nodes, "你好");
 
         assertNotNull(output);
         q0 rebuilt = (q0) output.get(0);
@@ -220,7 +220,7 @@ public class ContentNodeConstructorTest {
         List<Object> nodes = list(original);
         w0.calls = 0;
 
-        List<Object> output = ContentNodes.replaceText(nodes, "你好");
+        List<Object> output = ContentPlanTestSupport.replace(nodes, "你好");
 
         assertNotNull(output);
         w0 rebuilt = (w0) output.get(0);
@@ -251,7 +251,7 @@ public class ContentNodeConstructorTest {
         List<Object> nodes = list(original);
         c1.calls = 0;
 
-        List<Object> output = ContentNodes.replaceText(nodes, "阅读文档");
+        List<Object> output = ContentPlanTestSupport.replace(nodes, "阅读文档");
 
         assertNotNull(output);
         c1 rebuilt = (c1) output.get(0);
@@ -294,7 +294,7 @@ public class ContentNodeConstructorTest {
         broken.otherCalls = 0;
         broken.copyCalls = 0;
 
-        assertNull(ContentNodes.replaceText(nodes, "第一\n\n第二"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "第一\n\n第二"));
 
         assertEquals(1, broken.selectedCalls);
         assertEquals(0, broken.otherCalls);
@@ -346,7 +346,7 @@ public class ContentNodeConstructorTest {
         inherited.calls = 0;
         inherited.copyCalls = 0;
 
-        assertNull(ContentNodes.replaceText(nodes, "你好"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "你好"));
 
         assertEquals(0, inherited.calls);
         assertEquals(0, inherited.copyCalls);
@@ -365,7 +365,7 @@ public class ContentNodeConstructorTest {
         List<Object> nodes = list(original);
         copyOnly.copyCalls = 0;
 
-        List<Object> output = ContentNodes.replaceText(nodes, "你好");
+        List<Object> output = ContentPlanTestSupport.replace(nodes, "你好");
 
         assertNotNull(output);
         copyOnly rebuilt = (copyOnly) output.get(0);
@@ -389,7 +389,7 @@ public class ContentNodeConstructorTest {
 
         assertNotNull(configuration.nodeConstructor("HeadingContentNode"));
         q0 original = new q0(list(new e5("Hello")), 3, 2);
-        List<Object> output = ContentNodes.replaceText(list(original), "你好");
+        List<Object> output = ContentPlanTestSupport.replace(list(original), "你好");
         assertNotNull(output);
         assertEquals("Hello", extracted(list(original)));
         assertEquals("你好", extracted(output));
@@ -481,7 +481,7 @@ public class ContentNodeConstructorTest {
         broken.otherCalls = 0;
         broken.copyCalls = 0;
 
-        assertNull(ContentNodes.replaceText(nodes, "你好"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "你好"));
 
         assertEquals(expectedCalls, broken.selectedCalls);
         assertEquals(0, broken.otherCalls);

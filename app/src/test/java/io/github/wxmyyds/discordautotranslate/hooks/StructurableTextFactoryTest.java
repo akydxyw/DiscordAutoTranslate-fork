@@ -74,15 +74,17 @@ public class StructurableTextFactoryTest {
             String key = bridge.embedStateKey(id, original);
             String hash = key.substring((id + "\u0000embed\u0000").length());
             io.github.wxmyyds.discordautotranslate.core.StateStore.Entry entry =
-                    store.obtain(id, hash, TextExtractor.extract(original).text);
+                    store.obtain(id, hash);
             String translated = "译文第一行\n" + "完整译文".repeat(100);
             entry.translatedText = translated;
             entry.status = io.github.wxmyyds.discordautotranslate.core.StateStore.Status.TRANSLATED;
             bridge.rememberMessageRevision(id, null);
             bridge.rememberCanonicalContent(id, original);
-            assertNull(bridge.existingReferencedMessageState(id, projected));
+            assertNull(bridge.currentTranslation(id, projected));
             HookBridge.ReferencedTranslation reused = bridge.referencedTranslation(id, null);
             assertNotNull(reused);
+            assertSame(entry, reused.state);
+            assertSame(original, reused.originalContent);
             Object replacement = StructurableTextFactory.forPlannedTranslation(
                     reused.originalContent, reused.state.translatedText, reused.extracted);
             assertTrue(replacement instanceof PrimitiveStructurableText);

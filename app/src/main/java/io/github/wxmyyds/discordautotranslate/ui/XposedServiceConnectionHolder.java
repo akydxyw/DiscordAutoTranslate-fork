@@ -158,26 +158,12 @@ final class XposedServiceConnectionHolder implements XposedServiceHelper.OnServi
         }
 
         List<WeakReference<L>> dispatchSnapshot() {
-            snapshot(); // Prune cleared entries before capturing subscription identities.
+            listeners.removeIf(subscription -> subscription.get() == null);
             return new ArrayList<>(listeners);
         }
 
         boolean isBound(WeakReference<L> subscription) {
             return listeners.contains(subscription);
-        }
-
-        List<L> snapshot() {
-            List<L> result = new ArrayList<>();
-            Iterator<WeakReference<L>> iterator = listeners.iterator();
-            while (iterator.hasNext()) {
-                L listener = iterator.next().get();
-                if (listener == null) {
-                    iterator.remove();
-                } else {
-                    result.add(listener);
-                }
-            }
-            return result;
         }
     }
 }

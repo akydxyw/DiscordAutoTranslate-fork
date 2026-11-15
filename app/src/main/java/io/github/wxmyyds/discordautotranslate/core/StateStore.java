@@ -12,7 +12,6 @@ public final class StateStore {
     public static final class Entry {
         public final String messageId;
         public volatile String contentHash;
-        public volatile String originalText;
         public volatile String translatedText;
         public volatile Status status = Status.IDLE;
         public volatile boolean showingOriginal;
@@ -20,10 +19,9 @@ public final class StateStore {
         private TranslationTaskId task;
         private Source source;
 
-        Entry(String messageId, String contentHash, String originalText) {
+        Entry(String messageId, String contentHash) {
             this.messageId = messageId;
             this.contentHash = contentHash;
-            this.originalText = originalText;
         }
     }
 
@@ -56,17 +54,16 @@ public final class StateStore {
     }
 
     /** LRU includes every status; evicted work loses ownership and cannot resurrect a record. */
-    public synchronized Entry obtain(String messageId, String contentHash, String originalText) {
+    public synchronized Entry obtain(String messageId, String contentHash) {
         Entry entry = entries.get(messageId);
         if (entry == null || !contentHash.equals(entry.contentHash)) {
-            entry = new Entry(messageId, contentHash, originalText);
+            entry = new Entry(messageId, contentHash);
             entries.remove(messageId);
             entries.put(messageId, entry);
             if (entries.size() > MAX_ENTRIES) {
                 entries.remove(entries.keySet().iterator().next());
             }
         } else {
-            entry.originalText = originalText;
             entries.remove(messageId);
             entries.put(messageId, entry);
         }

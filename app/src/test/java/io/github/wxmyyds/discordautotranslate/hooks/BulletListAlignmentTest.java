@@ -101,7 +101,7 @@ public class BulletListAlignmentTest {
         t.append("\n你可以在花任何钱之前先用免费额度试用。\n\n")
                 .append("在此注册：").append(URL);
 
-        List<Object> out = ContentNodes.replaceText(reportedTree(), t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(reportedTree(), t.toString());
 
         assertNotNull("结构完整的列表译文必须能回填", out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(6);
@@ -128,7 +128,7 @@ public class BulletListAlignmentTest {
         t.append("\n你可以在花任何钱之前先用免费额度试用。\n\n")
                 .append("在此注册：").append(URL);
 
-        List<Object> out = ContentNodes.replaceText(reportedTree(), t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(reportedTree(), t.toString());
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(6);
@@ -152,7 +152,7 @@ public class BulletListAlignmentTest {
                 .append("在此注册：").append(URL);
 
         assertNull("源树中的段落边界缺失时不得重新猜测分段",
-                ContentNodes.replaceText(reportedTree(), t.toString()));
+                ContentPlanTestSupport.replace(reportedTree(), t.toString()));
     }
 
     @Test
@@ -167,7 +167,7 @@ public class BulletListAlignmentTest {
         for (String b : ZH_BULLETS) {
             t.append(b).append('\n');
         }
-        List<Object> out = ContentNodes.replaceText(nodes, t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, t.toString());
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(0);
@@ -191,7 +191,7 @@ public class BulletListAlignmentTest {
                 .append("在此注册：").append(URL);
 
         List<Object> nodes = reportedTree();
-        assertNull(ContentNodes.replaceText(nodes, t.toString()));
+        assertNull(ContentPlanTestSupport.replace(nodes, t.toString()));
 
         BulletListContentNode bullets = (BulletListContentNode) nodes.get(6);
         assertEquals("原文列表项不得被清空", BULLETS[0],
@@ -214,7 +214,7 @@ public class BulletListAlignmentTest {
 
         List<Object> nodes = reportedTree();
         Object link = nodes.get(11);
-        List<Object> out = ContentNodes.replaceText(nodes, t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, t.toString());
 
         assertNotNull(out);
         assertSame("URL 链接节点必须原样保留", link, out.get(11));
@@ -238,7 +238,7 @@ public class BulletListAlignmentTest {
                 .append("在此注册：").append(URL);
 
         assertNull("原始列表项之间是单换行，模型插入空段落后不再逐项对应",
-                ContentNodes.replaceText(reportedTree(), t.toString()));
+                ContentPlanTestSupport.replace(reportedTree(), t.toString()));
     }
 
     @Test
@@ -250,7 +250,7 @@ public class BulletListAlignmentTest {
         items.add(list(new TextContentNode("second")));
         List<Object> nodes = list(new BulletListContentNode(null, false, items));
 
-        List<Object> out = ContentNodes.replaceText(nodes, "1. 第一\n2. 第二");
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "1. 第一\n2. 第二");
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(0);
@@ -268,7 +268,7 @@ public class BulletListAlignmentTest {
                 new TextContentNode("\n\n"),
                 new TextContentNode("second paragraph"));
 
-        List<Object> out = ContentNodes.replaceText(nodes, "- 第一段\n\n第二段");
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "- 第一段\n\n第二段");
 
         assertNotNull(out);
         assertEquals("- 第一段", ((TextContentNode) out.get(0)).getContent());
@@ -283,6 +283,6 @@ public class BulletListAlignmentTest {
                 new TextContentNode("\n\n"),
                 new TextContentNode("second paragraph"));
 
-        assertNull(ContentNodes.replaceText(nodes, "一\n二\n三\n四"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "一\n二\n三\n四"));
     }
 }

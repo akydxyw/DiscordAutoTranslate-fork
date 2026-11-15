@@ -23,13 +23,13 @@ public class XposedServiceConnectionHolderTest {
         assertTrue(subscriptions.add(first)); // Newly subscribed: current replay is allowed.
         assertFalse(subscriptions.add(first)); // No duplicate subscription/current replay.
         assertTrue(subscriptions.add(second)); // Equal is not identical.
-        assertEquals(2, subscriptions.snapshot().size());
+        assertEquals(2, subscriptions.dispatchSnapshot().size());
 
         subscriptions.remove(first);
         subscriptions.remove(first);
         assertFalse(subscriptions.contains(first));
         assertTrue(subscriptions.contains(second));
-        assertSame(second, subscriptions.snapshot().get(0));
+        assertSame(second, subscriptions.dispatchSnapshot().get(0).get());
         assertTrue(subscriptions.add(first)); // New lifecycle subscription permits replay.
         assertFalse(subscriptions.add(first));
     }
@@ -43,17 +43,17 @@ public class XposedServiceConnectionHolderTest {
         Object addedDuringDispatch = new Object();
         subscriptions.add(first);
         subscriptions.add(second);
-        List<Object> snapshot = subscriptions.snapshot();
+        List<WeakReference<Object>> snapshot = subscriptions.dispatchSnapshot();
 
         subscriptions.remove(second);
         subscriptions.add(addedDuringDispatch);
 
         assertEquals(2, snapshot.size());
-        assertSame(second, snapshot.get(1));
-        assertFalse(subscriptions.contains(second)); // Dispatch's membership guard skips it.
-        assertFalse(snapshot.contains(addedDuringDispatch)); // Not part of this event snapshot.
+        assertSame(second, snapshot.get(1).get());
+        assertFalse(subscriptions.isBound(snapshot.get(1))); // Dispatch membership skips removed identity.
+        assertFalse(snapshot.stream().anyMatch(ref -> ref.get() == addedDuringDispatch));
         assertTrue(subscriptions.contains(addedDuringDispatch));
-        assertSame(addedDuringDispatch, subscriptions.snapshot().get(1));
+        assertSame(addedDuringDispatch, subscriptions.dispatchSnapshot().get(1).get());
     }
 
     @Test
@@ -85,11 +85,11 @@ public class XposedServiceConnectionHolderTest {
         List<?> references = (List<?>) field.get(subscriptions);
         ((WeakReference<?>) references.get(0)).clear();
 
-        assertEquals(1, subscriptions.snapshot().size());
-        assertSame(retained, subscriptions.snapshot().get(0));
+        assertEquals(1, subscriptions.dispatchSnapshot().size());
+        assertSame(retained, subscriptions.dispatchSnapshot().get(0).get());
         assertEquals(1, references.size());
         assertTrue(subscriptions.add(released));
         subscriptions.remove(retained);
-        assertSame(released, subscriptions.snapshot().get(0));
+        assertSame(released, subscriptions.dispatchSnapshot().get(0).get());
     }
 }

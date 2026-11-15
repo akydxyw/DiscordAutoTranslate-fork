@@ -1,6 +1,6 @@
 package io.github.wxmyyds.discordautotranslate.core;
 
-/** Incremental SSE framing shared by HTTP and string-based protocol extraction. */
+/** Incremental SSE framing for the selected per-request protocol decoder. */
 public final class SseReader {
     public static final int MAX_RESPONSE_CHARS = 1024 * 1024;
 

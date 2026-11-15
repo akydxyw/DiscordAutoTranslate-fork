@@ -116,7 +116,7 @@ public class LongTextRegressionTest {
             // 镜像请求文本结构：标题 + 换行 + URL 定位标记。
             translation.append("固定标题译文").append('\n').append(URLS[0]);
         }
-        List<Object> out = ContentNodes.replaceText(nodes, translation.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, translation.toString());
 
         assertNotNull(out);
         assertEquals("第 7 个标题按位置拿到自己的片段", "固定标题译文",
@@ -137,7 +137,7 @@ public class LongTextRegressionTest {
             spam.append("🔥🔥🔥 FREE CRACK 🔥🔥🔥\n");
         }
         List<Object> nodes = reportedMessageTree();
-        assertNull(ContentNodes.replaceText(nodes, spam.toString()));
+        assertNull(ContentPlanTestSupport.replace(nodes, spam.toString()));
         HeadingContentNode first = (HeadingContentNode) nodes.get(0);
         assertEquals(TITLES[0], ((TextContentNode) first.getContent().get(0)).getContent());
         LinkContentNode third = (LinkContentNode) nodes.get(2);
@@ -158,7 +158,7 @@ public class LongTextRegressionTest {
             merged.append("合并段").append(i + 1);
         }
         List<Object> nodes = reportedMessageTree();
-        assertNull(ContentNodes.replaceText(nodes, merged.toString()));
+        assertNull(ContentPlanTestSupport.replace(nodes, merged.toString()));
         HeadingContentNode first = (HeadingContentNode) nodes.get(0);
         assertEquals(TITLES[0], ((TextContentNode) first.getContent().get(0)).getContent());
     }
@@ -182,7 +182,7 @@ public class LongTextRegressionTest {
             translation.append("第").append(i + 1).append("块标题译文")
                     .append('\n').append(URLS[i % 3]);
         }
-        List<Object> out = ContentNodes.replaceText(nodes, translation.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, translation.toString());
 
         assertNotNull(out);
         assertEquals("节点树规模不变（结构全保留）", nodes.size(), out.size());
@@ -223,7 +223,7 @@ public class LongTextRegressionTest {
             duplicated.append("第").append(i + 1).append("块复读内容");
         }
         List<Object> nodes = reportedMessageTree();
-        assertNull(ContentNodes.replaceText(nodes, duplicated.toString()));
+        assertNull(ContentPlanTestSupport.replace(nodes, duplicated.toString()));
         HeadingContentNode first = (HeadingContentNode) nodes.get(0);
         assertEquals(TITLES[0], ((TextContentNode) first.getContent().get(0)).getContent());
         LinkContentNode third = (LinkContentNode) nodes.get(2);
@@ -272,7 +272,7 @@ public class LongTextRegressionTest {
                     .append("https://clck.ru/3Wfv9G")
                     .append("\n\n仅限 TELEGRAM");
         }
-        List<Object> out = ContentNodes.replaceText(repeatedAdTree(), translation.toString());
+        List<Object> out = ContentPlanTestSupport.replace(repeatedAdTree(), translation.toString());
 
         assertNotNull(out);
         int freeHeadings = 0;
@@ -335,7 +335,7 @@ public class LongTextRegressionTest {
         // 拒绝回填、整条保留原文。提示词已明确要求逐个翻译重复段落，
         // 且请求不再携带 frequency_penalty（频率惩罚会促使模型跳过重复块）；
         // 若真机仍出现本形态，日志的 blocks/paragraphs 计数会直接显示。
-        assertNull(ContentNodes.replaceText(repeatedAdTree(),
+        assertNull(ContentPlanTestSupport.replace(repeatedAdTree(),
                 "免费 GEMINI 4 ARGON\n\n链接 GEMINI 4 ARGON -\n\n仅限 TELEGRAM"));
     }
 
@@ -355,7 +355,7 @@ public class LongTextRegressionTest {
                         list(new TextContentNode("styled text"))),
                 new TextContentNode(" tail"));
 
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "普通 <x1>斜体文字</x1> 尾巴");
 
         assertNotNull(out);
@@ -379,7 +379,7 @@ public class LongTextRegressionTest {
                         list(new TextContentNode("styled text"))),
                 new TextContentNode(" tail"));
 
-        assertNull(ContentNodes.replaceText(nodes, "普通 斜体 尾巴"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "普通 斜体 尾巴"));
         assertEquals("原节点未被动过", "styled text",
                 ((TextContentNode) ((io.github.wxmyyds.discordautotranslate.hooks
                         .ContentNodesTest.EmphasisContentNode) nodes.get(1))
@@ -397,7 +397,7 @@ public class LongTextRegressionTest {
                         "https://clck.ru/3Wfv9G")), new Object()),
                 new TextContentNode(" now"));
 
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "见 <x1>加粗</x1> https://clck.ru/3Wfv9G 现在");
 
         assertNotNull(out);
@@ -419,7 +419,7 @@ public class LongTextRegressionTest {
                 new TextContentNode("beta"));
 
         assertNull("缺少 emoji 锚点时必须拒绝回填",
-                ContentNodes.replaceText(nodes, "甲 乙"));
+                ContentPlanTestSupport.replace(nodes, "甲 乙"));
         assertEquals("alpha", ((TextContentNode) nodes.get(0)).getContent());
         assertEquals("beta", ((TextContentNode) nodes.get(2)).getContent());
     }
@@ -437,7 +437,7 @@ public class LongTextRegressionTest {
                 new TextContentNode(" "),
                 new TextContentNode("trailing text"));
 
-        assertNull(ContentNodes.replaceText(nodes, "描述 尾巴"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "描述 尾巴"));
         // 原节点树原样保留：URL 逐字符不变，各文字片段未被动过。
         assertEquals("bold desc",
                 ((TextContentNode) ((StrongContentNode) nodes.get(0)).getContent().get(0))
@@ -462,7 +462,7 @@ public class LongTextRegressionTest {
                 new TextContentNode(" "),
                 new TextContentNode("trailing text"));
 
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "<x1>描述</x1> https://clck.ru/3Wfv9G 尾巴");
 
         assertNotNull(out);
@@ -482,7 +482,7 @@ public class LongTextRegressionTest {
                         "https://clck.ru/3Wfv9G")), new Object()),
                 new TextContentNode("gamma"));
 
-        assertNull(ContentNodes.replaceText(nodes,
+        assertNull(ContentPlanTestSupport.replace(nodes,
                 "甲乙 https://clck.ru/3Wfv9G 丙"));
         assertEquals("alpha", ((TextContentNode) nodes.get(0)).getContent());
         assertEquals("beta", ((TextContentNode) nodes.get(1)).getContent());
@@ -500,7 +500,7 @@ public class LongTextRegressionTest {
                 new TextContentNode(" "),
                 new TextContentNode("trailing text"));
 
-        assertNull(ContentNodes.replaceText(nodes,
+        assertNull(ContentPlanTestSupport.replace(nodes,
                 "描述 https://clck.ru/3Wfv9G https://clck.ru/3Wfv9G 尾巴"));
     }
 
@@ -515,7 +515,7 @@ public class LongTextRegressionTest {
                 new TextContentNode(" "),
                 new TextContentNode("trailing text"));
 
-        assertNull(ContentNodes.replaceText(nodes,
+        assertNull(ContentPlanTestSupport.replace(nodes,
                 "https://clck.ru/3Wfv9G 描述 尾巴"));
     }
 
@@ -532,7 +532,7 @@ public class LongTextRegressionTest {
                 new TextContentNode("\n\n"),
                 new TextContentNode("para two"));
 
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "段落一\n\nhttps://clck.ru/3Wfv9G\n\n段落二");
 
         assertNotNull(out);
@@ -568,7 +568,7 @@ public class LongTextRegressionTest {
                     .append("</x").append(g + 1).append(">")
                     .append("https://clck.ru/3Wfv9G");
         }
-        List<Object> out = ContentNodes.replaceText(nodes, translation.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, translation.toString());
 
         assertNotNull(out);
         for (int g = 0; g < 2; g++) {
@@ -597,14 +597,14 @@ public class LongTextRegressionTest {
                 new TextContentNode("\n"),
                 new LinkContentNode(list(new TextContentNode(URLS[1])), new Object()));
         assertNull("代码两侧没有精确定位标记时拒绝回填",
-                ContentNodes.replaceText(nodes,
+                ContentPlanTestSupport.replace(nodes,
                         "<x1>加粗标题</x1>\n\n运行\n现在" + URLS[1]));
     }
 
     @Test
     public void shortSingleSegmentMessageStillTranslates() {
         // 短文本（单段）不受新校验影响，仍整段回填。
-        List<Object> out = ContentNodes.replaceText(
+        List<Object> out = ContentPlanTestSupport.replace(
                 list(new TextContentNode("hello")), "你好");
 
         assertNotNull(out);
@@ -642,7 +642,7 @@ public class LongTextRegressionTest {
         // 模型按规则 6 原样回带两个 URL。回填按 URL 切分：URL 之间的
         // 间隔承载文本节点译文，回显的 URL 本身被删除，链接由原节点渲染，
         // 无重复行。
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "https://codex-relay.codes/register?aff=oqr0\n"
                         + "https://api.yzmao.cn/sign-up?aff=IpHK\n"
                         + "免费真实 gpt-6.1-sol，无需推荐人即可试用");

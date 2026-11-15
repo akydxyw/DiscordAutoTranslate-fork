@@ -109,7 +109,7 @@ public class ModuleEntry extends XposedModule {
                 return false;
             }
             Bundle state = new Bundle();
-            if (installed && hookConfiguration != null) {
+            if (hookConfiguration != null) {
                 state.putInt("hookVersionCode", hookConfiguration.versionCode());
             }
             param.setSavedInstanceState(state);

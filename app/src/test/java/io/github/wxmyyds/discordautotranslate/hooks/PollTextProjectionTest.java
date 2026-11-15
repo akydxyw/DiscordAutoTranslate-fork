@@ -18,6 +18,7 @@ import java.util.Map;
 public class PollTextProjectionTest {
     private static final String ROW = "123456789012345678";
     private static final String ORIGINAL = "  Original label\n😀  ";
+    private static final String SOURCE_ORIGINAL = "stored original differs from native label";
     private final StateStore store = StateStore.get();
     private String titleKey;
     private String answerKey;
@@ -55,8 +56,9 @@ public class PollTextProjectionTest {
     }
 
     private StateStore.Entry state() {
-        return store.obtain(answerKey, "retained-content-hash",
-                "stored original differs from native label");
+        StateStore.Entry entry = store.obtain(answerKey, "retained-content-hash");
+        store.rememberSource(answerKey, new StateStore.Source(SOURCE_ORIGINAL, false, null));
+        return entry;
     }
 
     /** Read-only observation catches even unexpected entries under unrelated IDs. */
@@ -76,7 +78,8 @@ public class PollTextProjectionTest {
     private static final class EntrySnapshot {
         private final String id;
         private final String hash;
-        private final String original;
+        private final StateStore.Source source;
+        private final Object original;
         private final String translated;
         private final StateStore.Status status;
         private final boolean showingOriginal;
@@ -85,7 +88,9 @@ public class PollTextProjectionTest {
         EntrySnapshot(StateStore.Entry entry) {
             id = entry.messageId;
             hash = entry.contentHash;
-            original = entry.originalText;
+            source = StateStore.get().source(id);
+            assertNotNull(source);
+            original = source.content;
             translated = entry.translatedText;
             status = entry.status;
             showingOriginal = entry.showingOriginal;
@@ -95,7 +100,9 @@ public class PollTextProjectionTest {
         void assertUnchanged(StateStore.Entry entry) {
             assertSame(id, entry.messageId);
             assertSame(hash, entry.contentHash);
-            assertSame(original, entry.originalText);
+            assertSame(source, StateStore.get().source(id));
+            assertSame(original, source.content);
+            assertSame(SOURCE_ORIGINAL, source.content);
             assertSame(translated, entry.translatedText);
             assertSame(status, entry.status);
             assertEquals(showingOriginal, entry.showingOriginal);
@@ -178,7 +185,7 @@ public class PollTextProjectionTest {
     }
 
     @Test
-    public void nativeNullOrEmptyLabelNeverBecomesAPlaceholderOrResetsStoredOriginal() throws Exception {
+    public void nativeNullOrEmptyLabelNeverBecomesAPlaceholderOrResetsRetainedSource() throws Exception {
         StateStore.Entry entry = state();
         entry.lastError = "keep me";
         for (boolean cardOriginal : new boolean[] {false, true}) {

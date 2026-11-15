@@ -39,8 +39,7 @@ public class ReferencedMessageStateTest {
     private StateStore.Entry canonical(Object body) {
         String key = bridge.embedStateKey(ID, body);
         String hash = key.substring((ID + "\u0000embed\u0000").length());
-        TextExtractor.Result extracted = TextExtractor.extract(body);
-        return StateStore.get().obtain(ID, hash, extracted.text);
+        return StateStore.get().obtain(ID, hash);
     }
 
     @Test
@@ -48,7 +47,7 @@ public class ReferencedMessageStateTest {
         Object body = new ContentNodesTest.PrimitiveStructurableText("Hello world");
         String key = bridge.embedStateKey(ID, body);
         TranslationCache.get().put(key.substring((ID + "\u0000embed\u0000").length()), "你好");
-        assertNull(bridge.existingReferencedMessageState(ID, body));
+        assertNull(bridge.currentTranslation(ID, body));
         assertNull(StateStore.get().peek(ID));
     }
 
@@ -58,10 +57,18 @@ public class ReferencedMessageStateTest {
         StateStore.Entry entry = canonical(body);
         entry.translatedText = "完整译文";
         entry.status = StateStore.Status.TRANSLATED;
-        assertSame(entry, bridge.existingReferencedMessageState(ID, null));
-        assertEquals("完整译文", entry.translatedText);
-        assertNull(bridge.existingReferencedMessageState("987654321098765432", null));
-        assertNull(bridge.existingReferencedMessageState(null, body));
+        String revision = "revision-1";
+        bridge.rememberMessageRevision(ID, revision);
+        bridge.rememberCanonicalContent(ID, body);
+        HookBridge.ReferencedTranslation reused = bridge.referencedTranslation(ID, revision);
+        assertNotNull(reused);
+        assertSame(entry, reused.state);
+        assertSame(body, reused.originalContent);
+        assertEquals("完整译文", reused.state.translatedText);
+        assertNull(bridge.currentTranslation(ID, null));
+        assertNull(bridge.referencedTranslation("987654321098765432", revision));
+        assertNull(bridge.referencedTranslation(null, revision));
+        assertNull(bridge.currentTranslation(null, body));
     }
 
     @Test
@@ -71,20 +78,26 @@ public class ReferencedMessageStateTest {
                 new ContentNodesTest.TextContentNode("world")));
         assertEquals(2, TextExtractor.extract(body).segmentCount);
         StateStore.Entry entry = canonical(body);
-        assertSame(entry, bridge.existingReferencedMessageState(ID, body));
+        HookBridge.ReferencedTranslation current = bridge.currentTranslation(ID, body);
+        assertNotNull(current);
+        assertSame(entry, current.state);
     }
 
     @Test
     public void editedBodyCannotConsumeAnOldTranslationOrResetItsState() {
         Object original = new ContentNodesTest.PrimitiveStructurableText("Original message");
         StateStore.Entry entry = canonical(original);
+        bridge.rememberCanonicalContent(ID, original);
+        StateStore.Source source = StateStore.get().source(ID);
         entry.translatedText = "旧译文";
         entry.status = StateStore.Status.TRANSLATED;
         Object edited = new ContentNodesTest.PrimitiveStructurableText("Edited message");
-        assertNull(bridge.existingReferencedMessageState(ID, edited));
+        assertNull(bridge.currentTranslation(ID, edited));
         assertSame(entry, StateStore.get().peek(ID));
         assertEquals(StateStore.Status.TRANSLATED, entry.status);
-        assertEquals("Original message", entry.originalText);
+        assertSame(source, StateStore.get().source(ID));
+        assertSame(original, source.content);
+        assertEquals("Original message", TextExtractor.extract(original).text);
     }
 
     @Test
@@ -96,7 +109,7 @@ public class ReferencedMessageStateTest {
         entry.status = StateStore.Status.TRANSLATED;
         bridge.rememberMessageRevision(ID, null);
         bridge.rememberCanonicalContent(ID, original);
-        assertNull(bridge.existingReferencedMessageState(ID, projected));
+        assertNull(bridge.currentTranslation(ID, projected));
         HookBridge.ReferencedTranslation reused = bridge.referencedTranslation(ID, null);
         assertNotNull(reused);
         assertSame(entry, reused.state);
@@ -203,7 +216,7 @@ public class ReferencedMessageStateTest {
         String key = bridge.embedStateKey(ID, first);
         assertEquals(key, bridge.embedStateKey(ID, second));
         String hash = key.substring((ID + "\u0000embed\u0000").length());
-        StateStore.Entry entry = StateStore.get().obtain(key, hash, "same text");
+        StateStore.Entry entry = StateStore.get().obtain(key, hash);
         bridge.rememberCanonicalContent(key, second);
         entry.status = StateStore.Status.TRANSLATED;
         entry.translatedText = "相同文字";
@@ -242,7 +255,9 @@ public class ReferencedMessageStateTest {
         for (StateStore.Status status : StateStore.Status.values()) {
             entry.status = status;
             entry.showingOriginal = true;
-            assertSame(entry, bridge.existingReferencedMessageState(ID, body));
+            HookBridge.ReferencedTranslation current = bridge.currentTranslation(ID, body);
+            assertNotNull(current);
+            assertSame(entry, current.state);
             assertEquals(status, entry.status);
             assertTrue(entry.showingOriginal);
         }
