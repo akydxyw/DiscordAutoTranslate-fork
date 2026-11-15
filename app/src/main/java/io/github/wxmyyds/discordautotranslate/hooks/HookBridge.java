@@ -235,7 +235,7 @@ public final class HookBridge {
             hashes.add(hash);
             identity.append(hash == null ? "EMPTY" : hash).append('\u0000');
         }
-        String cardHash = io.github.wxmyyds.discordautotranslate.core.Sha256.digestHex(
+        String cardHash = Scheduler.contentHash(
                 identity.toString(), "embed-card");
         java.util.List<String> keys = new java.util.ArrayList<>(hashes.size());
         for (String hash : hashes) {

@@ -200,7 +200,7 @@ public class ApiTesterTest {
 
     private static FakeConnection successfulConnection() throws Exception {
         return new FakeConnection(new ByteArrayInputStream(
-                "{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}"
+                "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"你好\"}}]}"
                         .getBytes(StandardCharsets.UTF_8)));
     }
 
