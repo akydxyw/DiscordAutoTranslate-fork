@@ -146,7 +146,9 @@ public class InlineCodeMarkerTest {
         assertSame(link, out.get(3));
         assertSame(emoji, out.get(5));
         assertEquals("丁", content(out.get(6)));
-        reject(tree, "甲" + url + "乙<keep1/>丙:party:丁", ContentNodes.RejectionReason.PARAGRAPH_MISSING);
+        // The URL preceding the code is no longer silently filtered from its interval.
+        // It remains output until the next required URL token proves the ordering is invalid.
+        reject(tree, "甲" + url + "乙<keep1/>丙:party:丁", ContentNodes.RejectionReason.ANCHOR_ORDER);
     }
 
     @Test public void nativeListShapesAndTitleBoundaryRemainWithCodeMarkers() {

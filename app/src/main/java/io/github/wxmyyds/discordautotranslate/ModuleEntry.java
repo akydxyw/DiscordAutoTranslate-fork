@@ -61,8 +61,8 @@ public class ModuleEntry extends XposedModule {
     private final List<XposedInterface.HookHandle> hooks = new ArrayList<>();
 
     private volatile boolean installed;
-    /** Failed removal requires a host restart; never install beside surviving old hooks. */
-    private volatile boolean teardownFailed;
+    /** Incomplete lifecycle operations require a host restart, never automatic reinstallation. */
+    private volatile boolean restartRequired;
     private volatile boolean bootstrapInstalled;
     private volatile HookConfiguration hookConfiguration;
 
@@ -93,7 +93,7 @@ public class ModuleEntry extends XposedModule {
             return;
         }
         diagnosticInfo("onPackageReady received for Discord");
-        if (installed || bootstrapInstalled || teardownFailed) {
+        if (installed || bootstrapInstalled || restartRequired) {
             // 防止重复注册启动钩子。
             return;
         }
@@ -132,24 +132,10 @@ public class ModuleEntry extends XposedModule {
     @Override
     public void onHotReloaded(@NonNull XposedModuleInterface.HotReloadedParam param) {
         HookRuntime.suspend();
-        // The new generation owns every unresolved old handle before attempting removal.
-        hooks.addAll(param.getOldHookHandles());
-        int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
-        if (failures != 0) {
-            teardownFailed = true;
-            clearRuntime();
-            diagnosticInfo("hot reload old hook removal failed count=" + failures
-                    + "; restart Discord required");
-            return;
-        }
-
-        // 宿主 loader 只从已保存 profile 的绑定 Hook 取得，排除 Application.attach。
-
-        // Reuse the same generation teardown as rollback/release, then attach the new framework.
-        clearRuntime();
-        bootstrapInstalled = false;
-        ModuleResources.attach(this);
-
+        // Recover profile and loader while the old handles still describe their targets.
+        // Snapshot once; removal mutates only the sole ownership list, never this metadata view.
+        List<XposedInterface.HookHandle> oldHandles = new ArrayList<>(param.getOldHookHandles());
+        hooks.addAll(oldHandles);
         Object savedState = param.getSavedInstanceState();
         HookConfiguration restored = null;
         int restoredVersionCode = -1;
@@ -169,20 +155,31 @@ public class ModuleEntry extends XposedModule {
             }
         }
 
-        reloadConfig();
-
         ClassLoader recovered = restored == null ? null
-                : classLoaderFromOldHooks(param.getOldHookHandles(), restored);
+                : classLoaderFromOldHooks(oldHandles, restored);
+        int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
+        clearRuntime();
+        bootstrapInstalled = false;
+        if (failures != 0) {
+            restartRequired = true;
+            diagnosticInfo("hot reload old hook removal failed count=" + failures
+                    + "; restart Discord required");
+            return;
+        }
+        ModuleResources.attach(this);
+        reloadConfig();
         if (restored != null && recovered != null) {
             try {
                 install(recovered, restored);
                 installed = true;
             } catch (Throwable t) {
                 installed = false;
+                restartRequired = true;
                 diagnosticInfo("hot reload hook installation failed error="
                         + t.getClass().getSimpleName() + "; restart Discord required");
             }
         } else {
+            restartRequired = true;
             diagnosticInfo("hot reload restoration unavailable; restart Discord required");
         }
     }
@@ -190,7 +187,7 @@ public class ModuleEntry extends XposedModule {
     // ------------------------------------------------------------ 安装与卸载
 
     private void installBootstrapHook() {
-        if (bootstrapInstalled) {
+        if (bootstrapInstalled || restartRequired) {
             return;
         }
         try {
@@ -228,7 +225,7 @@ public class ModuleEntry extends XposedModule {
     }
 
     private void installForApplication(Context context, ClassLoader cl) {
-        if (installed) {
+        if (installed || restartRequired) {
             return;
         }
         try {
@@ -247,14 +244,15 @@ public class ModuleEntry extends XposedModule {
             installed = true;
         } catch (Throwable t) {
             diagnosticInfo("configured hook installation failed errorClass="
-                    + t.getClass().getSimpleName());
+                    + t.getClass().getSimpleName() + "; restart Discord required");
             installed = false;
+            restartRequired = true;
         }
     }
 
     private void install(ClassLoader cl, HookConfiguration config) {
-        if (teardownFailed) {
-            throw new IllegalStateException("Unremoved hooks remain; restart Discord required");
+        if (restartRequired) {
+            throw new IllegalStateException("Runtime lifecycle incomplete; restart Discord required");
         }
         if (!config.hasAllRequiredTargets(cl)) {
             throw new IllegalStateException("configured required hook target is unavailable");
@@ -276,7 +274,7 @@ public class ModuleEntry extends XposedModule {
             }
         } catch (Throwable failure) {
             int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
-            teardownFailed = failures != 0;
+            restartRequired = true;
             bootstrapInstalled = false;
             clearRuntime();
             if (failures != 0) diagnosticInfo("hook installation rollback failed count=" + failures
@@ -314,10 +312,12 @@ public class ModuleEntry extends XposedModule {
         HookRuntime.suspend();
         // Refuse reload before removing the old hooks if owned workers are still alive.
         if (!Scheduler.resetAndAwait(2000L)) {
+            installed = false;
+            restartRequired = true;
             throw new IllegalStateException("Translation workers have not stopped; restart Discord required");
         }
         int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
-        teardownFailed = failures != 0;
+        restartRequired = failures != 0;
         clearRuntime();
         bootstrapInstalled = false;
         if (failures != 0) {
