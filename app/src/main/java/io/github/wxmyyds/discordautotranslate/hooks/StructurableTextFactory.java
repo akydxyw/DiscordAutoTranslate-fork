@@ -4,6 +4,7 @@ import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
+import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 
 import java.lang.reflect.Constructor;
 import java.util.List;
@@ -99,15 +100,16 @@ public final class StructurableTextFactory {
      * @return 替换对象；无法构造时返回 null（调用方应保持原文）
      */
     @Nullable
-    public static Object forTranslation(@Nullable Object original, String translated) {
-        if (original == null || translated == null) {
+    static Object forPlannedTranslation(@Nullable Object original, String translated,
+                                       @Nullable TextExtractor.Result extracted) {
+        if (original == null || translated == null || extracted == null) {
             return null;
         }
 
         // 1) 原始是 Annotated：尝试保留 Markdown 结构。
         if (ContentNodes.isAnnotated(original)) {
-            List<?> nodes = ContentNodes.listOf(original);
-            List<Object> replaced = ContentNodes.replaceText(nodes, translated);
+            if (extracted.tree == null) return null;
+            List<Object> replaced = ContentNodes.replacePlanned(extracted.tree, translated);
             if (replaced != null) {
                 Object out = annotated(replaced);
                 if (out != null) {

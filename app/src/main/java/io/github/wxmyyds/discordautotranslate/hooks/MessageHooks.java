@@ -8,6 +8,7 @@ import androidx.annotation.Nullable;
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
+import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 
 import org.json.JSONObject;
 
@@ -434,6 +435,7 @@ public final class MessageHooks {
                             "message.textConversion Discord callers="
                                     + HookDiagnostics.discordCallers());
                     boolean replyTranslationApplied = false;
+                    TextExtractor.Result extracted = null;
                     try {
                         String messageId = resolvedMessageId;
                         if (messageId != null) {
@@ -441,19 +443,17 @@ public final class MessageHooks {
                             HookBridge.get().rememberContent(messageId, source);
 
                             HookBridge.ReferencedTranslation reused = replyConversion
-                                    ? HookBridge.get().referencedTranslation(messageId,
-                                    reply.editedTimestamp) : null;
-                            StateStore.Entry e = replyConversion
-                                    ? reused == null ? null : reused.state
-                                    : HookBridge.get().existingReferencedMessageState(messageId, source);
-                            Object original = replyConversion && reused != null
-                                    ? reused.originalContent : source;
+                                    ? HookBridge.get().referencedTranslation(messageId, reply.editedTimestamp)
+                                    : HookBridge.get().currentTranslation(messageId, source);
+                            StateStore.Entry e = reused == null ? null : reused.state;
+                            Object original = reused == null ? source : reused.originalContent;
+                            extracted = reused == null ? null : reused.extracted;
                             String translated = (e != null
                                     && e.status == StateStore.Status.TRANSLATED
                                     && !e.showingOriginal) ? e.translatedText : null;
                             if (translated != null) {
-                                Object replacement = StructurableTextFactory
-                                        .forTranslation(original, translated);
+                                Object replacement = StructurableTextFactory.forPlannedTranslation(
+                                        original, translated, extracted);
                                 if (replacement != null) {
                                     HookDiagnostics.info("message translation replacement applied"
                                             + " route=" + (replyConversion ? "reply-canonical" : "body")
@@ -489,7 +489,7 @@ public final class MessageHooks {
                                 index -> preview.replace(index, index + 1, " "));
                     }
                     return InlineIconInjector.inject(source, rendered,
-                            safeArg(chain, contextArgument), cl);
+                            safeArg(chain, contextArgument), cl, replyConversion ? null : extracted);
                 }));
         installedHookIds.add("message.textConversion");
     }

@@ -59,10 +59,12 @@ public final class HookBridge {
     static final class ReferencedTranslation {
         final StateStore.Entry state;
         final Object originalContent;
+        final TextExtractor.Result extracted;
 
-        ReferencedTranslation(StateStore.Entry state, Object originalContent) {
+        ReferencedTranslation(StateStore.Entry state, Object originalContent, TextExtractor.Result extracted) {
             this.state = state;
             this.originalContent = originalContent;
+            this.extracted = extracted;
         }
     }
 
@@ -96,8 +98,7 @@ public final class HookBridge {
                 || !java.util.Objects.equals(current.editedTimestamp, editedTimestamp)) {
             return null;
         }
-        StateStore.Entry state = existingReferencedMessageState(messageId, original.content);
-        return state == null ? null : new ReferencedTranslation(state, original.content);
+        return currentTranslation(messageId, original.content);
     }
 
     /** 消息 ID → 最近承载它的视图（弱引用，避免消息状态反向固定 View）。 */
@@ -277,9 +278,22 @@ public final class HookBridge {
         if (entry == null || messageContent == null) {
             return entry;
         }
-        TextExtractor.Result source = TextExtractor.extract(messageContent);
-        return source != null && contentHashOf(source, config).equals(entry.contentHash)
-                ? entry : null;
+        return matchingState(messageId, TextExtractor.extract(messageContent));
+    }
+
+    /** One current capture feeds identity verification, native reconstruction and icon eligibility. */
+    @Nullable
+    ReferencedTranslation currentTranslation(String key, @Nullable Object content) {
+        TextExtractor.Result extracted = TextExtractor.extract(content);
+        StateStore.Entry state = matchingState(key, extracted);
+        return state == null ? null : new ReferencedTranslation(state, content, extracted);
+    }
+
+    @Nullable
+    StateStore.Entry matchingState(String key, @Nullable TextExtractor.Result extracted) {
+        StateStore.Entry entry = StateStore.get().peek(key);
+        return entry != null && extracted != null
+                && contentHashOf(extracted, config).equals(entry.contentHash) ? entry : null;
     }
 
     /** Poll question/answer slots share the same hash, scheduler and state pipeline. */
@@ -355,10 +369,10 @@ public final class HookBridge {
         if (!HookRuntime.isActive() || messageId == null || structurableText == null) {
             return;
         }
-        String nodeTypes = TextExtractor.typeSummary(structurableText);
+        TextExtractor.Result ex = TextExtractor.extract(structurableText);
+        String nodeTypes = TextExtractor.typeSummary(structurableText, ex);
         HookDiagnostics.infoOnce("translation.nodeTypes." + nodeTypes,
                 "translation content node types=" + nodeTypes);
-        TextExtractor.Result ex = TextExtractor.extract(structurableText);
         if (ex == null || ex.text.trim().isEmpty()) {
             HookDiagnostics.warnOnce("translation.noText", "translation skipped: extracted text is empty"
                     + " structurableClass=" + structurableText.getClass().getName());

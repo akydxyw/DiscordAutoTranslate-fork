@@ -117,7 +117,8 @@ public final class InlineIconInjector {
      */
     @Nullable
     public static Object inject(@Nullable Object structurable, @Nullable Object rendered,
-                                @Nullable Object rawContext, @Nullable ClassLoader hostCl) {
+                                @Nullable Object rawContext, @Nullable ClassLoader hostCl,
+                                @Nullable TextExtractor.Result extracted) {
         try {
             HostScope scope = CURRENT_HOST.get();
             View host = scope == null ? null : scope.view;
@@ -156,8 +157,7 @@ public final class InlineIconInjector {
                 return rendered;
             }
             // 需求：纯图片 / 纯表情等无可翻译正文的消息不注入。
-            TextExtractor.Result ex = TextExtractor.extract(structurable);
-            if (ex == null || ex.textNodeCount == 0) {
+            if (extracted == null || extracted.textNodeCount == 0) {
                 HookDiagnostics.infoOnce("icon.noTextNodes", "icon injection skipped: no extractable text nodes");
                 return rendered;
             }

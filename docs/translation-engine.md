@@ -17,9 +17,10 @@
   模块再打包一份会类冲突/版本错配。
 - JSON 用 `org.json`（Android 系统内置）；JVM 单测通过 `testImplementation`
   提供 `org.json:json`。
-- 支持非流式（一次性 JSON）与流式（SSE，`Http.postJson(..., sse=true)`）两种
-  响应：由设置中的“使用流式请求”开关选择，Compatible 与 Anthropic Messages
-  支持切换，Responses 固定非流式。响应解析严格服从所选模式；格式不符时失败，不改走另一解析器。
+- 请求创建唯一 `Protocols.createDecoder(protocol, streaming)`，交给 `Http.postJson(..., request, decoder)`。设置选择 JSON 或 SSE，Compatible 与 Anthropic Messages 支持切换，Responses 固定非流式；格式不符时失败，不切换解析器。
+- `SseReader` 统一增量分帧：空行提交完整事件，支持多行 data、event、注释、CR/LF/CRLF。OpenAI decoder 只在 `[DONE]` 完成，Anthropic 只在 `message_stop` 完成；HTTP 不写协议终止标记，完成后不继续读、不等待 EOF。缺终止、未完成帧、错误事件、截断理由或非法字符串字段均拒绝。字符串响应提取也经过同一个 reader/decoder。
+- HTTP 传输累计最多 1 MiB 字节，decoder/SSE 字符累计最多 1 MiB UTF-16 单位；超限立即失败。UTF-8 严格校验，禁止重定向跟随；非 2xx 只读取有界原始 body，不走成功响应 decoder，错误分类不回显 body。
+- 引擎在验证配置/构造 body 前登记线程对应的 `Http.Request`，取消标记保持到 finally；取消与连接 attach 原子协调。登记前取消由中断标记阻止请求，attach 后取消断开连接并在 I/O 边界检查。真实 Android 连接断开/阻塞退出仍需设备验证，不能把请求取消等同于 worker 已终止。
 
 ## 供应商协议
 

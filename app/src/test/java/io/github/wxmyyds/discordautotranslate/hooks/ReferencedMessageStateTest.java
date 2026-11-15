@@ -195,6 +195,47 @@ public class ReferencedMessageStateTest {
     }
 
     @Test
+    public void identicalEmbedObjectsUseTheirOwnCurrentPlansWithoutInvalidatingSharedState() {
+        Object first = new ContentNodesTest.AnnotatedStructurableText(Arrays.asList(
+                new ContentNodesTest.TextContentNode("same text")));
+        Object second = new ContentNodesTest.AnnotatedStructurableText(Arrays.asList(
+                new ContentNodesTest.TextContentNode("same text")));
+        String key = bridge.embedStateKey(ID, first);
+        assertEquals(key, bridge.embedStateKey(ID, second));
+        String hash = key.substring((ID + "\u0000embed\u0000").length());
+        StateStore.Entry entry = StateStore.get().obtain(key, hash, "same text");
+        bridge.rememberCanonicalContent(key, second);
+        entry.status = StateStore.Status.TRANSLATED;
+        entry.translatedText = "相同文字";
+        HookBridge.ReferencedTranslation a = bridge.currentTranslation(key, first);
+        HookBridge.ReferencedTranslation b = bridge.currentTranslation(key, second);
+        assertNotNull(a);
+        assertNotNull(b);
+        assertSame(first, a.originalContent);
+        assertSame(second, b.originalContent);
+        assertSame(entry, a.state);
+        assertSame(entry, b.state);
+        assertNotSame(a.extracted.tree, b.extracted.tree);
+        assertEquals(StateStore.Status.TRANSLATED, entry.status);
+    }
+
+    @Test
+    public void sameOuterObjectWithMutatedBodyCannotUseAnOldCapturedHash() {
+        java.util.List<Object> children = new java.util.ArrayList<>(Arrays.asList(
+                new ContentNodesTest.TextContentNode("original text")));
+        Object body = new ContentNodesTest.AnnotatedStructurableText(children);
+        StateStore.Entry entry = canonical(body);
+        bridge.rememberCanonicalContent(ID, body);
+        entry.status = StateStore.Status.TRANSLATED;
+        entry.translatedText = "原译文";
+        assertNotNull(bridge.currentTranslation(ID, body));
+        children.set(0, new ContentNodesTest.TextContentNode("edited text"));
+        assertNull(bridge.currentTranslation(ID, body));
+        assertEquals(StateStore.Status.TRANSLATED, entry.status);
+        assertEquals("原译文", entry.translatedText);
+    }
+
+    @Test
     public void consumerDoesNotOverrideToggleOrFailedAndInFlightStatus() {
         Object body = new ContentNodesTest.PrimitiveStructurableText("Original message");
         StateStore.Entry entry = canonical(body);

@@ -3,6 +3,7 @@ package io.github.wxmyyds.discordautotranslate.hooks;
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.BlankLines;
+import io.github.wxmyyds.discordautotranslate.core.ContentTree;
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
 import io.github.wxmyyds.discordautotranslate.core.Segments;
@@ -28,23 +29,8 @@ import java.util.List;
  */
 public final class ContentNodes {
 
-    /** 代码类节点：内容不翻译，但需要保留。 */
-    private static final java.util.Set<String> CODE_NODES = new java.util.HashSet<>(java.util.Arrays.asList(
-            "InlineCodeContentNode",
-            "CodeBlockContentNode"
-    ));
-
-    /** 列表节点：items 而非 content。 */
-    private static final String BULLET_LIST = "BulletListContentNode";
-
     private ContentNodes() {
     }
-
-    /** 会被宿主渲染为纯空白的节点（它们不留文本，只占一行高度）。 */
-    private static final java.util.Set<String> BLANK_NODES = new java.util.HashSet<>(java.util.Arrays.asList(
-            "NewLineContentNode",
-            "LineBreakContentNode"
-    ));
 
     // ---------------------------------------------------------------- 类型判断
 
@@ -56,16 +42,6 @@ public final class ContentNodes {
     public static boolean isPrimitive(@Nullable Object structurableText) {
         return structurableText != null && "PrimitiveStructurableText".equals(
                 HookConfiguration.semanticTypeName(structurableText.getClass()));
-    }
-
-    /** 取 AnnotatedStructurableText 的 List<ContentNode>；失败返回 null。 */
-    @Nullable
-    public static List<?> listOf(@Nullable Object structurableText) {
-        if (!isAnnotated(structurableText)) {
-            return null;
-        }
-        Object v = Reflect.callMember(structurableText, "getContent");
-        return v instanceof List ? (List<?>) v : null;
     }
 
     // ---------------------------------------------------------------- 变换
@@ -87,7 +63,14 @@ public final class ContentNodes {
         if (nodes == null || translated == null || translated.trim().isEmpty()) {
             return null;
         }
-        int targetCount = countTextNodes(nodes, 0);
+        ContentTree tree = ContentTree.compile(nodes);
+        return tree == null ? null : replacePlanned(tree, translated);
+    }
+
+    @Nullable
+    public static List<Object> replacePlanned(ContentTree tree, String translated) {
+        if (tree == null || translated == null || translated.trim().isEmpty()) return null;
+        int targetCount = tree.segmentCount;
         if (targetCount == 0) {
             return null;
         }
@@ -100,7 +83,7 @@ public final class ContentNodes {
             // 剔除后什么都不剩：不能清空消息，保留原文。
             return null;
         }
-        AlignmentPlan plan = buildPlan(nodes);
+        AlignmentPlan plan = buildPlan(tree);
         List<String> parts = alignTranslation(plain, plan);
         if (parts == null || parts.size() != targetCount) {
             return null;
@@ -108,9 +91,9 @@ public final class ContentNodes {
         // 按节点出现的位置分配片段，不能以实例身份为键：共享节点的后一次
         // 空片段会覆盖前一次译文，造成文字全部消失但 emoji 仍保留。
         Replacement replacement = new Replacement(parts);
-        List<Object> result = new ArrayList<>(nodes.size());
-        for (Object n : nodes) {
-            result.add(rebuild(n, replacement, 0));
+        List<Object> result = new ArrayList<>(tree.root.children.size());
+        for (ContentTree.Node occurrence : tree.root.children) {
+            result.add(rebuild(occurrence, replacement));
         }
         // 容器复制失败可能丢弃已重建的子节点；不得把其他已清空的文本节点
         // 作为部分成功的结果交给宿主，必须整棵树替换成功。
@@ -139,87 +122,35 @@ public final class ContentNodes {
     }
 
     /**
-     * 递归统计可翻译片段数，每次出现分别计数（包括共享实例）。
-     *
-     * <p>口径与提取阶段完全一致：一个文本节点可能因为内部空行被拆成多个片段，
-     * 只含空白的节点不计数。提取、计划、回填三套遍历的口径必须一致，
-     * 否则片段串位。</p>
-     */
-    private static int countTextNodes(@Nullable List<?> nodes, int depth) {
-        if (nodes == null || depth > 12) {
-            return 0;
-        }
-        int count = 0;
-        for (Object n : nodes) {
-            if (n == null) {
-                continue;
-            }
-            if (n instanceof List<?>) {
-                count += countTextNodes((List<?>) n, depth + 1);
-                continue;
-            }
-            String simple = HookConfiguration.semanticTypeName(n.getClass());
-            if ("TextContentNode".equals(simple)) {
-                count += TextExtractor.countSegments(Reflect.callString(n, "getContent"));
-                continue;
-            }
-            if (CODE_NODES.contains(simple)) {
-                continue; // 代码不翻译
-            }
-            if ("LinkContentNode".equals(simple) && TextExtractor.linkDisplayIsUrl(n)) {
-                continue; // 显示文本为 URL 的链接不翻译，与提取阶段同口径
-            }
-            List<?> inner = childListOf(n, simple);
-            if (inner != null) {
-                count += countTextNodes(inner, depth + 1);
-            }
-        }
-        return count;
-    }
-
-    /**
-     * 取出节点的子列表：容器的 content，或列表节点的 items。
-     */
-    @Nullable
-    private static List<?> childListOf(Object node, String simpleName) {
-        if (!BULLET_LIST.equals(simpleName) && !TextExtractor.isTextContainer(simpleName)) {
-            return null;
-        }
-        String getter = BULLET_LIST.equals(simpleName) ? "getItems" : "getContent";
-        Object v = Reflect.callMember(node, getter);
-        return v instanceof List ? (List<?>) v : null;
-    }
-
-    /**
      * 重建单个节点：递归处理子列表，并把命中的文本节点替换为译文。
      */
-    private static Object rebuild(@Nullable Object node, Replacement replacement, int depth) {
-        if (node == null || depth > 12) {
-            return node;
-        }
-        if (node instanceof List<?>) {
-            List<?> children = (List<?>) node;
+    private static Object rebuild(ContentTree.Node occurrence, Replacement replacement) {
+        Object node = occurrence.original;
+        if (node == null) return null;
+        if (occurrence.kind == ContentTree.Kind.SEQUENCE) {
+            List<ContentTree.Node> children = occurrence.children;
             List<Object> rebuiltChildren = new ArrayList<>(children.size());
             boolean localChanged = false;
-            for (Object child : children) {
-                Object rebuiltChild = rebuild(child, replacement, depth + 1);
-                if (rebuiltChild != child) {
+            for (ContentTree.Node child : children) {
+                Object rebuiltChild = rebuild(child, replacement);
+                if (rebuiltChild != child.original) {
                     localChanged = true;
                 }
                 rebuiltChildren.add(rebuiltChild);
             }
+            if (!localChanged && !ContentTree.retainedStructureMatches(occurrence)) replacement.failed = true;
             return localChanged ? rebuiltChildren : node;
         }
 
-        String simple = HookConfiguration.semanticTypeName(node.getClass());
+        ContentTree.Kind kind = occurrence.kind;
 
         // 按出现位置消费译文片段，同一实例在不同位置可以承载不同片段。
-        if ("TextContentNode".equals(simple)) {
-            String original = Reflect.callString(node, "getContent");
+        if (kind == ContentTree.Kind.TEXT) {
+            String original = occurrence.text;
             if (original == null) {
                 return node;
             }
-            int needed = TextExtractor.countSegments(original);
+            int needed = occurrence.segmentCount;
             if (needed == 0) {
                 // 空白/空行结构节点：不参与翻译，原样保留。
                 return node;
@@ -230,17 +161,14 @@ public final class ContentNodes {
             }
             // 保留首尾空白，并按原空行位置拼回译文片段：
             // 段落分隔由原节点提供，不依赖模型是否保留。
-            int lead = TextExtractor.leadingWhitespace(original);
-            int tail = TextExtractor.trailingWhitespaceStart(original);
-            BlankLines.Split split = BlankLines.split(original.substring(lead, tail));
+            int lead = occurrence.leadingEnd;
+            int tail = occurrence.trailingStart;
             StringBuilder rebuilt = new StringBuilder();
             rebuilt.append(original, 0, lead);
-            for (int i = 0; i < split.chunks.size(); i++) {
-                if (i > 0) {
-                    rebuilt.append(split.separators.get(i - 1));
-                }
-                String chunk = split.chunks.get(i);
-                if (BlankLines.isBlank(chunk) || TextExtractor.isUrlLike(chunk)) {
+            for (int i = 0; i < occurrence.chunks.size(); i++) {
+                if (i > 0) rebuilt.append(occurrence.separators.get(i - 1));
+                String chunk = occurrence.chunks.get(i);
+                if (!occurrence.translatable.get(i)) {
                     // 空白块或 URL 块不消费片段，原样保留（与计数口径一致）。
                     rebuilt.append(chunk);
                     continue;
@@ -256,31 +184,23 @@ public final class ContentNodes {
             return node;
         }
 
-        if (CODE_NODES.contains(simple)) {
+        if (kind != ContentTree.Kind.CONTAINER && kind != ContentTree.Kind.LIST) {
+            if (!ContentTree.retainedStructureMatches(occurrence)) replacement.failed = true;
             return node;
         }
-
-        // 显示文本为 URL 的链接不进入：URL 必须由原节点原样渲染，
-        // 不能让模型重新生成（实测会发生字符损坏）。
-        if ("LinkContentNode".equals(simple) && TextExtractor.linkDisplayIsUrl(node)) {
-            return node;
-        }
-
-        List<?> children = childListOf(node, simple);
-        if (children == null) {
-            return node; // 不是正文格式容器（例如提及/频道/emoji），原样保留
-        }
+        List<ContentTree.Node> children = occurrence.children;
 
         List<Object> newChildren = new ArrayList<>(children.size());
         boolean localChanged = false;
-        for (Object c : children) {
-            Object nc = rebuild(c, replacement, depth + 1);
-            if (nc != c) {
+        for (ContentTree.Node c : children) {
+            Object nc = rebuild(c, replacement);
+            if (nc != c.original) {
                 localChanged = true;
             }
-            newChildren.add(nc != null ? nc : c);
+            newChildren.add(nc);
         }
         if (!localChanged) {
+            if (!ContentTree.retainedStructureMatches(occurrence)) replacement.failed = true;
             return node;
         }
         Object rebuilt = copyWith(node, newChildren);
@@ -788,41 +708,31 @@ public final class ContentNodes {
         }
     }
 
-    private static AlignmentPlan buildPlan(List<?> nodes) {
+    private static AlignmentPlan buildPlan(ContentTree tree) {
         PlanWalk w = new PlanWalk();
-        walkPlan(nodes, w, 0, false);
-        return w.plan;
-    }
-
-    private static final class PlanWalk {
-        final AlignmentPlan plan = new AlignmentPlan();
-        int group = 0;
-        final StringBuilder sep = new StringBuilder();
-        /** 当前嵌套列表层数（>0 表示正在列表项内）：用于标记列表片段。 */
-        int listLevel;
-        /** 下一个片段强制新开段落组（列表项 / 列表后正文的边界）。 */
-        boolean forceNewGroup;
-        /** 当前是否遇到显式换行边界。 */
-        boolean lineBreakBefore;
-        /** 样式标记序号（与 TextExtractor.walkNode 同口径递增）。 */
-        final int[] styleSeq = new int[1];
-    }
-
-    private static void walkPlan(@Nullable List<?> nodes, PlanWalk w, int depth, boolean styled) {
-        if (nodes == null || depth > 12) {
-            return;
-        }
-        for (Object n : nodes) {
-            if (n == null) {
-                continue;
+        java.util.ArrayDeque<Integer> listStarts = new java.util.ArrayDeque<>();
+        for (ContentTree.Event event : tree.events) {
+            switch (event.kind) {
+                case LIST_START:
+                    listStarts.push(w.plan.groupIds.size());
+                    continue;
+                case ITEM_START:
+                    if (!w.plan.groupIds.isEmpty()) w.forceNewGroup = true;
+                    w.sep.append("\n• ");
+                    w.listLevel++;
+                    continue;
+                case ITEM_END:
+                    w.listLevel--;
+                    continue;
+                case LIST_END:
+                    if (w.plan.groupIds.size() > listStarts.pop()) w.forceNewGroup = true;
+                    continue;
+                case NODE: break;
+                default: throw new IllegalStateException("Unknown structure event");
             }
-            if (n instanceof List) {
-                walkPlan((List<?>) n, w, depth + 1, styled);
-                continue;
-            }
-            String simple = HookConfiguration.semanticTypeName(n.getClass());
-            if ("TextContentNode".equals(simple)) {
-                String s = Reflect.callString(n, "getContent");
+            ContentTree.Node node = event.node;
+            if (node.kind == ContentTree.Kind.TEXT) {
+                String s = node.text;
                 if (s == null) {
                     continue;
                 }
@@ -830,15 +740,12 @@ public final class ContentNodes {
                     w.sep.append(s); // 空行结构节点：段落分隔的一部分
                     continue;
                 }
-                int lead = TextExtractor.leadingWhitespace(s);
-                int tail = TextExtractor.trailingWhitespaceStart(s);
+                int lead = node.leadingEnd;
+                int tail = node.trailingStart;
                 w.sep.append(s, 0, lead);
-                BlankLines.Split split = BlankLines.split(s.substring(lead, tail));
-                for (int i = 0; i < split.chunks.size(); i++) {
-                    if (i > 0) {
-                        w.sep.append(split.separators.get(i - 1)); // 节点内空行：硬边界
-                    }
-                    String chunk = split.chunks.get(i);
+                for (int i = 0; i < node.chunks.size(); i++) {
+                    if (i > 0) w.sep.append(node.separators.get(i - 1));
+                    String chunk = node.chunks.get(i);
                     if (BlankLines.isBlank(chunk)) {
                         w.sep.append(chunk);
                         continue;
@@ -852,7 +759,7 @@ public final class ContentNodes {
                     int segIndex = w.plan.groupIds.size();
                     addSegment(w);
                     int styleId = 0;
-                    if (styled) {
+                    if (event.styled) {
                         w.styleSeq[0]++;
                         styleId = w.styleSeq[0];
                         w.plan.styleMarkers++;
@@ -862,61 +769,27 @@ public final class ContentNodes {
                 w.sep.append(s, tail, s.length());
                 continue;
             }
-            if (CODE_NODES.contains(simple)) {
-                w.sep.append("InlineCodeContentNode".equals(simple) ? ' ' : '\n');
-                continue;
+            switch (node.kind) {
+                case INLINE_CODE: case OPAQUE: w.sep.append(' '); break;
+                case CODE_BLOCK: w.sep.append('\n'); break;
+                case URL: addUrlToken(w, node.text); w.sep.append(' '); break;
+                case EMOJI: addEmojiToken(w, node.text);
+                    w.sep.append(' ').append(node.text).append(' '); break;
+                case BREAK: w.lineBreakBefore = true; w.sep.append('\n'); break;
+                default: throw new IllegalStateException("Non-leaf content event");
             }
-            if ("LinkContentNode".equals(simple) && TextExtractor.linkDisplayIsUrl(n)) {
-                addUrlToken(w, TextExtractor.urlLinkDisplayText(n));
-                w.sep.append(' ');
-                continue;
-            }
-            if (BLANK_NODES.contains(simple)) {
-                w.lineBreakBefore = true;
-                w.sep.append('\n');
-                continue;
-            }
-            // 提及/emoji 等不透明节点：emoji 作为定位标记提前处理，其余留空格。
-            String emoji = TextExtractor.nodeEmojiText(n);
-            if (emoji != null) {
-                addEmojiToken(w, emoji);
-                w.sep.append(' ').append(emoji).append(' ');
-                continue;
-            }
-            List<?> inner = childListOf(n, simple);
-            if (inner != null) {
-                if (BULLET_LIST.equals(simple)) {
-                    // 每个列表项独立成段并对应一行；列表项前缀由原节点渲染，
-                    // 回填时仅移除模型回显的符号。
-                    int before = w.plan.groupIds.size();
-                    for (Object item : inner) {
-                        if (!w.plan.groupIds.isEmpty()) {
-                            w.forceNewGroup = true;
-                        }
-                        w.sep.append("\n• ");
-                        w.listLevel++;
-                        if (item instanceof List) {
-                            walkPlan((List<?>) item, w, depth + 1, styled);
-                        } else if (item != null) {
-                            walkPlan(java.util.Collections.singletonList(item),
-                                    w, depth + 1, styled);
-                        }
-                        w.listLevel--;
-                    }
-                    // 列表后的正文另属一段：列表项分隔只有单换行，不设边界
-                    // 会把紧随其后的段落并进最后一项。列表本身没有可翻译
-                    // 片段时不设边界，避免多切一个空段落组。
-                    if (w.plan.groupIds.size() > before) {
-                        w.forceNewGroup = true;
-                    }
-                    continue;
-                }
-                walkPlan(inner, w, depth + 1, styled || TextExtractor.isInlineStyleContainer(simple));
-                continue;
-            }
-            // 提及等其余不透明节点（emoji 已作为定位标记提前处理）。
-            w.sep.append(' ');
         }
+        return w.plan;
+    }
+
+    private static final class PlanWalk {
+        final AlignmentPlan plan = new AlignmentPlan();
+        int group;
+        final StringBuilder sep = new StringBuilder();
+        int listLevel;
+        boolean forceNewGroup;
+        boolean lineBreakBefore;
+        final int[] styleSeq = new int[1];
     }
 
     /**

@@ -18,8 +18,9 @@ import java.util.List;
  *
  * <p>约束：纯文本必须保持既有形态（语言检测、内容哈希与单链路请求都
  * 依赖它）；URL 定位标记与样式标记只出现在纯文本里。片段计数必须与
- * 回填消费口径（{@code ContentNodes.countTextNodes}/rebuild 的
- * countSegments）严格一致，否则片段会串位。</p>
+ * 回填消费口径（{@code ContentTree.segmentCount} 与捕获节点的
+ * {@code TextExtractor.countSegments}）严格一致；提取、对齐与重建共享同一
+ * 出现位置快照，否则片段会串位。</p>
  */
 public class TextExtractorSegmentsTest {
 

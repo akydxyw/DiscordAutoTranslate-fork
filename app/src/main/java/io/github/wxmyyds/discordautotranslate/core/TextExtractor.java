@@ -43,19 +43,21 @@ public final class TextExtractor {
         public final int opaqueNodeCount;
         /** 是否为不可翻译结构（例如纯代码块消息）。 */
         public final boolean codeHeavy;
+        /** Captured occurrence plan; Primitive input does not have a node tree. */
+        public final ContentTree tree;
 
         Result(String text, int segmentCount, int textNodeCount,
-               int opaqueNodeCount, boolean codeHeavy) {
+               int opaqueNodeCount, boolean codeHeavy, ContentTree tree) {
             this.text = text;
             this.segmentCount = segmentCount;
             this.textNodeCount = textNodeCount;
             this.opaqueNodeCount = opaqueNodeCount;
             this.codeHeavy = codeHeavy;
+            this.tree = tree;
         }
     }
 
-    private static final Result EMPTY = new Result("", 0, 0, 0, false);
-    private static final int MAX_DEPTH = 12;
+    private static final Result EMPTY = new Result("", 0, 0, 0, false, null);
 
     /**
      * URL 形态判定：带 scheme 的完整 URL、www 前缀，或「无空白且以
@@ -83,36 +85,6 @@ public final class TextExtractor {
             return false;
         }
         return URL_LIKE.matcher(t).matches();
-    }
-
-    /**
-     * 链接节点的显示文本是否为 URL。
-     *
-     * <p>裸 URL 消息在 Discord 里渲染为 {@code LinkContentNode}，显示文本就是
-     * URL 本身。这类节点整体按不可翻译结构处理（与行内代码同口径）：
-     * 显示文本原样进请求充当定位标记（模型据此在译文里保留 URL 位置，
-     * 回填按它切分对齐并删除回显，显示永远用原节点）；带自然语言显示文本的
-     * 链接（掩码链接）不受影响，仍正常翻译。</p>
-     */
-    public static boolean linkDisplayIsUrl(Object linkNode) {
-        return urlLinkDisplayText(linkNode) != null;
-    }
-
-    /**
-     * 取链接节点显示文本中的 URL（整段是 URL 形态时返回去空白后的 URL，
-     * 否则返回 null）。URL 文本同时是请求里的定位标记：模型必须原样保留它，
-     * 回填据此确定 URL 前后各自的译文边界。
-     */
-    @Nullable
-    public static String urlLinkDisplayText(Object linkNode) {
-        Object inner = Reflect.callMember(linkNode, "getContent");
-        if (!(inner instanceof List)) {
-            return null;
-        }
-        StringBuilder sb = new StringBuilder();
-        appendDescendantText((List<?>) inner, sb, 0);
-        String s = sb.toString().trim();
-        return isUrlLike(s) ? s : null;
     }
 
     /**
@@ -145,75 +117,17 @@ public final class TextExtractor {
         return null;
     }
 
-    /** 拼接子树内全部 TextContentNode 文本（用于识别链接显示文本），非文本节点跳过。 */
-    private static void appendDescendantText(List<?> nodes, StringBuilder out, int depth) {
-        if (nodes == null || depth > MAX_DEPTH) {
-            return;
-        }
-        for (Object node : nodes) {
-            if (node == null) {
-                continue;
-            }
-            String name = HookConfiguration.semanticTypeName(node.getClass());
-            if ("TextContentNode".equals(name)) {
-                String s = Reflect.callString(node, "getContent");
-                if (s != null) {
-                    out.append(s);
-                }
-                continue;
-            }
-            if (isTextContainer(name)) {
-                Object inner = Reflect.callMember(node, "getContent");
-                if (inner instanceof List) {
-                    appendDescendantText((List<?>) inner, out, depth + 1);
-                }
-            }
-        }
-    }
-
-    /** Return bounded runtime/semantic node class names only; never includes node values. */
-    public static String typeSummary(@Nullable Object structurableText) {
+    /** Node type diagnostics consume the same captured plan; never reread host children. */
+    public static String typeSummary(@Nullable Object input, @Nullable Result extracted) {
         List<String> types = new java.util.ArrayList<>();
-        if ("AnnotatedStructurableText".equals(
-                HookConfiguration.semanticTypeName(structurableText == null
-                        ? Object.class : structurableText.getClass()))) {
-            Object nodes = Reflect.callMember(structurableText, "getContent");
-            if (nodes instanceof List<?>) {
-                collectTypes((List<?>) nodes, types, 0);
-            }
-        } else if (structurableText != null) {
-            appendType(structurableText, types);
-        }
-        if (types.isEmpty()) {
-            return "empty";
-        }
-        StringBuilder summary = new StringBuilder();
-        for (String type : types) {
-            if (summary.length() > 0) summary.append(',');
-            summary.append(type);
-        }
-        return summary.toString();
-    }
-
-    private static void collectTypes(List<?> nodes, List<String> types, int depth) {
-        if (depth > 8 || types.size() >= 24) return;
-        for (Object node : nodes) {
-            if (node == null || types.size() >= 24) continue;
-            if (node instanceof List<?>) {
-                collectTypes((List<?>) node, types, depth + 1);
-                continue;
-            }
-            appendType(node, types);
-            String semantic = HookConfiguration.semanticTypeName(node.getClass());
-            String member = "BulletListContentNode".equals(semantic) ? "getItems"
-                    : isTextContainer(semantic) ? "getContent" : null;
-            if (member != null) {
-                Object children = Reflect.callMember(node, member);
-                if (children instanceof List<?>) {
-                    collectTypes((List<?>) children, types, depth + 1);
-                }
+        if (input != null) appendType(input, types);
+        if (extracted != null && extracted.tree != null) {
+            for (ContentTree.Event event : extracted.tree.events) {
+                if (types.size() >= 24) break;
+                if (event.node.original != null) appendType(event.node.original, types);
             }
         }
+        return types.isEmpty() ? "empty" : String.join(",", types);
     }
 
     private static void appendType(Object node, List<String> types) {
@@ -240,7 +154,7 @@ public final class TextExtractor {
             }
             // 纯文本消息整体就是一个片段：countSegments 的空行拆分口径
             // 不适用于它（历史上这类消息从不进入多片段缓存命名空间）。
-            return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, false);
+            return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, false, null);
         }
 
         if ("AnnotatedStructurableText".equals(cls)) {
@@ -248,12 +162,8 @@ public final class TextExtractor {
             if (!(list instanceof List)) {
                 return EMPTY;
             }
-            StringBuilder sb = new StringBuilder();
-            // text, opaque, codeBlocks, segments（可翻译片段数）
-            int[] counters = new int[4];
-            walkList((List<?>) list, sb, counters, 0);
-            return new Result(sb.toString(), counters[3], counters[0], counters[1],
-                    counters[2] > 0);
+            ContentTree tree = ContentTree.compile((List<?>) list);
+            return tree == null ? null : extractTree(tree);
         }
 
         return null;
@@ -308,21 +218,6 @@ public final class TextExtractor {
         }
     }
 
-    private static void walkList(List<?> nodes, StringBuilder out, int[] counters, int depth) {
-        walkList(nodes, out, counters, depth, new int[1], false);
-    }
-
-    @SuppressWarnings("ParameterName")
-    private static void walkList(List<?> nodes, StringBuilder out, int[] counters,
-                                 int depth, int[] styleSeq, boolean styled) {
-        if (nodes == null || depth > MAX_DEPTH) {
-            return;
-        }
-        for (Object node : nodes) {
-            walkNode(node, out, counters, depth, styleSeq, styled);
-        }
-    }
-
     // ------------------------------------------------- 片段计数与空白边界
 
     /**
@@ -369,131 +264,54 @@ public final class TextExtractor {
         return i;
     }
 
-    private static void walkNode(@Nullable Object node, StringBuilder out, int[] counters,
-                                 int depth, int[] styleSeq, boolean styled) {
-        if (node == null || depth > MAX_DEPTH) {
-            return;
-        }
-        String name = HookConfiguration.semanticTypeName(node.getClass());
-
-        if (isTextContainer(name)) {
-            if ("LinkContentNode".equals(name) && linkDisplayIsUrl(node)) {
-                // URL 链接显示文本原样进请求，充当定位标记：模型看不见 URL
-                // 位置就无法在译文里保真它，回填也无法按 URL 切分对齐
-                // （实测：正文结构对不上被整条拒绝，消息永远显示英文）。
-                // 显示仍由原节点渲染；模型改坏/丢失/合并 URL 时回填拒绝，
-                // 整条保留原文，URL 字符永不损坏显示。
-                String url = urlLinkDisplayText(node);
-                counters[1]++;
-                out.append(' ').append(url).append(' ');
-                return;
+    /** Consume the shared occurrence stream; no host tree recursion or member rereads. */
+    @Nullable
+    public static Result extractTree(@Nullable ContentTree tree) {
+        if (tree == null) return null;
+        StringBuilder out = new StringBuilder();
+        int textNodes = 0, opaque = 0, codeBlocks = 0, styleSeq = 0;
+        for (ContentTree.Event event : tree.events) {
+            if (event.kind == ContentTree.EventKind.ITEM_START) {
+                out.append("\n• ");
+                continue;
             }
-            Object inner = Reflect.callMember(node, "getContent");
-            if (inner instanceof List) {
-                walkList((List<?>) inner, out, counters, depth + 1, styleSeq,
-                        styled || isInlineStyleContainer(name));
-            }
-            return;
-        }
-
-        if (name == null) {
-            // An unmapped node is opaque; preserve spacing and continue extracting siblings.
-            counters[1]++;
-            out.append(' ');
-            return;
-        }
-
-        switch (name) {
-            case "TextContentNode": {
-                String s = Reflect.callString(node, "getContent");
-                if (s == null) {
-                    return;
-                }
-                // 片段计数与消费（ContentNodes.countTextNodes/rebuild）同口径：
-                // 空白块与 URL 块不算可翻译片段。
-                counters[3] += countSegments(s);
-                if (!styled || BlankLines.isBlank(s)) {
-                    // 无样式，或样式容器内的纯空白节点（实测 ** … ** 的尾随
-                    // 空格会被宿主拆成这样的节点，此时 lead > tail，
-                    // substring(lead, tail) 会越界）：整段原样进请求，
-                    // 空白不属于任何可翻译片段。
-                    out.append(s);
-                    counters[0]++;
-                    return;
-                }
-                // 样式片段：可翻译内容包 <xN>…</xN>，首尾空白与节点内空行、
-                // URL 块留在标记外（结构由原节点提供）。序号全局递增，
-                // 与 ContentNodes 计划的枚举顺序一致。
-                counters[0]++;
-                int lead = leadingWhitespace(s);
-                int tail = trailingWhitespaceStart(s);
-                out.append(s, 0, lead);
-                BlankLines.Split split = BlankLines.split(s.substring(lead, tail));
-                for (int i = 0; i < split.chunks.size(); i++) {
-                    if (i > 0) {
-                        out.append(split.separators.get(i - 1));
+            if (event.kind != ContentTree.EventKind.NODE) continue;
+            ContentTree.Node node = event.node;
+            switch (node.kind) {
+                case TEXT:
+                    String text = node.text;
+                    if (text == null) break;
+                    textNodes++;
+                    if (!event.styled || BlankLines.isBlank(text)) {
+                        out.append(text);
+                        break;
                     }
-                    String chunk = split.chunks.get(i);
-                    if (BlankLines.isBlank(chunk) || isUrlLike(chunk)) {
-                        out.append(chunk);
-                        continue;
-                    }
-                    styleSeq[0]++;
-                    out.append("<x").append(styleSeq[0]).append('>')
-                            .append(chunk)
-                            .append("</x").append(styleSeq[0]).append('>');
-                }
-                out.append(s, tail, s.length());
-                return;
-            }
-            case "InlineCodeContentNode": {
-                // 代码内容不发给模型：模型会原样复述它，而节点树里代码本来就保留，
-                // 从而造成同一段代码重复出现。计入 opaque（不可翻译结构）。
-                counters[1]++;
-                out.append(' ');
-                return;
-            }
-            case "CodeBlockContentNode": {
-                counters[2]++;
-                // 同上：代码块内容由节点树原样保留，不进请求正文。
-                out.append('\n');
-                return;
-            }
-            case "NewLineContentNode":
-            case "LineBreakContentNode":
-                out.append('\n');
-                return;
-            case "BulletListContentNode": {
-                Object items = Reflect.callMember(node, "getItems");
-                if (items instanceof List) {
-                    for (Object item : (List<?>) items) {
-                        out.append('\n').append("• ");
-                        if (item instanceof List) {
-                            walkList((List<?>) item, out, counters, depth + 1,
-                                    styleSeq, styled);
-                        } else {
-                            walkNode(item, out, counters, depth + 1, styleSeq, styled);
+                    int lead = node.leadingEnd;
+                    int tail = node.trailingStart;
+                    out.append(text, 0, lead);
+                    for (int i = 0; i < node.chunks.size(); i++) {
+                        if (i > 0) out.append(node.separators.get(i - 1));
+                        String chunk = node.chunks.get(i);
+                        if (!node.translatable.get(i)) out.append(chunk);
+                        else {
+                            styleSeq++;
+                            out.append("<x").append(styleSeq).append('>').append(chunk)
+                                    .append("</x").append(styleSeq).append('>');
                         }
                     }
-                }
-                return;
-            }
-            default: {
-                // emoji 定位标记：写进请求正文，让模型看到它的真实位置；
-                // 回填时原位保留（显示由原节点完成），并据此切分译文间隔。
-                // 仍计入 opaque：它是不可翻译的结构节点，参与语言检测。
-                String emoji = nodeEmojiText(node);
-                if (emoji != null) {
-                    counters[1]++;
-                    out.append(' ').append(emoji).append(' ');
-                    return;
-                }
-                // 提及、频道、时间戳等由原节点渲染，不再发送 @mention
-                // 等可被模型复述/翻译的占位词，否则会与保留节点重复显示。
-                // 留空格避免节点两侧的单词被拼接；opaque 计数仍参与语言检测。
-                counters[1]++;
-                out.append(' ');
+                    out.append(text, tail, text.length());
+                    break;
+                case URL: case EMOJI:
+                    opaque++; out.append(' ').append(node.text).append(' '); break;
+                case INLINE_CODE: case OPAQUE:
+                    opaque++; out.append(' '); break;
+                case CODE_BLOCK:
+                    codeBlocks++; out.append('\n'); break;
+                case BREAK:
+                    out.append('\n'); break;
+                default: throw new IllegalStateException("Non-leaf content event");
             }
         }
+        return new Result(out.toString(), tree.segmentCount, textNodes, opaque, codeBlocks > 0, tree);
     }
 }

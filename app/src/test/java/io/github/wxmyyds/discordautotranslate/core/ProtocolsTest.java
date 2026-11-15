@@ -134,14 +134,13 @@ public class ProtocolsTest {
     /** 流式帧按 delta 累积成完整译文；role/空帧与注释行不得混入。 */
     @Test
     public void streamedResponseAccumulatesDeltas() throws Exception {
-        String sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"
-                + "\n"
-                + ": keep-alive\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":\"，世界\"}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{}}]}\n"
-                + "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n"
-                + "data: [DONE]\n";
+        String sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"
+                + ": keep-alive\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"，世界\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{}}]}\n\n"
+                + "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n"
+                + "data: [DONE]\n\n";
         assertEquals("你好，世界",
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, sse));
     }
@@ -161,9 +160,9 @@ public class ProtocolsTest {
     /** 只收到 role/usage 帧时累积为空，由引擎报“提取到的译文为空”。 */
     @Test
     public void streamedResponseWithoutContentDeltasIsEmpty() throws Exception {
-        String sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"
-                + "data: {\"usage\":{\"total_tokens\":10},\"choices\":[]}\n"
-                + "data: [DONE]\n";
+        String sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"
+                + "data: {\"usage\":{\"total_tokens\":10},\"choices\":[]}\n\n"
+                + "data: [DONE]\n\n";
         assertEquals("",
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, sse));
     }
@@ -171,8 +170,8 @@ public class ProtocolsTest {
     /** 流断在半路（网络中断/服务端断开）：部分 delta 拼出的译文缺尾巴，必须失败。 */
     @Test
     public void streamCutMidwayIsRejectedNotPartiallyExtracted() {
-        String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":\"，世\"}}]}\n";
+        String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"，世\"}}]}\n\n";
         try {
             extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, sse);
             fail("残缺流必须失败");
@@ -184,9 +183,9 @@ public class ProtocolsTest {
     /** finish_reason=length：流走完了但生成被 max_tokens 掐断，译文不完整。 */
     @Test
     public void finishReasonLengthIsRejectedAsTruncated() {
-        String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
-                + "data: {\"choices\":[{\"finish_reason\":\"length\",\"delta\":{}}]}\n"
-                + "data: [DONE]\n";
+        String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                + "data: {\"choices\":[{\"finish_reason\":\"length\",\"delta\":{}}]}\n\n"
+                + "data: [DONE]\n\n";
         try {
             extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, sse);
             fail("截断译文必须失败");
@@ -249,19 +248,18 @@ public class ProtocolsTest {
     @Test
     public void streamedMessagesEventsAccumulateTextDeltas() throws Exception {
         String sse = "event: message_start\n"
-                + "data: {\"type\":\"message_start\",\"message\":{}}\n"
-                + "\n"
+                + "data: {\"type\":\"message_start\",\"message\":{}}\n\n"
                 + "event: content_block_delta\n"
                 + "data: {\"type\":\"content_block_delta\",\"index\":0,"
-                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n"
+                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
                 + "data: {\"type\":\"content_block_delta\",\"index\":0,"
-                + "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"推理\"}}\n"
+                + "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"推理\"}}\n\n"
                 + "data: {\"type\":\"content_block_delta\",\"index\":0,"
-                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"，世界\"}}\n"
+                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"，世界\"}}\n\n"
                 + "event: message_delta\n"
-                + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n"
+                + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
                 + "event: message_stop\n"
-                + "data: {\"type\":\"message_stop\"}\n";
+                + "data: {\"type\":\"message_stop\"}\n\n";
         assertEquals("你好，世界",
                 extractByFixtureMode(Config.PROTOCOL_ANTHROPIC_MESSAGES, sse));
     }
@@ -270,7 +268,7 @@ public class ProtocolsTest {
     @Test
     public void messagesStreamCutMidwayIsRejected() {
         String sse = "data: {\"type\":\"content_block_delta\",\"index\":0,"
-                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n";
+                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n";
         try {
             extractByFixtureMode(Config.PROTOCOL_ANTHROPIC_MESSAGES, sse);
             fail("残缺流必须失败");
@@ -282,8 +280,8 @@ public class ProtocolsTest {
     /** finish_reason 不能替代协议唯一的 [DONE] 结束帧。 */
     @Test
     public void finishReasonWithoutDoneMarkerIsRejected() {
-        String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
-                + "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n";
+        String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                + "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n";
         try {
             Protocols.extractTranslation(Config.PROTOCOL_OPENAI_COMPATIBLE, sse, true);
             fail("finish_reason 不能替代 [DONE]");
@@ -296,11 +294,11 @@ public class ProtocolsTest {
     @Test
     public void explicitNullFinishReasonDoesNotFailTheGate() throws Exception {
         String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"},"
-                + "\"finish_reason\":null}]}\n"
+                + "\"finish_reason\":null}]}\n\n"
                 + "data: {\"choices\":[{\"delta\":{\"content\":\"好\"},"
-                + "\"finish_reason\":null}]}\n"
-                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n"
-                + "data: [DONE]\n";
+                + "\"finish_reason\":null}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]\n\n";
         assertEquals("你好",
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, sse));
     }
@@ -309,10 +307,10 @@ public class ProtocolsTest {
     @Test
     public void explicitNullContentDeltaDoesNotEmitNullLiteral() throws Exception {
         String sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\","
-                + "\"content\":null}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n"
-                + "data: [DONE]\n";
+                + "\"content\":null}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]\n\n";
         assertEquals("你好",
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, sse));
     }
@@ -453,33 +451,33 @@ public class ProtocolsTest {
     @Test
     public void compatibleStreamingContentRejectsPresentWrongTypes() {
         for (String value : new String[]{"42", "true", "false", "{}", "[]"}) {
-            String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"前段\"}}]}\n"
-                    + "data: {\"choices\":[{\"delta\":{\"content\":" + value + "}}]}\n"
-                    + "data: {\"choices\":[{\"delta\":{\"content\":\"后段\"}}]}\n"
-                    + "data: [DONE]\n";
+            String sse = "data: {\"choices\":[{\"delta\":{\"content\":\"前段\"}}]}\n\n"
+                    + "data: {\"choices\":[{\"delta\":{\"content\":" + value + "}}]}\n\n"
+                    + "data: {\"choices\":[{\"delta\":{\"content\":\"后段\"}}]}\n\n"
+                    + "data: [DONE]\n\n";
             assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, sse, true);
         }
     }
 
     @Test
     public void absentAndNullNonTextDeltasAreSkipped() throws Exception {
-        String chat = "data: {\"choices\":[{}]}\n"
-                + "data: {\"choices\":[{\"delta\":null}]}\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":null}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n"
-                + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
-                + "data: [DONE]\n";
+        String chat = "data: {\"choices\":[{}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":null}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":null}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                + "data: [DONE]\n\n";
         assertEquals("你好", Protocols.extractTranslation(
                 Config.PROTOCOL_OPENAI_COMPATIBLE, chat, true));
         String anthropic = "data: {\"type\":\"content_block_delta\","
-                + "\"delta\":{\"type\":\"thinking_delta\",\"text\":null}}\n"
+                + "\"delta\":{\"type\":\"thinking_delta\",\"text\":null}}\n\n"
                 + "data: {\"type\":\"content_block_delta\","
-                + "\"delta\":{\"type\":\"signature_delta\",\"signature\":\"x\"}}\n"
+                + "\"delta\":{\"type\":\"signature_delta\",\"signature\":\"x\"}}\n\n"
                 + "data: {\"type\":\"content_block_delta\","
-                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}\n"
+                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}\n\n"
                 + "data: {\"type\":\"content_block_delta\","
-                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n"
-                + "data: {\"type\":\"message_stop\"}\n";
+                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
+                + "data: {\"type\":\"message_stop\"}\n\n";
         assertEquals("你好", Protocols.extractTranslation(
                 Config.PROTOCOL_ANTHROPIC_MESSAGES, anthropic, true));
     }
@@ -493,14 +491,14 @@ public class ProtocolsTest {
                             + "{\"type\":\"text\",\"text\":\"后段\"}]}", false);
             assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                     "data: {\"type\":\"content_block_delta\","
-                            + "\"delta\":{\"type\":\"text_delta\",\"text\":" + value + "}}\n"
-                            + "data: {\"type\":\"message_stop\"}\n", true);
+                            + "\"delta\":{\"type\":\"text_delta\",\"text\":" + value + "}}\n\n"
+                            + "data: {\"type\":\"message_stop\"}\n\n", true);
         }
         assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                 "{\"content\":[{\"type\":\"text\"}]}", false);
         assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
-                "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\"}}\n"
-                        + "data: {\"type\":\"message_stop\"}\n", true);
+                "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\"}}\n\n"
+                        + "data: {\"type\":\"message_stop\"}\n\n", true);
     }
 
     @Test
@@ -537,6 +535,121 @@ public class ProtocolsTest {
             assertEquals("你好", Protocols.extractTranslation(protocols[i], bodies[i] + " \n", false));
             assertParseError(protocols[i], bodies[i] + " garbage", false);
             assertParseError(protocols[i], bodies[i] + " {}", false);
+        }
+    }
+
+    @Test
+    public void multilineDataUsesSameIncrementalDecoderAndIgnoresTrailingInput() throws Exception {
+        String sse = ": keepalive\r\n\r\nevent: chunk\r\n"
+                + "data: {\"choices\":[\r\n"
+                + "data: {\"delta\":{\"content\":\"你好\"}}]}\r\n\r\n"
+                + "data: [DONE]\r\n\r\ndata: invalid trailing input\n\n";
+        assertEquals("你好", Protocols.extractTranslation(
+                Config.PROTOCOL_OPENAI_COMPATIBLE, sse, true));
+        Http.ResponseDecoder decoder = Protocols.createDecoder(
+                Config.PROTOCOL_OPENAI_COMPATIBLE, true);
+        int consumed = 0;
+        while (!decoder.isComplete()) {
+            decoder.accept(sse.charAt(consumed++));
+        }
+        assertEquals("你好", decoder.finish());
+        assertTrue(consumed < sse.indexOf("invalid trailing input"));
+    }
+
+    @Test
+    public void completeBlankFrameIsRequiredNotJustTerminalDataLine() {
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, "data: [DONE]\n", true);
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                "data: {\"type\":\"message_stop\"}\n", true);
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n"
+                        + "data: [DONE]\n\n", true);
+    }
+
+    @Test
+    public void anthropicDoesNotTreatOpenAiSentinelAsCompletion() throws Exception {
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES, "data: [DONE]\n\n", true);
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                "data: {\"type\":\"ping\",\"note\":\"[DONE]\"}\n\n", true);
+        assertEquals("你好", Protocols.extractTranslation(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                ": [DONE]\n\ndata: {\"type\":\"ping\",\"note\":\"[DONE]\"}\n\n"
+                        + "data: {\"type\":\"content_block_delta\","
+                        + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
+                        + "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                        + "data: malformed trailing event\n\n", true));
+    }
+
+    @Test
+    public void streamErrorsAndMalformedFramesRejectAccumulatedTextWithoutLeakingBody() {
+        String prefix = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n";
+        for (String event : new String[]{"event: error\ndata: secret\n\n",
+                "data: {\"error\":{\"message\":\"secret\"}}\n\n",
+                "data: {\"type\":\"error\",\"choices\":[]}\n\n",
+                "data: {\n\n", "data: {}\n\n", "data: []\n\n",
+                "data: {\"choices\":[]} garbage\n\n"}) {
+            try {
+                Protocols.extractTranslation(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                        prefix + event + "data: [DONE]\n\n", true);
+                fail("Expected rejection");
+            } catch (TranslationException e) {
+                assertEquals(TranslationException.Kind.PARSE, e.kind());
+                assertFalse(e.userMessage().contains("secret"));
+            }
+        }
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                "data: {\"type\":\"error\",\"error\":{\"message\":\"secret\"}}\n\n"
+                        + "data: {\"type\":\"message_stop\"}\n\n", true);
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                "event: message_stop\ndata: {\"type\":\"ping\"}\n\n", true);
+    }
+
+    @Test
+    public void streamingReasonsAndTypesAreStringsAndTruncationCannotBeOverwritten() {
+        for (String value : new String[]{"42", "true", "{}", "[]"}) {
+            assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                    "data: {\"choices\":[{\"finish_reason\":" + value + "}]}\n\n"
+                            + "data: [DONE]\n\n", true);
+            assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":"
+                            + value + "}}\n\n"
+                            + "data: {\"type\":\"message_stop\"}\n\n", true);
+            assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    "data: {\"type\":" + value + "}\n\n"
+                            + "data: {\"type\":\"message_stop\"}\n\n", true);
+        }
+        for (String reason : new String[]{"max_tokens", "tool_use", "refusal"}) {
+            assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\""
+                            + reason + "\"}}\n\n"
+                            + "data: {\"type\":\"message_delta\","
+                            + "\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+                            + "data: {\"type\":\"message_stop\"}\n\n", true);
+        }
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                "data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n"
+                        + "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"
+                        + "data: [DONE]\n\n", true);
+    }
+
+    @Test
+    public void streamingWrapperTagsAreRejectedEvenAcrossDeltas() {
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"<trans\"}}]}\n\n"
+                        + "data: {\"choices\":[{\"delta\":{\"content\":\"late>你好\"}}]}\n\n"
+                        + "data: [DONE]\n\n", true);
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                "data: {\"type\":\"content_block_delta\","
+                        + "\"delta\":{\"type\":\"text_delta\",\"text\":\"</translate>\"}}\n\n"
+                        + "data: {\"type\":\"message_stop\"}\n\n", true);
+    }
+
+    @Test
+    public void responsesStreamingIsExplicitlyUnsupported() {
+        try {
+            Protocols.createDecoder(Config.PROTOCOL_OPENAI_RESPONSES, true);
+            fail("Expected CONFIG");
+        } catch (TranslationException e) {
+            assertEquals(TranslationException.Kind.CONFIG, e.kind());
         }
     }
 

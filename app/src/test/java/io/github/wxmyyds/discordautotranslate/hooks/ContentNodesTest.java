@@ -399,16 +399,6 @@ public class ContentNodesTest {
         assertFalse(ContentNodes.isPrimitive(null));
     }
 
-    @Test
-    public void listOfExtractsNodeList() {
-        List<Object> nodes = list(new TextContentNode("a"));
-        List<?> got = ContentNodes.listOf(new AnnotatedStructurableText(nodes));
-        assertNotNull(got);
-        assertEquals(1, got.size());
-        assertNull(ContentNodes.listOf(new PrimitiveStructurableText("x")));
-        assertNull(ContentNodes.listOf(null));
-    }
-
     // ---------------------------------------------------------------- 文本替换
 
     @Test

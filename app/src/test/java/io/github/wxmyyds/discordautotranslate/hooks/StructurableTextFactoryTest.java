@@ -49,6 +49,12 @@ public class StructurableTextFactoryTest {
         field.set(null, constructor);
     }
 
+    /** Test-only producer setup: supply the captured occurrence plan. */
+    private static Object planned(Object original, String translated) {
+        return StructurableTextFactory.forPlannedTranslation(
+                original, translated, TextExtractor.extract(original));
+    }
+
     private static List<Object> list(Object... items) {
         return new ArrayList<>(Arrays.asList(items));
     }
@@ -77,8 +83,8 @@ public class StructurableTextFactoryTest {
             assertNull(bridge.existingReferencedMessageState(id, projected));
             HookBridge.ReferencedTranslation reused = bridge.referencedTranslation(id, null);
             assertNotNull(reused);
-            Object replacement = StructurableTextFactory.forTranslation(
-                    reused.originalContent, reused.state.translatedText);
+            Object replacement = StructurableTextFactory.forPlannedTranslation(
+                    reused.originalContent, reused.state.translatedText, reused.extracted);
             assertTrue(replacement instanceof PrimitiveStructurableText);
             assertEquals(translated, TextExtractor.extract(replacement).text);
             // Full content goes to native B0/TextView; this layer never adds an ellipsis.
@@ -103,7 +109,7 @@ public class StructurableTextFactoryTest {
         ContentNodesTest.NewLineContentNode newline = new ContentNodesTest.NewLineContentNode();
         AnnotatedStructurableText original = new AnnotatedStructurableText(list(
                 new TextContentNode("first"), newline, new TextContentNode("second"), emoji));
-        Object replacement = StructurableTextFactory.forTranslation(original, "第一\n第二");
+        Object replacement = planned(original, "第一\n第二");
         assertNotNull(replacement);
         List<?> nodes = ((AnnotatedStructurableText) replacement).getContent();
         assertSame(newline, nodes.get(1));
@@ -125,8 +131,8 @@ public class StructurableTextFactoryTest {
                 list(new TextContentNode("first"))), text, emoji);
         AnnotatedStructurableText original = new AnnotatedStructurableText(nodes);
 
-        // 返回 null 是 forTranslation 的“不替换”协议，所有 Hook 调用方保留 original。
-        assertNull(StructurableTextFactory.forTranslation(original, "第一\n你好"));
+        // 返回 null 是计划重建的“不替换”协议，所有 Hook 调用方保留 original。
+        assertNull(planned(original, "第一\n你好"));
         assertSame(nodes, original.getContent());
         assertSame(emoji, original.getContent().get(2));
         assertEquals("hello", text.getContent());
@@ -139,7 +145,7 @@ public class StructurableTextFactoryTest {
         AnnotatedStructurableText original = new AnnotatedStructurableText(
                 list(new TextContentNode("hello"), emoji));
 
-        assertNull(StructurableTextFactory.forTranslation(original, "你好"));
+        assertNull(planned(original, "你好"));
         assertSame(emoji, original.getContent().get(1));
     }
 
@@ -148,7 +154,7 @@ public class StructurableTextFactoryTest {
         EmojiContentNode emoji = new EmojiContentNode("1");
         AnnotatedStructurableText original = new AnnotatedStructurableText(list(emoji));
 
-        assertNull(StructurableTextFactory.forTranslation(original, "你好"));
+        assertNull(planned(original, "你好"));
         assertSame(emoji, original.getContent().get(0));
     }
 
@@ -159,7 +165,7 @@ public class StructurableTextFactoryTest {
         AnnotatedStructurableText original = new AnnotatedStructurableText(
                 list(shared, emoji, new ContentNodesTest.NewLineContentNode(), shared));
 
-        Object out = StructurableTextFactory.forTranslation(original,
+        Object out = planned(original,
                 "你好\n你好");
 
         assertTrue(out instanceof AnnotatedStructurableText);
@@ -181,7 +187,7 @@ public class StructurableTextFactoryTest {
         AnnotatedStructurableText original = new AnnotatedStructurableText(
                 list(mention, new TextContentNode("hello world"), emoji));
 
-        Object out = StructurableTextFactory.forTranslation(original, "你好世界");
+        Object out = planned(original, "你好世界");
 
         assertTrue("有提及时也必须产出译文，不能只靠保留英文通过测试",
                 out instanceof AnnotatedStructurableText);
@@ -209,7 +215,7 @@ public class StructurableTextFactoryTest {
 
         // 模拟正常接口译文，仅验证本地回填；不声称测试了真实模型输出。
         String translation = "兄弟，给我推荐一些设计系统技能";
-        Object out = StructurableTextFactory.forTranslation(original, translation);
+        Object out = planned(original, translation);
 
         assertTrue(out instanceof AnnotatedStructurableText);
         List<Object> nodes = ((AnnotatedStructurableText) out).getContent();
@@ -227,7 +233,7 @@ public class StructurableTextFactoryTest {
         AnnotatedStructurableText original = new AnnotatedStructurableText(
                 list(new TextContentNode("Explain the literal mention marker")));
 
-        Object out = StructurableTextFactory.forTranslation(original, translation);
+        Object out = planned(original, translation);
 
         assertTrue(out instanceof AnnotatedStructurableText);
         assertEquals(translation, ((TextContentNode) ((AnnotatedStructurableText) out)
@@ -238,7 +244,7 @@ public class StructurableTextFactoryTest {
     public void primitiveTextStillTranslatesNormally() {
         PrimitiveStructurableText original = new PrimitiveStructurableText("hello");
 
-        Object out = StructurableTextFactory.forTranslation(original, "你好");
+        Object out = planned(original, "你好");
 
         assertNotNull(out);
         assertTrue(out instanceof PrimitiveStructurableText);

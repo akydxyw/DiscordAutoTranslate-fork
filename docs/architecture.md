@@ -27,8 +27,8 @@ io.github.wxmyyds.discordautotranslate
   core/                       与 Discord 无关的纯逻辑
     Config / MemoryPrefs / PreferenceCommit / ConfigurationSync
     StateStore / TranslationTaskId / Scheduler / TranslationCache
-    TextExtractor / BlankLines / Segments / EnglishDetector
-    Http / Protocols / JsonPath（JSON 请求与响应提取）
+    ContentTree / TextExtractor / BlankLines / Segments / EnglishDetector
+    Http / SseReader / Protocols / JsonPath（有界传输、事件分帧与协议解码）
     Reflect / Sha256 / ModuleResources / TranslationException
   hooks/                      Discord Hook 与渲染替换
     MessageHooks / HookBridge / EmbedHooks
@@ -70,7 +70,7 @@ io.github.wxmyyds.discordautotranslate
 
 - `onHotReloaded` 以保存的版本号从新模块 APK 读取当前 profile，只从该 profile 的消息绑定目标取得宿主 ClassLoader，并核对全部必需目标；排除 Android `Application.attach` 的启动类加载器。不保存/复用旧代次 JSON。读取失败或 ClassLoader 缺失时明确报告需要重启，不重新挂载已经执行完的 `Application.attach` 伪装恢复。
 - `ModuleResources.reset()` 后重新 `attach(this)`，否则图标资源解析失败。
-- `TranslationCache.reset()` 清理旧单例；`Scheduler.shutdown()` 经 `Engine.cancel(Thread)` → `Http.cancelRequestOn` 请求关闭在途连接。热重载只接受已成功安装的运行代次；仅有 bootstrap 或安装失败时拒绝拆卸并报告需重启。停止先暂停所有生产入口，再确认所有当前/退休调度器线程终止，超时明确拒绝重载；不能把请求停止当作已退出。渲染回调与行刷新都使用可清除的自有 Handler，并按代次失效，不把旧模块回调留在脱离窗口的 View 队列。
+- `TranslationCache.reset()` 清理旧单例；`Scheduler.shutdown()` 经 `Engine.cancel(Thread)` → 引擎已登记的 `Http.Request.cancel()` 标记取消并请求关闭在途连接；登记前的取消由线程中断阻止后续 I/O。热重载只接受已成功安装的运行代次；仅有 bootstrap 或安装失败时拒绝拆卸并报告需重启。停止先暂停所有生产入口，再确认所有当前/退休调度器线程终止，超时明确拒绝重载；不能把请求停止当作已退出。渲染回调与行刷新都使用可清除的自有 Handler，并按代次失效，不把旧模块回调留在脱离窗口的 View 队列。
 
 ## 版本适配
 
@@ -96,4 +96,7 @@ io.github.wxmyyds.discordautotranslate
 - 回复排障的 trace、逐条空白/布局监听和附件快照已删除；保留已验证的显示投影和必要错误日志。
 - `ConfigurationSync` 唯一拥有本地配置写入、首次导入和导出策略；本地写入均经过 `PreferenceCommit`，初始化标记只随成功持久化建立权威。设置读取错误不能填默认值覆盖；失败恢复原快照，回滚也失败时阻止读取/同步。页面只消费操作结果。
 - service 连接为进程级唯一监听，页面在 onStart/onStop 独立弱订阅；停止期间完成的持久化延后消费，不覆盖未保存草稿。只有真正未保存的草稿写入实例状态；干净页面重新读取当前权威配置，不恢复旧的干净表单覆盖其他页面已保存内容。
-- 本阶段未改富文本遍历/对齐规则、HTTP 请求级取消协调与 SSE 分层；这些仍是下一阶段明确的架构工作，不声称已解决。
+- 第二阶段用 `ContentTree` 统一按出现位置捕获节点、样式与列表边界，提取/计数/对齐/回填消费同一计划。转换必须重新捕获当前输入，哈希校验、回填和图标判断共用该次捕获；不因对象身份相同而复用陈旧计划，同文不同对象的 Embed 也各自重建。计划不持久保存在 Source；Source 仍与状态同生命周期，只保存规范对象与编辑版本。
+- 结构深度最多 12 个语义容器，Java 列表/列表项包装不增加语义深度；路径最多 64、出现位置最多 8192，循环/超限整体拒绝，不截断翻译。保留原生对象的未改分支校验捕获的列表形状，变化时拒绝整树；不复制提及/emoji/代码等宿主内部模型。
+- 请求级取消协调统一在 `Http.Request`：attach 与 cancelled 共用锁，引擎在配置验证/请求体构造前登记请求，finally 才移除。HTTP 只负责有界、严格 UTF-8 传输；每次请求唯一协议 decoder 经 `SseReader` 分帧，以 OpenAI `[DONE]` 或 Anthropic `message_stop` 判定结束，完成事件之后不等待 EOF、不读取后续 keep-alive。缺结束帧明确失败；Responses 保持非流式。
+- HookBridge 仍负责业务协调，本次没有重写已确认的回复压平或 Poll 整卡显示策略；新的结构/网络边界仍需 Actions 与设备验证分别确认。

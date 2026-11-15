@@ -189,24 +189,191 @@ public final class Protocols {
     public static String extractTranslation(String protocol, String responseBody,
                                             boolean streaming)
             throws TranslationException {
-        String text;
-        if (Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) {
-            text = extractAnthropicText(responseBody, streaming);
-        } else if (Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)) {
-            if (streaming) {
-                throw new TranslationException(TranslationException.Kind.CONFIG,
-                        "OpenAI Responses 当前只支持非流式响应");
-            }
-            text = extractResponsesText(responseBody);
-        } else if (Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)) {
-            text = streaming
-                    ? extractStreamedChatText(responseBody)
-                    : JsonPath.extractString(responseBody, "choices.0.message.content");
-        } else {
+        Http.ResponseDecoder decoder = createDecoder(protocol, streaming);
+        if (responseBody == null) {
+            throw parseError("响应体为空");
+        }
+        for (int i = 0; i < responseBody.length() && !decoder.isComplete(); i++) {
+            decoder.accept(responseBody.charAt(i));
+        }
+        return decoder.finish();
+    }
+
+    /** Select one strict mode once. The decoder is stateful and must never be shared. */
+    public static Http.ResponseDecoder createDecoder(String protocol, boolean streaming)
+            throws TranslationException {
+        if (!Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)
+                && !Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
+                && !Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) {
             throw new TranslationException(TranslationException.Kind.CONFIG,
                     "不支持的供应商协议");
         }
-        return rejectTranslateTags(text);
+        if (streaming && !supportsStreaming(protocol)) {
+            throw new TranslationException(TranslationException.Kind.CONFIG,
+                    "OpenAI Responses 当前只支持非流式响应");
+        }
+        return streaming ? new StreamingDecoder(protocol) : new JsonDecoder(protocol);
+    }
+
+    private static TranslationException parseError(String message) {
+        return new TranslationException(TranslationException.Kind.PARSE, message);
+    }
+
+    private static final class JsonDecoder implements Http.ResponseDecoder {
+        private final String protocol;
+        private final StringBuilder body = new StringBuilder();
+
+        JsonDecoder(String protocol) { this.protocol = protocol; }
+        public String acceptType() { return "application/json"; }
+        public boolean isComplete() { return false; }
+        public void accept(char value) throws TranslationException {
+            if (body.length() >= SseReader.MAX_RESPONSE_CHARS) {
+                throw parseError("JSON response exceeds 1 MiB character limit");
+            }
+            body.append(value);
+        }
+        public String finish() throws TranslationException {
+            String json = body.toString();
+            String text;
+            if (Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) {
+                text = extractAnthropicText(json);
+            } else if (Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)) {
+                text = extractResponsesText(json);
+            } else {
+                text = JsonPath.extractString(json, "choices.0.message.content");
+            }
+            return rejectTranslateTags(text);
+        }
+    }
+
+    private static final class StreamingDecoder implements Http.ResponseDecoder {
+        private final boolean anthropic;
+        private final SseReader reader;
+        private final StringBuilder text = new StringBuilder();
+        private boolean complete;
+
+        StreamingDecoder(String protocol) {
+            anthropic = Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol);
+            reader = new SseReader(this::onEvent);
+        }
+
+        public String acceptType() { return "text/event-stream"; }
+        public boolean isComplete() { return complete; }
+        public void accept(char value) throws TranslationException {
+            if (complete) {
+                throw new IllegalStateException("Decoder already completed");
+            }
+            reader.accept(value);
+        }
+
+        private void onEvent(String event, String data) throws TranslationException {
+            if ("error".equals(event)) {
+                throw parseError("服务返回流式错误事件");
+            }
+            if (!anthropic && "[DONE]".equals(data)) {
+                complete = true;
+                return;
+            }
+            Object parsed = JsonPath.parse(data);
+            if (!(parsed instanceof JSONObject)) {
+                throw parseError("流式事件不是 JSON 对象");
+            }
+            JSONObject frame = (JSONObject) parsed;
+            if (frame.has("error") || "error".equals(optionalString(frame.opt("type"), "type"))) {
+                throw parseError("服务返回流式错误事件");
+            }
+            if (anthropic) {
+                acceptAnthropic(event, frame);
+            } else {
+                acceptChat(frame);
+            }
+        }
+
+        private void acceptChat(JSONObject frame) throws TranslationException {
+            Object rawChoices = frame.opt("choices");
+            if (!(rawChoices instanceof JSONArray)) {
+                throw parseError("Chat 流式事件缺少 choices 数组");
+            }
+            JSONArray choices = (JSONArray) rawChoices;
+            if (choices.length() == 0) {
+                return; // usage frame
+            }
+            Object first = choices.opt(0);
+            if (!(first instanceof JSONObject)) {
+                throw parseError("choices.0 不是对象");
+            }
+            JSONObject choice = (JSONObject) first;
+            String finish = optionalString(choice.opt("finish_reason"), "finish_reason");
+            if (finish != null && !finish.isEmpty()) {
+                if (!"stop".equals(finish)) {
+                    throw parseError("生成被截断（finish_reason=" + finish + "），译文不完整");
+                }
+            }
+            JSONObject delta = optionalObject(choice.opt("delta"), "choices.0.delta");
+            if (delta != null) {
+                String piece = optionalString(delta.opt("content"), "choices.0.delta.content");
+                if (piece != null) {
+                    text.append(piece);
+                }
+            }
+        }
+
+        private void acceptAnthropic(String event, JSONObject frame) throws TranslationException {
+            String type = JsonPath.requireString(frame.opt("type"), "type");
+            if (!event.isEmpty() && !event.equals(type)) {
+                throw parseError("Anthropic event 与 type 不一致");
+            }
+            if ("error".equals(type)) {
+                throw parseError("服务返回流式错误事件");
+            }
+            if ("message_stop".equals(type)) {
+                complete = true;
+            } else if ("content_block_delta".equals(type)) {
+                JSONObject delta = optionalObject(frame.opt("delta"), "delta");
+                if (delta == null) {
+                    throw parseError("content_block_delta 缺少 delta 对象");
+                }
+                String deltaType = JsonPath.requireString(delta.opt("type"), "delta.type");
+                if ("text_delta".equals(deltaType)) {
+                    text.append(JsonPath.requireString(delta.opt("text"), "delta.text"));
+                }
+            } else if ("message_delta".equals(type)) {
+                JSONObject delta = optionalObject(frame.opt("delta"), "delta");
+                if (delta == null) {
+                    throw parseError("message_delta 缺少 delta 对象");
+                }
+                String reason = optionalString(delta.opt("stop_reason"), "delta.stop_reason");
+                if (reason != null && !reason.isEmpty()) {
+                    if (!"end_turn".equals(reason) && !"stop_sequence".equals(reason)) {
+                        throw parseError("生成被截断（stop_reason=" + reason + "），译文不完整");
+                    }
+                }
+            }
+        }
+
+        public String finish() throws TranslationException {
+            if (!complete) {
+                throw parseError("流式响应不完整：未收到结束事件（"
+                        + (anthropic ? "message_stop" : "[DONE]") + "）");
+            }
+            return rejectTranslateTags(text.toString());
+        }
+    }
+
+    @Nullable
+    private static String optionalString(Object value, String path) throws TranslationException {
+        return value == null || value == JSONObject.NULL ? null : JsonPath.requireString(value, path);
+    }
+
+    @Nullable
+    private static JSONObject optionalObject(Object value, String path) throws TranslationException {
+        if (value == null || value == JSONObject.NULL) {
+            return null;
+        }
+        if (!(value instanceof JSONObject)) {
+            throw parseError(path + " 不是对象");
+        }
+        return (JSONObject) value;
     }
 
     @Nullable
@@ -222,78 +389,6 @@ public final class Protocols {
     }
 
     /**
-     * 累积 chat/completions 流式帧里的 delta 文本。
-     *
-     * <p>帧形态：{@code data: {"choices":[{"delta":{"content":"片"}}]}}，
-     * 以 {@code data: [DONE]} 结束。role 帧/usage 帧的 delta.content 为空，
-     * 跳过即可；错误帧没有 content，累积结果为空由引擎报“译文为空”。</p>
-     *
-     * {@code [DONE]} 为唯一正常结束信号；{@code finish_reason} 只用于判断是否被截断。
-     * 缺少结束帧时拒绝部分译文。
-     */
-    private static String extractStreamedChatText(String responseBody)
-            throws TranslationException {
-        if (responseBody == null) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "流式响应体为空");
-        }
-        StringBuilder out = new StringBuilder();
-        String finishReason = null;
-        boolean sawDone = false;
-        try {
-            for (String rawLine : responseBody.split("\n", -1)) {
-                String line = rawLine.trim();
-                if (!line.startsWith("data:")) {
-                    continue; // 注释行（: keep-alive）与空行
-                }
-                String payload = line.substring("data:".length()).trim();
-                if (payload.isEmpty()) {
-                    continue;
-                }
-                if ("[DONE]".equals(payload)) {
-                    sawDone = true;
-                    continue;
-                }
-                JSONObject frame = new JSONObject(payload);
-                JSONArray choices = frame.optJSONArray("choices");
-                if (choices == null || choices.length() == 0) {
-                    continue;
-                }
-                JSONObject choice0 = choices.getJSONObject(0);
-                // 流式中间帧常带显式 null（JSONObject.NULL），不能当 "null" 字符串。
-                Object finish = choice0.opt("finish_reason");
-                if (finish != null && finish != JSONObject.NULL && !finish.toString().isEmpty()) {
-                    finishReason = finish.toString();
-                }
-                JSONObject delta = choice0.optJSONObject("delta");
-                // "content":null（role 帧常见）必须整体跳过：Android org.json 的
-                // optString 会把 NULL 强转成字符串 "null" 混入译文（JVM 单测用的
-                // Crockford 版没有这个行为，只有真机会触发）。
-                if (delta == null || delta.isNull("content")) {
-                    continue;
-                }
-                String piece = JsonPath.requireString(delta.opt("content"),
-                        "choices.0.delta.content");
-                if (!piece.isEmpty()) {
-                    out.append(piece);
-                }
-            }
-        } catch (JSONException e) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "流式响应帧不是合法 JSON：" + e.getMessage(), e);
-        }
-        if (finishReason != null && !"stop".equals(finishReason)) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "生成被截断（finish_reason=" + finishReason + "），译文不完整");
-        }
-        if (!sawDone) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "流式响应不完整：未收到结束帧（[DONE]）");
-        }
-        return out.toString();
-    }
-
-    /**
      * Anthropic Messages 提取格式由请求模式唯一决定；响应格式不匹配时明确失败。
      *
      * <p>非流式结构：顶层 {@code content} 数组，译文在 {@code type=="text"}
@@ -301,11 +396,8 @@ public final class Protocols {
      * {@code stop_reason=="max_tokens"} 说明输出被 max_tokens 掐断，
      * 与流式同规则拒绝。</p>
      */
-    private static String extractAnthropicText(String responseBody, boolean streaming)
+    private static String extractAnthropicText(String responseBody)
             throws TranslationException {
-        if (streaming) {
-            return extractStreamedAnthropicText(responseBody);
-        }
         Object root = JsonPath.parse(responseBody);
         if (!(root instanceof JSONObject)) {
             throw new TranslationException(TranslationException.Kind.PARSE,
@@ -329,78 +421,6 @@ public final class Protocols {
         if ("max_tokens".equals(stop == null ? null : stop.toString())) {
             throw new TranslationException(TranslationException.Kind.PARSE,
                     "生成被截断（stop_reason=max_tokens），译文不完整");
-        }
-        return out.toString();
-    }
-
-    /**
-     * 累积 Anthropic Messages 流式事件的文本增量。
-     *
-     * <p>事件形态：每帧 {@code data:{"type":"content_block_delta","index":0,
-     * "delta":{"type":"text_delta","text":"片"}}}，没有 [DONE] 哨兵，
-     * 以 {@code message_stop} 事件收尾（连接随后关闭，读取层读到 EOF）。
-     * {@code event:} 行与 ping 等事件不携带译文，跳过；thinking 增量走
-     * {@code thinking_delta}（无 text 字段），同样跳过。</p>
-     *
-     * <p>完整性要求收到唯一结束事件 {@code message_stop}；正常的
-     * {@code stop_reason} 只用于确认生成结束类型，不替代结束事件。</p>
-     */
-    private static String extractStreamedAnthropicText(String responseBody)
-            throws TranslationException {
-        if (responseBody == null) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "流式响应体为空");
-        }
-        StringBuilder out = new StringBuilder();
-        String stopReason = null;
-        boolean sawMessageStop = false;
-        try {
-            for (String rawLine : responseBody.split("\n", -1)) {
-                String line = rawLine.trim();
-                if (!line.startsWith("data:")) {
-                    continue; // event: 行、注释行与空行
-                }
-                String payload = line.substring("data:".length()).trim();
-                if (payload.isEmpty()) {
-                    continue;
-                }
-                JSONObject frame = new JSONObject(payload);
-                String type = frame.optString("type");
-                if ("message_stop".equals(type)) {
-                    sawMessageStop = true;
-                } else if ("content_block_delta".equals(type)) {
-                    JSONObject delta = frame.optJSONObject("delta");
-                    // 仅 text_delta 携带译文；thinking/signature 等非文本增量跳过。
-                    if (delta == null || !"text_delta".equals(delta.opt("type"))) {
-                        continue;
-                    }
-                    String piece = JsonPath.requireString(delta.opt("text"), "delta.text");
-                    if (!piece.isEmpty()) {
-                        out.append(piece);
-                    }
-                } else if ("message_delta".equals(type)) {
-                    JSONObject delta = frame.optJSONObject("delta");
-                    if (delta == null) {
-                        continue;
-                    }
-                    Object stop = delta.opt("stop_reason");
-                    if (stop != null && stop != JSONObject.NULL && !stop.toString().isEmpty()) {
-                        stopReason = stop.toString();
-                    }
-                }
-            }
-        } catch (JSONException e) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "流式响应帧不是合法 JSON：" + e.getMessage(), e);
-        }
-        if (stopReason != null && !"end_turn".equals(stopReason)
-                && !"stop_sequence".equals(stopReason)) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "生成被截断（stop_reason=" + stopReason + "），译文不完整");
-        }
-        if (!sawMessageStop) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "流式响应不完整：未收到结束事件（message_stop）");
         }
         return out.toString();
     }

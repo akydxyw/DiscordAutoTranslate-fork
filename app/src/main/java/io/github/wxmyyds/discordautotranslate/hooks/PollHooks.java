@@ -5,6 +5,7 @@ import android.widget.TextView;
 
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
+import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 
 import org.json.JSONObject;
 
@@ -184,8 +185,8 @@ public final class PollHooks {
                     Object[] args = chain.getArgs().toArray();
                     CharSequence display;
                     try {
-                        StateStore.Entry state = HookBridge.get()
-                                .existingReferencedMessageState(scope.key, scope.original);
+                        TextExtractor.Result extracted = TextExtractor.extract(scope.original);
+                        StateStore.Entry state = HookBridge.get().matchingState(scope.key, extracted);
                         display = PollTextProjection.display(scope.binding.text, state,
                                 PollCardState.forKey(scope.key));
                         if (!accessibility && "question".equals(scope.binding.slot)) {
@@ -194,7 +195,7 @@ public final class PollHooks {
                             try (InlineIconInjector.HostScope iconScope = InlineIconInjector.enterHost(
                                     (View) scope.binding.receiver, scope.key)) {
                                 InlineIconInjector.inject(scope.original, text,
-                                        ((View) scope.binding.receiver).getContext(), cl);
+                                        ((View) scope.binding.receiver).getContext(), cl, extracted);
                             }
                             display = text;
                         }
