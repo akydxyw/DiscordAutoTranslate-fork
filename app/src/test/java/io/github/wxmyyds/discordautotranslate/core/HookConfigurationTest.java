@@ -1,0 +1,403 @@
+package io.github.wxmyyds.discordautotranslate.core;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.junit.After;
+import org.junit.Test;
+
+import java.lang.reflect.Method;
+import java.util.Collections;
+
+public class HookConfigurationTest {
+    public static final class SelectorFixture {
+        public void render(String text, int flags) {
+        }
+
+        public static void render(SelectorFixture view, String text, int flags) {
+        }
+    }
+
+    public static final class OverloadedFixture {
+        public String render(String text, int flags) {
+            return text;
+        }
+
+        public Object render(String text, long flags) {
+            return text;
+        }
+
+        public static String render(int text, int flags) {
+            return Integer.toString(text);
+        }
+
+        public void render(String text) {
+        }
+
+        public void renderMetadata(String text, int flags) {
+        }
+    }
+
+    public static final class ReversedOverloadedFixture {
+        public Object render(String text, long flags) {
+            return text;
+        }
+
+        public String render(String text, int flags) {
+            return text;
+        }
+    }
+
+    public static final class ObfuscatedFixture {
+        private final String a = "from-field";
+
+        public String d() {
+            return "from-accessor";
+        }
+    }
+
+    public static final class FieldOnlyFixture {
+        private final String a = "from-field";
+    }
+
+    public static final class UnmappedAccessorFixture {
+        public String getContent() {
+            return "not-configured";
+        }
+    }
+
+    public static final class GetterFixture {
+        public Object getContent() {
+            return "body";
+        }
+
+        public static void getContent$annotations() {
+        }
+    }
+
+    public static final class MetadataOnlyFixture {
+        public static void getContent$annotations() {
+        }
+    }
+
+    public static final class SuffixedGetterFixture {
+        public String getContentMetadata() {
+            return "not-the-body";
+        }
+    }
+
+    @Test
+    public void exactGetterCannotSelectKotlinAnnotationsMethod() {
+        Method getter = Reflect.findMethodExact(GetterFixture.class, "getContent", 0);
+        assertNotNull(getter);
+        assertEquals("getContent", getter.getName());
+        assertEquals("body", Reflect.call(getter, new GetterFixture()));
+        assertNull(Reflect.findMethodExact(MetadataOnlyFixture.class, "getContent", 0));
+        assertNull(Reflect.findMethodExact(GetterFixture.class, "get", 0));
+    }
+
+    @Test
+    public void stringGetterRequiresTheCompleteConfiguredName() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,\"hooks\":{},"
+                + "\"types\":{\"Message\":\"" + SuffixedGetterFixture.class.getName()
+                + "\"},\"accessors\":{\"Message\":{\"getContent\":\"getContent\"}}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 352017));
+        assertNull(Reflect.callString(new SuffixedGetterFixture(), "getContent"));
+    }
+
+    @After
+    public void clearActiveProfile() {
+        HookConfiguration.activate(null);
+    }
+
+    @Test
+    public void resolvesStaticHookByConfiguredSignature() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"requiredHooks\":[\"body\"],\"hooks\":{\"body\":{"
+                + "\"target\":{\"class\":\"" + SelectorFixture.class.getName() + "\","
+                + "\"name\":\"render\",\"static\":true,\"parameterCount\":3,"
+                + "\"parameterTypes\":{\"0\":\"" + SelectorFixture.class.getName() + "\","
+                + "\"1\":\"java.lang.String\",\"2\":\"int\"}}}}}";
+        HookConfiguration config = HookConfiguration.parse(json, 352017);
+        Method method = config.findMethod("body", getClass().getClassLoader());
+
+        assertNotNull(method);
+        assertTrue(config.hasAllRequiredTargets(getClass().getClassLoader()));
+        assertTrue(config.hasAllRequiredHooks(Collections.singleton("body")));
+        assertFalse(config.hasAllRequiredHooks(Collections.<String>emptySet()));
+        assertEquals(3, method.getParameterCount());
+        assertEquals(SelectorFixture.class, method.getParameterTypes()[0]);
+    }
+
+    private static JSONObject overloadedSelector() throws JSONException {
+        return new JSONObject().put("class", OverloadedFixture.class.getName())
+                .put("name", "render").put("static", false).put("parameterCount", 2);
+    }
+
+    private static HookConfiguration configurationWithTarget(JSONObject target, boolean enabled)
+            throws JSONException {
+        JSONObject root = new JSONObject().put("schemaVersion", 1).put("versionCode", 352017)
+                .put("requiredHooks", new JSONArray().put("body"))
+                .put("hooks", new JSONObject().put("body", new JSONObject()
+                        .put("enabled", enabled).put("target", target)));
+        return HookConfiguration.parse(root.toString(), 352017);
+    }
+
+    @Test
+    public void deprecatedSelectorPropertiesAreRejectedEvenAlongsideExactFields() throws Exception {
+        String[] properties = {"namePrefix", "minParameterCount", "selection", "selection"};
+        Object[] values = {"render", 1, "first", "mostParameters"};
+        for (int i = 0; i < properties.length; i++) {
+            JSONObject selector = overloadedSelector().put(properties[i], values[i]);
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, true));
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, false));
+            assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        }
+    }
+
+    @Test
+    public void exactNameCountAndTypedConstraintsAreValidatedBeforeResolution() throws Exception {
+        for (String missing : new String[]{"name", "parameterCount", "static"}) {
+            JSONObject selector = overloadedSelector();
+            selector.remove(missing);
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, true));
+            assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        }
+        String[] properties = {"name", "name", "name", "name", "parameterCount",
+                "parameterCount", "parameterCount", "parameterCount", "static", "returnType",
+                "returnType", "parameterTypes", "parameterTypes", "parameterTypes",
+                "parameterTypes", "parameterTypes", "parameterTypes", "parameterTypes"};
+        Object[] values = {"", "render*", " render", 123, -1, 1.5, "2", JSONObject.NULL, "false",
+                "*", JSONObject.NULL, new JSONArray(), JSONObject.NULL,
+                new JSONObject().put("2", "int"), new JSONObject().put("01", "int"),
+                new JSONObject().put("x", "int"), new JSONObject().put("0", "*"),
+                new JSONObject().put("0", "void")};
+        assertEquals(properties.length, values.length);
+        for (int i = 0; i < properties.length; i++) {
+            JSONObject selector = overloadedSelector().put(properties[i], values[i]);
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, true));
+            assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        }
+    }
+
+    @Test
+    public void partialTypesResolveOnlyTheUniqueCandidateAndNeverRelaxConstraints() throws Exception {
+        JSONObject selector = overloadedSelector()
+                .put("parameterTypes", new JSONObject().put("1", "int"));
+        HookConfiguration config = configurationWithTarget(selector, true);
+        Method expected = OverloadedFixture.class.getDeclaredMethod("render", String.class, int.class);
+        assertEquals(expected, config.findMethod("body", getClass().getClassLoader()));
+        assertEquals(expected, config.findMethod("body", getClass().getClassLoader()));
+        assertTrue(config.hasAllRequiredTargets(getClass().getClassLoader()));
+
+        selector.getJSONObject("parameterTypes").put("0", "int");
+        config = configurationWithTarget(selector, true);
+        assertNull(config.findMethod("body", getClass().getClassLoader()));
+        assertFalse(config.hasAllRequiredTargets(getClass().getClassLoader()));
+    }
+
+    @Test
+    public void multipleCandidatesAreRejectedRegardlessOfDeclarationOrder() throws Exception {
+        for (Class<?> owner : new Class<?>[]{OverloadedFixture.class, ReversedOverloadedFixture.class}) {
+            JSONObject selector = overloadedSelector().put("class", owner.getName());
+            assertNull(HookConfiguration.findMethod(owner, selector));
+            selector.put("parameterTypes", new JSONObject().put("0", "java.lang.String"));
+            HookConfiguration config = configurationWithTarget(selector, true);
+            assertNull(config.findMethod("body", getClass().getClassLoader()));
+            assertFalse(config.hasAllRequiredTargets(getClass().getClassLoader()));
+            assertNull(HookConfiguration.findMethod(owner, selector));
+        }
+    }
+
+    @Test
+    public void exactNameCountStaticAndReturnTypeAllConstrainResolution() throws Exception {
+        JSONObject selector = overloadedSelector().put("returnType", "java.lang.String");
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("render", String.class, int.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("returnType", "void");
+        assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.remove("returnType");
+        selector.put("static", true);
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("render", int.class, int.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("static", false).put("parameterCount", 1);
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("render", String.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("parameterCount", 0);
+        assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("parameterCount", 2).put("name", "renderMeta");
+        assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("name", "renderMetadata");
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("renderMetadata", String.class, int.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+    }
+
+    @Test
+    public void hotReloadLoaderMustComeFromConfiguredBindingTarget() throws Exception {
+        org.json.JSONObject selector = new org.json.JSONObject()
+                .put("class", SelectorFixture.class.getName()).put("name", "render")
+                .put("static", false).put("parameterCount", 2);
+        org.json.JSONObject root = new org.json.JSONObject()
+                .put("schemaVersion", 1).put("versionCode", 352017)
+                .put("requiredHooks", new org.json.JSONArray().put("message.bind"))
+                .put("hooks", new org.json.JSONObject().put("message.bind",
+                        new org.json.JSONObject().put("target", selector)));
+        HookConfiguration config = HookConfiguration.parse(root.toString(), 352017);
+        assertNull(config.bindingClassLoader(String.class));
+        assertNull(config.bindingClassLoader(GetterFixture.class));
+        assertNull(config.bindingClassLoader(null));
+        assertEquals(SelectorFixture.class.getClassLoader(),
+                config.bindingClassLoader(SelectorFixture.class));
+        selector.put("name", "unavailable");
+        config = HookConfiguration.parse(root.toString(), 352017);
+        assertNull(config.bindingClassLoader(SelectorFixture.class));
+    }
+
+    @Test
+    public void resolvesConfiguredAccessorAndFieldAliases() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"hooks\":{},\"types\":{\"TextContentNode\":\""
+                + ObfuscatedFixture.class.getName() + "\",\"PrimitiveStructurableText\":\""
+                + FieldOnlyFixture.class.getName() + "\"},\"accessors\":{"
+                + "\"TextContentNode\":{\"getContent\":\"d\"}},\"fields\":{"
+                + "\"PrimitiveStructurableText\":{\"getContent\":\"a\"}}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 352017));
+
+        assertEquals("from-accessor", Reflect.callString(new ObfuscatedFixture(), "getContent"));
+        assertEquals("from-field", Reflect.callString(new FieldOnlyFixture(), "getContent"));
+    }
+
+    @Test
+    public void configuredAccessorDoesNotFallThroughToField() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"hooks\":{},\"types\":{\"TextContentNode\":\""
+                + FieldOnlyFixture.class.getName() + "\"},\"accessors\":{"
+                + "\"TextContentNode\":{\"getContent\":\"missingGetter\"}},\"fields\":{"
+                + "\"TextContentNode\":{\"getContent\":\"a\"}}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 352017));
+
+        assertNull(Reflect.callString(new FieldOnlyFixture(), "getContent"));
+    }
+
+    @Test
+    public void unmappedRuntimeTypesAndMembersDoNotUseImplicitNames() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"hooks\":{},\"types\":{}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 352017));
+
+        assertNull(HookConfiguration.semanticTypeName(UnmappedAccessorFixture.class));
+        assertNull(Reflect.callString(new UnmappedAccessorFixture(), "getContent"));
+        assertNull(Reflect.findMethod(UnmappedAccessorFixture.class, "getContent", 0));
+    }
+
+    @Test
+    public void profileTypeMappingsRequireExactClassNames() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":340013,"
+                + "\"hooks\":{},\"types\":{\"TextContentNode\":\""
+                + UnmappedAccessorFixture.class.getName() + "\"}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 340013));
+
+        assertEquals("TextContentNode",
+                HookConfiguration.semanticTypeName(UnmappedAccessorFixture.class));
+        assertNull(HookConfiguration.semanticTypeName(FieldOnlyFixture.class));
+    }
+
+    @Test
+    public void resolvesExplicitFullNameTypeAliases() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"hooks\":{},\"types\":{},\"typeAliases\":{\""
+                + UnmappedAccessorFixture.class.getName()
+                + "\":\"TextContentNode\"}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 352017));
+
+        assertEquals("TextContentNode",
+                HookConfiguration.semanticTypeName(UnmappedAccessorFixture.class));
+        assertNull(HookConfiguration.semanticTypeName(FieldOnlyFixture.class));
+    }
+
+    @Test
+    public void rejectsWrongVersionAndDisabledHook() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"requiredHooks\":[\"reply\"],\"hooks\":{\"reply\":{\"enabled\":false}}}";
+        HookConfiguration config = HookConfiguration.parse(json, 352017);
+
+        assertNull(config.findMethod("reply", getClass().getClassLoader()));
+        assertFalse(config.hasAllRequiredTargets(getClass().getClassLoader()));
+        assertThrows(JSONException.class, () -> HookConfiguration.parse(json, 340013));
+    }
+
+    @Test
+    public void readsConstructorIconClickConfigurationFromProfile() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,\"hooks\":{},"
+                + "\"iconClick\":{\"enabled\":true,\"protocol\":\"constructorProxy\","
+                + "\"spanClass\":\"lh.d\","
+                + "\"requiredSuperclass\":\"android.text.style.ClickableSpan\","
+                + "\"interfaces\":[\"zf.b\"],\"constructor\":{\"parameterTypes\":["
+                + "\"java.lang.Integer\",\"java.lang.Integer\",\"java.lang.Integer\","
+                + "\"java.lang.Boolean\",\"kotlin.jvm.functions.Function1\","
+                + "\"kotlin.jvm.functions.Function1\",\"int\"],\"arguments\":["
+                + "{\"kind\":\"null\"},{\"kind\":\"null\"},{\"kind\":\"null\"},"
+                + "{\"kind\":\"null\"},{\"kind\":\"null\"},"
+                + "{\"kind\":\"callback\",\"interface\":\"kotlin.jvm.functions.Function1\","
+                + "\"method\":\"invoke\",\"action\":\"toggleTranslation\"},"
+                + "{\"kind\":\"integer\",\"value\":255}]}}}";
+        HookConfiguration config = HookConfiguration.parse(json, 352017);
+        org.json.JSONObject iconClick = config.iconClickConfiguration();
+
+        // Configuration parsing only; this does not instantiate a host span.
+        assertNotNull(iconClick);
+        assertTrue(iconClick.optBoolean("enabled"));
+        assertEquals("constructorProxy", iconClick.optString("protocol"));
+        assertEquals("lh.d", iconClick.getString("spanClass"));
+        assertEquals("android.text.style.ClickableSpan",
+                iconClick.getString("requiredSuperclass"));
+        assertEquals("zf.b", iconClick.getJSONArray("interfaces").getString(0));
+        org.json.JSONObject constructor = iconClick.getJSONObject("constructor");
+        org.json.JSONArray parameterTypes = constructor.getJSONArray("parameterTypes");
+        org.json.JSONArray arguments = constructor.getJSONArray("arguments");
+        assertEquals(7, parameterTypes.length());
+        assertEquals(7, arguments.length());
+        for (int i = 0; i < 5; i++) {
+            assertEquals("null", arguments.getJSONObject(i).getString("kind"));
+        }
+        assertEquals("kotlin.jvm.functions.Function1", parameterTypes.getString(5));
+        org.json.JSONObject callback = arguments.getJSONObject(5);
+        assertEquals("callback", callback.getString("kind"));
+        assertEquals("kotlin.jvm.functions.Function1", callback.getString("interface"));
+        assertEquals("invoke", callback.getString("method"));
+        assertEquals("toggleTranslation", callback.getString("action"));
+        assertEquals("int", parameterTypes.getString(6));
+        assertEquals("integer", arguments.getJSONObject(6).getString("kind"));
+        assertEquals(255, arguments.getJSONObject(6).getInt("value"));
+    }
+
+    @Test
+    public void readsExplicitlyDisabledIconClickProfile() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":340013,\"hooks\":{},"
+                + "\"iconClick\":{\"enabled\":false,\"reason\":\"unverified\"}}";
+        HookConfiguration config = HookConfiguration.parse(json, 340013);
+        org.json.JSONObject iconClick = config.iconClickConfiguration();
+
+        assertNotNull(iconClick);
+        assertFalse(iconClick.optBoolean("enabled"));
+        assertEquals("unverified", iconClick.optString("reason"));
+    }
+
+    @Test
+    public void mapsObfuscatedRuntimeTypesFromProfile() throws Exception {
+        String json = "{\"schemaVersion\":1,\"versionCode\":352017,"
+                + "\"hooks\":{},\"types\":{\"TextContentNode\":\""
+                + SelectorFixture.class.getName() + "\"}}";
+        HookConfiguration.activate(HookConfiguration.parse(json, 352017));
+
+        assertEquals("TextContentNode",
+                HookConfiguration.semanticTypeName(SelectorFixture.class));
+    }
+}

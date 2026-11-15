@@ -1,81 +1,54 @@
-<div align="center">
-
 # Discord AutoTranslate
 
-**Discord 消息自动翻译（多语言 → 可配置目标语言）的 LSPosed 模块**
+Discord Android 的 LSPosed 自动翻译模块，基于 LibXposed API 102。消息发送到用户配置的翻译服务，默认目标语言为简体中文。
 
-基于 [LibXposed API 102](https://github.com/libxposed/api)（现代 Xposed API）
+[下载最新版](https://github.com/wxmyyds/DiscordAutoTranslate/releases/latest) · [GitHub Actions](https://github.com/wxmyyds/DiscordAutoTranslate/actions)
 
-[![GitHub release](https://img.shields.io/github/v/release/wxmyyds/DiscordAutoTranslate)](https://github.com/wxmyyds/DiscordAutoTranslate/releases)
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/wxmyyds/DiscordAutoTranslate/build.yml?label=build)](https://github.com/wxmyyds/DiscordAutoTranslate/actions)
+## 功能与支持版本
 
-</div>
+- 自动翻译消息正文及富 Embed，消息编辑后重新判定；图标显示进度、译文、原文或失败，点击切换，失败时手动重试。
+- 保留宿主 Markdown 结构、链接、表情、提及和代码节点。无法严格对应原结构的译文会被拒绝，继续显示原文。
+- 回复预览跟随被引用消息的已有译文和显示选择；引用本身不发起翻译请求。
+- 投票标题控制整卡原文/译文切换，保留选项、图片及投票行为。图片选项仅翻译无障碍描述。
+- 独立设置页支持目标语言、API、三种供应商协议、流式请求、配置检查和翻译测试。
 
----
+| Discord Stable | versionCode | 已接入能力 | Discord 安装包 |
+|---|---|---|---|
+| 340.13 | 340013 | 正文、回复预览、富 Embed、投票 | [下载](https://1drv.ms/u/c/8ccaf25c5b0de4fb/IQC_FsEpTW9pQYQTZZX4XrKJAUecfhaG98Q7V0cyTK1MIqg?e=QTqag5) |
+| 352.17 | 352017 | 正文、回复预览、富 Embed、投票 | [下载](https://1drv.ms/u/c/8ccaf25c5b0de4fb/IQCbMILHoJWrQYp5eeZrkUTAAT85sbCHsOEhamnOonbWzCg?e=qh9gUL) |
 
-## 功能
+仅支持表中列出的 Discord 版本。暂不支持帖子预览、图片 OCR、语音及界面文本翻译。
 
-- **自动翻译**：英文、俄语、日语、韩语等非目标语言消息可翻译到设置的目标语言，完成后自动替换正文
-- **保留 Markdown**：标题 / 列表 / 提及 / 表情 / 代码等结构完整保留
-- **行内翻译图标**：翻译中 / 成功 / 失败三态，点击切换原文 / 译文，失败可重试
-- **回复引用**：被引用消息的译文同步显示在回复预览中
-- **Embed 与投票**：富 Embed（标题 / 描述 / 字段 / 原生帖子预览）与投票卡片可翻译
-- **编辑重译**：消息被编辑后自动重新翻译
-- **供应商协议**：支持 OpenAI-Compatible / OpenAI-Responses / Anthropic Messages，
-  可在设置中为支持的协议切换流式（SSE）请求
-- **独立设置界面**：配置检查 / 测试连接 / 测试翻译
-- **隐私友好**：消息正文与译文不写入日志，API 密钥仅保存在本机
+## 安装与设置
 
-## 系统要求
+要求 Android 8.0+、Root，以及支持 LibXposed API 102 的 LSPosed。
 
-- Android 8.0+（API 26+）
-- 已 Root 且安装 [LSPosed](https://github.com/LSPosed/LSPosed)（支持 API 102）
-- Discord **340.13 Stable**（`versionCode` 340013）。其他版本不承诺兼容；
-  模块启动时会比对版本并打印警告。
+1. 安装模块 APK，在 LSPosed 中启用模块，作用域勾选 `com.discord`。
+2. 打开模块设置，填写 API 基础地址、密钥和模型，选择协议及目标语言。
+3. 保存设置，强制停止并重启 Discord。模块尚未启用时也可先保存，服务连接后同步。
+4. 使用“配置检查”检查格式，“测试连接”或“测试翻译”验证实际请求。
 
-## 安装与激活
+API 基础地址示例：`https://api.openai.com/v1`，协议端点由模块追加。支持 OpenAI Compatible、OpenAI Responses、Anthropic Messages，均可选择流式或非流式请求。
 
-1. 在本仓库 [Releases](https://github.com/wxmyyds/DiscordAutoTranslate/releases) 下载 APK 并安装。
-2. 打开 LSPosed，启用 **Discord AutoTranslate**，作用域勾选 `com.discord`。
-3. 强制停止并重启 Discord。
-4. 打开模块设置，填写 API URL、密钥和模型。配置也可在启用模块前保存，启用后自动同步。
+“启用自动翻译”默认开启。“启用项目日志”默认关闭，统一控制 logcat 和 LSPosed 中本项目产生的诊断，包括启动及错误日志。**保存后重启 Discord 生效**；同步失败时先处理设置页提示。关闭日志不会删除已有日志，也不控制 Discord 或框架自身输出。
 
-> 需要支持 API 102 的 LSPosed 版本。
+## 隐私与排障
 
-## 使用说明
+消息的可翻译文本会发送到你配置的服务。代码、提及、时间戳等宿主保留节点仅发送位置标记；URL 和可识别的 emoji 锚点仍可能随请求发送。API 密钥保存在模块私有设置及本机 LSPosed remote preferences。
 
-- 翻译默认开启；可在设置界面调整目标语言、供应商协议、流式请求、系统提示词、并发与超时等参数。
-- 打开模块设置 →「测试连接」可验证 API 配置，「测试翻译」可预览翻译效果。
-- 消息右下角 / 行内图标：翻译中为旋转状态，完成后可点击在原文 / 译文间切换。
+项目日志仅记录运行状态和错误类别，不包含消息正文、译文、身份标识、链接或 API 凭据。
 
-## 构建
+- 完全不触发：检查作用域、精确版本支持、自动翻译开关和 API 配置；短文、纯链接/代码或符合目标文字体系的正文可能被检测跳过。
+- 请求或回填失败：检查网络、协议、超时和模型是否保留行及标记；失败图标支持手动重试，不会自动重试。
+- 需要帮助：开启日志、保存并重启 Discord，反馈时附上 Discord 版本、模块版本、复现步骤及日志。
 
-**本仓库禁止本地构建。** 所有编译与打包通过 GitHub Actions 执行：
-`.github/workflows/build.yml`（手动触发或推送分支时运行），产物为 APK artifact。
+## 开发文档
 
-## 隐私
+- [架构与生命周期](docs/architecture.md)
+- [渲染、回复、投票及图标](docs/rendering.md)
+- [检测、翻译协议与配置](docs/translation-engine.md)
+- [验证、签名与发布](docs/development.md)
+- [Hook 版本适配 Skill](.agents/skills/discord-hook-adaptation/SKILL.md)
+- [项目协作规则](AGENTS.md)
 
-启用后消息正文会发送到你配置的翻译服务。API 密钥保存在本机私有配置中，并同步到 LSPosed remote preferences；不会写入日志。
-消息正文与译文始终不会写入日志；详细日志开关只影响诊断信息的详细程度。
-
-## 常见问题
-
-**翻译后列表项不在原位？**
-列表按“每项一行”对齐回填；若模型把多项合并成一行，会保留原文而不是错位塞入。
-
-**图标显示成功但正文仍是英文？**
-说明译文结构与原文对不上被拒绝回填（保留原文），请用设置页「复制诊断」反馈。
-
-**切换协议后译文还是旧的？**
-协议参与配置版本计算，切换后旧缓存自动失效并重新请求。
-
-## 相关文档
-
-- [架构总览](docs/architecture.md) / [渲染与回填](docs/rendering.md)
-- [翻译引擎与配置](docs/translation-engine.md)
-- [行内图标与布局](docs/icons-and-layout.md) / [维护经验](docs/maintenance-notes.md)
-
-## 免责声明
-
-本项目与 Discord Inc. 无关联。Discord 为 Discord Inc. 的商标。
-使用本模块可能违反 Discord 服务条款，请自行评估风险。
+本项目与 Discord Inc. 无关联；Discord 为其商标。使用模块可能违反 Discord 服务条款，请自行评估。

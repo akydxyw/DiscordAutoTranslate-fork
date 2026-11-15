@@ -7,88 +7,110 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 import io.github.libxposed.service.XposedService;
 import io.github.libxposed.service.XposedServiceHelper;
 
-/**
- * 进程级 LSPosed service 连接持有者。
- *
- * <p>{@link XposedServiceHelper} 只支持一个强引用 listener，且没有注销接口，
- * 所以 helper 只注册本持有者一次。Activity 通过弱引用临时绑定；当前 service
- * 保留在本进程中，使重新打开设置页时可以立即收到已经建立的连接。</p>
- */
+/** One process-level service registration, with independent weak Activity subscriptions. */
 final class XposedServiceConnectionHolder implements XposedServiceHelper.OnServiceListener {
 
     interface Listener {
         void onServiceConnected(@NonNull XposedService service);
-
         void onServiceDied(@NonNull XposedService service);
     }
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final XposedServiceConnectionHolder INSTANCE =
             new XposedServiceConnectionHolder();
-
     private static boolean registered;
-
+    private final Subscriptions<Listener> subscriptions = new Subscriptions<>();
     @Nullable
     private XposedService currentService;
-    @Nullable
-    private WeakReference<Listener> boundListener;
+    private long connectionGeneration;
 
-    private XposedServiceConnectionHolder() {
-    }
+    private XposedServiceConnectionHolder() {}
 
-    /** 将当前页面绑定到进程级连接；调用方应在主线程调用。 */
+    /** Main-thread identity bind. Only a newly added subscription receives current replay. */
     static void bind(@NonNull Listener listener) {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            MAIN.post(() -> bind(listener));
-            return;
-        }
-        ensureRegistered();
-        INSTANCE.boundListener = new WeakReference<>(listener);
-        XposedService service = INSTANCE.currentService;
-        if (service != null) {
-            listener.onServiceConnected(service);
-        }
+        dispatchToMain(() -> {
+            // Register before subscribing: synchronous helper replay must not deliver twice.
+            ensureRegistered();
+            if (INSTANCE.subscriptions.add(listener) && INSTANCE.currentService != null) {
+                listener.onServiceConnected(INSTANCE.currentService);
+            }
+        });
     }
 
-    /** 解除当前页面绑定，不影响进程级 service 监听和缓存。 */
     static void unbind(@NonNull Listener listener) {
+        dispatchToMain(() -> INSTANCE.subscriptions.remove(listener));
+    }
+
+    /** Reconcile a stopped Activity's cached service before it subscribes again. */
+    @Nullable
+    static XposedService currentService() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            MAIN.post(() -> unbind(listener));
-            return;
+            throw new IllegalStateException("Service snapshot requires the main thread");
         }
-        Listener bound = INSTANCE.boundListener == null
-                ? null : INSTANCE.boundListener.get();
-        if (bound == listener) {
-            INSTANCE.boundListener = null;
+        return INSTANCE.currentService;
+    }
+
+    static long connectionGeneration() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw new IllegalStateException("Service generation requires the main thread");
         }
+        return INSTANCE.connectionGeneration;
     }
 
     private static void ensureRegistered() {
-        if (registered) {
-            return;
-        }
-        synchronized (XposedServiceConnectionHolder.class) {
-            if (registered) {
-                return;
-            }
+        if (!registered) {
             registered = true;
-            // 这里是进程唯一一次注册。helper 本身没有 unregister 接口。
+            // The helper has no unregister API; never retain an Activity in its listener.
             XposedServiceHelper.registerListener(INSTANCE);
         }
     }
 
     @Override
     public void onServiceBind(@NonNull XposedService service) {
-        dispatchToMain(() -> handleServiceBind(service));
+        dispatchToMain(() -> {
+            if (currentService == service) {
+                return;
+            }
+            currentService = service;
+            final long generation = ++connectionGeneration;
+            for (WeakReference<Listener> subscription : subscriptions.dispatchSnapshot()) {
+                if (generation != connectionGeneration) {
+                    return;
+                }
+                Listener listener = subscription.get();
+                if (listener != null && subscriptions.isBound(subscription)) {
+                    listener.onServiceConnected(service);
+                }
+            }
+        });
     }
 
     @Override
     public void onServiceDied(@NonNull XposedService service) {
-        dispatchToMain(() -> handleServiceDied(service));
+        dispatchToMain(() -> {
+            // A stale binder death cannot erase a newer service.
+            if (currentService != service) {
+                return;
+            }
+            currentService = null;
+            final long generation = ++connectionGeneration;
+            for (WeakReference<Listener> subscription : subscriptions.dispatchSnapshot()) {
+                if (generation != connectionGeneration) {
+                    return;
+                }
+                Listener listener = subscription.get();
+                if (listener != null && subscriptions.isBound(subscription)) {
+                    listener.onServiceDied(service);
+                }
+            }
+        });
     }
 
     private static void dispatchToMain(@NonNull Runnable action) {
@@ -99,23 +121,49 @@ final class XposedServiceConnectionHolder implements XposedServiceHelper.OnServi
         }
     }
 
-    private void handleServiceBind(@NonNull XposedService service) {
-        currentService = service;
-        Listener listener = boundListener == null ? null : boundListener.get();
-        if (listener != null) {
-            listener.onServiceConnected(service);
-        }
-    }
+    /** Pure identity/weak-subscription policy; confined to the dispatch thread. */
+    static final class Subscriptions<L> {
+        private final List<WeakReference<L>> listeners = new ArrayList<>();
 
-    private void handleServiceDied(@NonNull XposedService service) {
-        // 旧 service 的 binder death 不能清掉后来绑定的新 service。
-        if (currentService != service) {
-            return;
+        boolean add(L listener) {
+            if (contains(listener)) {
+                return false;
+            }
+            listeners.add(new WeakReference<>(listener));
+            return true;
         }
-        currentService = null;
-        Listener listener = boundListener == null ? null : boundListener.get();
-        if (listener != null) {
-            listener.onServiceDied(service);
+
+        void remove(L listener) {
+            Iterator<WeakReference<L>> iterator = listeners.iterator();
+            while (iterator.hasNext()) {
+                L existing = iterator.next().get();
+                if (existing == null || existing == listener) {
+                    iterator.remove();
+                }
+            }
+        }
+
+        boolean contains(L listener) {
+            boolean found = false;
+            Iterator<WeakReference<L>> iterator = listeners.iterator();
+            while (iterator.hasNext()) {
+                L existing = iterator.next().get();
+                if (existing == null) {
+                    iterator.remove();
+                } else if (existing == listener) {
+                    found = true;
+                }
+            }
+            return found;
+        }
+
+        List<WeakReference<L>> dispatchSnapshot() {
+            listeners.removeIf(subscription -> subscription.get() == null);
+            return new ArrayList<>(listeners);
+        }
+
+        boolean isBound(WeakReference<L> subscription) {
+            return listeners.contains(subscription);
         }
     }
 }

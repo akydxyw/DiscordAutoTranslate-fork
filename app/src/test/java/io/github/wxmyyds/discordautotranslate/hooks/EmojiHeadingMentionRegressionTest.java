@@ -36,6 +36,12 @@ import java.util.List;
  */
 public class EmojiHeadingMentionRegressionTest {
 
+    @org.junit.Before
+    public void activateFixtureProfile() { ContentNodeTestProfile.activate(ContentNodesTest.class, EmojiAnchorTest.class, OpaqueNodeTranslationTest.class); }
+
+    @org.junit.After
+    public void clearFixtureProfile() { ContentNodeTestProfile.clear(); }
+
     private static List<Object> list(Object... nodes) {
         return new ArrayList<>(Arrays.asList(nodes));
     }
@@ -61,6 +67,8 @@ public class EmojiHeadingMentionRegressionTest {
                 new ContentNodesTest.AnnotatedStructurableText(reportedTree()));
 
         assertNotNull(r);
+        assertEquals("<keep1/>\nAnnouncing 2 new abliterated models:\n"
+                + " :qwen:  Qwen 3 27b\n :deepseek:  Deepseek V4.1 Flash", r.text);
         assertEquals(3, r.segmentCount);
         assertTrue("标题文本必须进请求",
                 r.text.contains("Announcing 2 new abliterated models:"));
@@ -75,13 +83,14 @@ public class EmojiHeadingMentionRegressionTest {
     @Test
     public void modelKeepingEmojiAnchorsTranslatesEveryLine() {
         List<Object> nodes = reportedTree();
-        List<Object> out = ContentNodes.replaceText(nodes,
-                "宣布 2 款新的 abliterated 模型：\n"
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
+                "<keep1/>\n宣布 2 款新的 abliterated 模型：\n"
                         + ":qwen: Qwen 3 27b\n"
                         + ":deepseek: Deepseek V4.1 Flash");
 
         assertNotNull("保留锚点时必须能回填", out);
         // mention 原样保留
+        assertSame(nodes.get(0), out.get(0));
         assertTrue(out.get(0) instanceof UserOrRoleMentionContentNode);
         // 标题拿到译文
         HeadingContentNode heading = (HeadingContentNode) out.get(2);
@@ -101,8 +110,8 @@ public class EmojiHeadingMentionRegressionTest {
     public void modelDroppingEmojiAnchorsRejectsLinewiseTranslation() {
         List<Object> nodes = reportedTree();
         assertNull("emoji 锚点丢失时必须保持原消息",
-                ContentNodes.replaceText(nodes,
-                        "宣布 2 款新的 abliterated 模型：\nQwen 3 27b\nDeepseek V4.1 Flash"));
+                ContentPlanTestSupport.replace(nodes,
+                        "<keep1/>\n宣布 2 款新的 abliterated 模型：\nQwen 3 27b\nDeepseek V4.1 Flash"));
         assertEquals("Announcing 2 new abliterated models:",
                 ((TextContentNode) ((HeadingContentNode) nodes.get(2))
                         .getContent().get(0)).getContent());
@@ -114,7 +123,7 @@ public class EmojiHeadingMentionRegressionTest {
     @Test
     public void mergedTranslationWithDroppedAnchorsKeepsOriginal() {
         List<Object> nodes = reportedTree();
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "宣布 2 款新模型：Qwen 3 27b 与 Deepseek V4.1 Flash");
 
         assertNull("段落/行结构对不上时必须保留原文", out);

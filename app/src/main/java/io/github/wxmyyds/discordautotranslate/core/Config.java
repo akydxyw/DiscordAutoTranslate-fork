@@ -23,6 +23,10 @@ public final class Config {
     public static final String KEY_ENABLED = "auto_translate_enabled";
     public static final boolean DEF_ENABLED = true;
 
+    // ---- 项目日志（不参与翻译配置版本）----
+    public static final String KEY_LOGGING_ENABLED = "logging_enabled";
+    public static final boolean DEF_LOGGING_ENABLED = false;
+
     // ---- API 配置（URL 只填基础地址，端点后缀由所选协议追加）----
     public static final String KEY_API_URL = "api_url";
     /** 基础地址默认值；实际端点由协议追加 {@code /chat/completions} 或 {@code /responses}。 */
@@ -126,6 +130,7 @@ public final class Config {
     /** 配置快照，读取一次后供本次使用，避免渲染路径反复访问 SharedPreferences。 */
     public static class Snapshot {
         public final boolean enabled;
+        public final boolean loggingEnabled;
         public final String apiUrl;
         public final String apiKey;
         public final String model;
@@ -137,13 +142,14 @@ public final class Config {
         public final String protocol;
         /** 是否对支持的协议使用 SSE 流式请求。 */
         public final boolean streaming;
-        /** 配置读取失败原因；非 null 时不得发起翻译请求。 */
+        /** 配置读取失败原因；非 null 时不得用于请求、填充设置表单、保存或同步。 */
         public final String configError;
         public final int timeoutMs;
         public final int maxConcurrency;
 
         Snapshot(SharedPreferences p) {
             enabled = readBoolean(p, KEY_ENABLED, DEF_ENABLED);
+            loggingEnabled = readBoolean(p, KEY_LOGGING_ENABLED, DEF_LOGGING_ENABLED);
             apiUrl = str(p, KEY_API_URL, DEF_API_URL);
             apiKey = str(p, KEY_API_KEY, DEF_API_KEY);
             model = str(p, KEY_MODEL, DEF_MODEL);
@@ -157,8 +163,10 @@ public final class Config {
             configError = null;
         }
 
+        /** 仅承载错误状态；其余字段是不可使用的占位值，不是可编辑的默认配置。 */
         private Snapshot(String error) {
             enabled = DEF_ENABLED;
+            loggingEnabled = DEF_LOGGING_ENABLED;
             apiUrl = DEF_API_URL;
             apiKey = DEF_API_KEY;
             model = DEF_MODEL;
@@ -255,7 +263,8 @@ public final class Config {
     }
 
     /**
-     * 从 SharedPreferences 读取快照；prefs 为 null 时返回默认值快照。
+     * 从 SharedPreferences 只读地读取快照；缺省键使用默认值，已保存的无效值
+     * 返回不可使用的错误快照，绝不修改原配置。prefs 为 null 时返回默认值快照。
      */
     public static Snapshot read(@Nullable SharedPreferences prefs) {
         // 空的 MemoryPrefs 对每个键都回落默认值，行为上就是“默认值快照”。

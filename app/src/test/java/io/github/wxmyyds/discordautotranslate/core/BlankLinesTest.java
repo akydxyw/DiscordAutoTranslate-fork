@@ -101,31 +101,4 @@ public class BlankLinesTest {
         assertTrue(s.separators.isEmpty());
     }
 
-    // ------------------------------------------------- 片段计数口径
-
-    @Test
-    public void segmentCountIgnoresBlankOnlyNodes() {
-        // 只含空白的节点是结构，不是正文：不占译文片段。
-        assertEquals(0, TextExtractor.countSegments("\n\n"));
-        assertEquals(0, TextExtractor.countSegments(""));
-        assertEquals(0, TextExtractor.countSegments(null));
-    }
-
-    @Test
-    public void segmentCountCountsParagraphsInsideOneNode() {
-        // 一条纯文本消息 "你好\n\n世界" 整体是一个节点，但有两个可翻译段落。
-        assertEquals(2, TextExtractor.countSegments("你好\n\n世界"));
-        assertEquals(3, TextExtractor.countSegments("a\n\nb\n\nc"));
-    }
-
-    @Test
-    public void segmentCountTreatsSingleNewlineAsOneChunk() {
-        // 单个换行不是段落分隔：仍是一个片段。
-        assertEquals(1, TextExtractor.countSegments("first\nsecond"));
-    }
-
-    @Test
-    public void segmentCountIgnoresLeadingAndTrailingBlankLines() {
-        assertEquals(1, TextExtractor.countSegments("\n\nhello\n\n"));
-    }
 }

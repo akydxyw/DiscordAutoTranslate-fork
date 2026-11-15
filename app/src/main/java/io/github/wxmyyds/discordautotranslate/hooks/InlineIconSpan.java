@@ -1,9 +1,10 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.drawable.Drawable;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.text.style.ImageSpan;
 import android.view.View;
@@ -11,6 +12,7 @@ import android.view.View;
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
+import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -87,31 +89,22 @@ public final class InlineIconSpan extends ImageSpan {
     private static final long SPIN_DURATION_MS = 900L;
 
     /** 收集失效目标的深度与数量上限，防御异常视图树。 */
-    private static final int SPIN_TARGET_MAX_DEPTH = 8;
-    private static final int SPIN_TARGET_MAX_COUNT = 24;
+    private static final int SPIN_TARGET_MAX_DEPTH = 16;
+    private static final int SPIN_TARGET_MAX_COUNT = 512;
+    private static final int HOST_VIEW_MAX_COUNT = 2048;
 
-    /**
-     * 当前在某个视图上承担动画的 span。
-     *
-     * <p>键是弱引用；值为 span，而 span 只通过弱引用持有视图，因此不存在
-     * 「值强引用键」导致弱键永不回收的引用环。</p>
-     *
-     * <p>复合操作需要原子性，因此不用 {@code Collections.synchronizedMap}，
-     * 统一在 {@link #ANIMATING_LOCK} 下访问。</p>
-     */
-    private static final Map<View, InlineIconSpan> ANIMATING = new WeakHashMap<>();
-    private static final Object ANIMATING_LOCK = new Object();
+    /** Weak hosts own their current injected span; all states participate in confirmed teardown. */
+    private static final Map<View, InlineIconSpan> BOUND = new WeakHashMap<>();
+    private static final Object BOUND_LOCK = new Object();
 
     private final int iconPx;
     private final int leadingGapPx;
     private final int trailingGapPx;
 
-    /** 图标所属消息，仅用于诊断日志。 */
-    private final String messageId;
     /** 是否处于翻译中（决定要不要转动）。构造后不再变化：状态变化会重建 span。 */
     private final boolean spinning;
 
-    /** 宿主视图。弱引用：既不固定视图，也避免与 {@link #ANIMATING} 形成强引用环。 */
+    /** 宿主视图。弱引用：既不固定视图，也避免与 {@link #BOUND} 形成强引用环。 */
     @Nullable
     private WeakReference<View> host;
 
@@ -125,6 +118,11 @@ public final class InlineIconSpan extends ImageSpan {
      * 绑定时把卡片内全部 TextView 收集进来，逐个失效。</p>
      */
     private final List<WeakReference<android.widget.TextView>> spinTargets = new ArrayList<>();
+    private WeakReference<android.widget.TextView> shadowTarget;
+    private Object clickSpan;
+    private WeakReference<android.text.Spannable> injectedText;
+    private boolean targetsComplete = true;
+    private int visitedViews;
 
     /** 当前视角（度）。 */
     private volatile float angle;
@@ -154,8 +152,7 @@ public final class InlineIconSpan extends ImageSpan {
                 }
             };
 
-    private InlineIconSpan(Drawable drawable, float density, StateStore.Status status,
-                           String messageId) {
+    private InlineIconSpan(Drawable drawable, float density, StateStore.Status status) {
         super(drawable);
         this.iconPx = InlineIconGeometry.dpToPx(ICON_DP, density);
         this.leadingGapPx = InlineIconGeometry.dpToPxAllowZero(LEADING_GAP_DP, density);
@@ -164,7 +161,6 @@ public final class InlineIconSpan extends ImageSpan {
                 leadingGapPx, iconPx,
                 InlineIconGeometry.dpToPx(MIN_TAP_DP, density),
                 InlineIconGeometry.dpToPxAllowZero(1, density));
-        this.messageId = messageId;
         this.spinning = status == StateStore.Status.TRANSLATING;
     }
 
@@ -174,15 +170,14 @@ public final class InlineIconSpan extends ImageSpan {
      * @param icon      已按状态着色、且已独立复制的 Drawable
      * @param density   屏幕密度
      * @param status    当前翻译状态（配色已体现在 icon 上）
-     * @param messageId 所属消息 ID
      */
     @Nullable
     static InlineIconSpan create(@Nullable Drawable icon, float density,
-                                StateStore.Status status, String messageId) {
+                                StateStore.Status status) {
         if (icon == null || status == null) {
             return null;
         }
-        return new InlineIconSpan(icon, density, status, messageId);
+        return new InlineIconSpan(icon, density, status);
     }
 
     /** 按状态给 Drawable 着色，并返回独立副本（模块缓存的 Drawable 会被多处复用）。 */
@@ -195,9 +190,16 @@ public final class InlineIconSpan extends ImageSpan {
         Drawable copy;
         try {
             Drawable.ConstantState cs = source.getConstantState();
-            copy = cs != null ? cs.newDrawable().mutate() : source.mutate();
+            if (cs == null) {
+                ProjectLog.warnOnce("icon.constantState.missing",
+                        "icon duplication rejected: ConstantState missing");
+                return null;
+            }
+            copy = cs.newDrawable().mutate();
         } catch (Throwable t) {
-            copy = source;
+            ProjectLog.warnOnce("icon.copy.failed", "icon duplication failed error="
+                    + t.getClass().getSimpleName());
+            return null;
         }
         int color;
         switch (status) {
@@ -214,8 +216,10 @@ public final class InlineIconSpan extends ImageSpan {
         }
         try {
             copy.setTint(color);
-        } catch (Throwable ignored) {
-            // 个别 Drawable 不支持 tint；不着色也比不显示好。
+        } catch (Throwable t) {
+            ProjectLog.warnOnce("icon.tint.failed", "icon tint failed error="
+                    + t.getClass().getSimpleName());
+            return null;
         }
         return copy;
     }
@@ -231,38 +235,102 @@ public final class InlineIconSpan extends ImageSpan {
             return;
         }
         InlineIconSpan previous;
-        synchronized (ANIMATING_LOCK) {
-            // 需要旋转的登记为当前动画；不需要旋转的直接清掉登记。
-            previous = spinning ? ANIMATING.put(view, this) : ANIMATING.remove(view);
+        synchronized (BOUND_LOCK) {
+            previous = BOUND.put(view, this);
         }
         if (previous != null && previous != this) {
             previous.terminate();
+            previous.clearShadowSpans();
         }
 
         this.host = new WeakReference<>(view);
+        collectSpinTargets(view);
         if (!spinning) {
             return;
         }
         this.active = true;
         // 同一实例重复添加会被 View 去重（addOnAttachStateChangeListener）。
         view.addOnAttachStateChangeListener(attachListener);
-        collectSpinTargets(view);
         startSpin();
     }
 
-    /** 收集每帧失效目标：宿主本身，加上宿主内部的全部 TextView（Embed 卡片场景）。 */
+    void ownText(android.text.Spannable text, Object clickSpan) {
+        this.clickSpan = clickSpan;
+        this.injectedText = new WeakReference<>(text);
+    }
+
+    static boolean ownsHost(View view) {
+        synchronized (BOUND_LOCK) { return BOUND.containsKey(view); }
+    }
+
+    /** Collect native text owners, including the body renderer's private truncation shadow. */
     private void collectSpinTargets(View hostView) {
         spinTargets.clear();
+        targetsComplete = true;
+        visitedViews = 0;
+        shadowTarget = null;
         if (hostView instanceof android.widget.TextView) {
             spinTargets.add(new WeakReference<>((android.widget.TextView) hostView));
+            collectShadow(hostView);
             return;
         }
         collectTextViews(hostView, 0);
     }
 
+    private void collectShadow(View view) {
+        io.github.wxmyyds.discordautotranslate.core.HookConfiguration config =
+                io.github.wxmyyds.discordautotranslate.core.HookConfiguration.activeConfiguration();
+        org.json.JSONObject render = config == null ? null : config.hook("message.render");
+        org.json.JSONObject target = render == null ? null : render.optJSONObject("target");
+        if (target == null || !view.getClass().getName().equals(target.optString("class"))) return;
+        try {
+            String getter = render.getString("shadowViewGetter");
+            java.lang.reflect.Method method = view.getClass().getDeclaredMethod(getter);
+            method.setAccessible(true);
+            Object shadow = method.invoke(view);
+            if (!(shadow instanceof android.widget.TextView))
+                throw new IllegalStateException("Native shadow text owner unavailable");
+            shadowTarget = new WeakReference<>((android.widget.TextView) shadow);
+            spinTargets.add(shadowTarget);
+        } catch (Exception failure) {
+            targetsComplete = false;
+            ProjectLog.warnOnce("icon.shadow.failed", "native shadow capture failed error="
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /** Remove only module-owned spans from the private measurement buffer; keep its native text. */
+    private void clearShadowSpans() {
+        clearInjectedBuffer();
+        android.widget.TextView shadow = shadowTarget == null ? null : shadowTarget.get();
+        if (shadow == null) return;
+        CharSequence text = shadow.getText();
+        if (!(text instanceof android.text.Spanned)) return;
+        InlineIconSpan[] icons = ((android.text.Spanned) text).getSpans(0, text.length(), InlineIconSpan.class);
+        if (icons.length == 0) return;
+        if (!(text instanceof android.text.Spannable))
+            throw new IllegalStateException("Native shadow spans are immutable");
+        android.text.Spannable mutable = (android.text.Spannable) text;
+        for (InlineIconSpan icon : icons) {
+            icon.clearInjectedBuffer();
+            if (icon.clickSpan != null) mutable.removeSpan(icon.clickSpan);
+            mutable.removeSpan(icon);
+        }
+    }
+
+    private void clearInjectedBuffer() {
+        android.text.Spannable text = injectedText == null ? null : injectedText.get();
+        if (text == null) return;
+        if (clickSpan != null) text.removeSpan(clickSpan);
+        text.removeSpan(this);
+    }
+
     /** 深度与数量有界，防御异常深的视图树。 */
     private void collectTextViews(View view, int depth) {
-        if (depth > SPIN_TARGET_MAX_DEPTH || spinTargets.size() >= SPIN_TARGET_MAX_COUNT) {
+        if (!targetsComplete) return;
+        if (depth > SPIN_TARGET_MAX_DEPTH || ++visitedViews > HOST_VIEW_MAX_COUNT
+                || spinTargets.size() >= SPIN_TARGET_MAX_COUNT) {
+            targetsComplete = false;
             return;
         }
         if (!(view instanceof android.view.ViewGroup)) {
@@ -348,43 +416,76 @@ public final class InlineIconSpan extends ImageSpan {
     private void terminate() {
         active = false;
         running = false;
+        Runnable previousTicker = ticker;
         ticker = null;
         View v = host == null ? null : host.get();
         host = null;
         if (v != null) {
+            if (previousTicker != null) v.removeCallbacks(previousTicker);
             v.removeOnAttachStateChangeListener(attachListener);
         }
     }
 
-    /**
-     * 供 {@link #resetAll} 使用：终止动画，必要时切到主线程摘除视图监听器。
-     */
-    private void terminateThreadSafe() {
-        active = false;
-        running = false;
-        ticker = null;
-        final View v = host == null ? null : host.get();
-        host = null;
-        if (v == null) {
-            return;
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            v.removeOnAttachStateChangeListener(attachListener);
-        } else {
-            v.post(() -> v.removeOnAttachStateChangeListener(attachListener));
+    /** A real native bind relinquishes the old animation even when no new icon will be injected. */
+    public static void stopForHost(View view) {
+        InlineIconSpan previous;
+        synchronized (BOUND_LOCK) { previous = BOUND.get(view); }
+        if (previous != null) {
+            previous.terminate();
+            previous.clearShadowSpans();
         }
     }
 
-    /** 热重载/配置重置时调用：停止所有在途动画，避免旧代次 Runnable 继续存活。 */
-    public static void resetAll() {
-        List<InlineIconSpan> spans;
-        synchronized (ANIMATING_LOCK) {
-            spans = new ArrayList<>(ANIMATING.values());
-            ANIMATING.clear();
+    static void finishBinding(View view) {
+        InlineIconSpan span;
+        synchronized (BOUND_LOCK) { span = BOUND.get(view); }
+        if (span == null) return;
+        span.collectSpinTargets(view);
+        if (span.targetsComplete && !span.hasLiveIcon()) {
+            span.terminate();
+            synchronized (BOUND_LOCK) { BOUND.remove(view, span); }
         }
-        for (InlineIconSpan span : spans) {
-            span.terminateThreadSafe();
+    }
+
+    private boolean hasLiveIcon() {
+        for (WeakReference<android.widget.TextView> reference : spinTargets) {
+            android.widget.TextView view = reference.get();
+            if (view == null) continue;
+            CharSequence text = view.getText();
+            if (text instanceof android.text.Spanned
+                    && ((android.text.Spanned) text).getSpans(0, text.length(),
+                            InlineIconSpan.class).length != 0) return true;
         }
+        return false;
+    }
+
+    /** Called only after runtime admission has closed and admitted business calls have drained. */
+    public static boolean resetAll(long timeoutMs) {
+        synchronized (BOUND_LOCK) {
+            if (BOUND.isEmpty() && !PollIconTouch.hasAttachments()) return true;
+        }
+        return Scheduler.MainThread.runAndAwait(() -> {
+            Map<View, InlineIconSpan> bindings;
+            synchronized (BOUND_LOCK) { bindings = new java.util.IdentityHashMap<>(BOUND); }
+            java.util.Set<View> restore = java.util.Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<>());
+            for (Map.Entry<View, InlineIconSpan> entry : bindings.entrySet()) {
+                InlineIconSpan span = entry.getValue();
+                span.terminate();
+                if (!span.targetsComplete || span.hasLiveIcon()) restore.add(entry.getKey());
+                span.clearShadowSpans();
+            }
+            PollIconTouch.detachAll();
+            RerenderRegistry.restoreNativeHosts(restore);
+            for (Map.Entry<View, InlineIconSpan> entry : bindings.entrySet()) {
+                InlineIconSpan span = entry.getValue();
+                span.collectSpinTargets(entry.getKey());
+                if (!span.targetsComplete || span.hasLiveIcon()) {
+                    throw new IllegalStateException("Native icon cleanup incomplete");
+                }
+            }
+            synchronized (BOUND_LOCK) { BOUND.clear(); }
+        }, timeoutMs);
     }
 
     @Override
@@ -418,8 +519,4 @@ public final class InlineIconSpan extends ImageSpan {
         }
     }
 
-    /** 该 span 占用的水平宽度（含前后间距）。 */
-    int widthPx() {
-        return InlineIconGeometry.spanWidth(leadingGapPx, iconPx, trailingGapPx);
-    }
 }

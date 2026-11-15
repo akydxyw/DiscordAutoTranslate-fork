@@ -1,8 +1,12 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import androidx.annotation.Nullable;
 
+import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
+import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 
 import java.lang.reflect.Constructor;
 import java.util.List;
@@ -10,21 +14,17 @@ import java.util.List;
 /**
  * 构造 Discord 的 {@code StructurableText} 实例（需求 §7 阶段 3）。
  *
- * <p>依据 {@code TextUtilsKt.toSpannable} 的分支（已核对 smali）：
+ * <p>按配置指定的 StructurableText 类型构造 Primitive 与 Annotated 实例。
  * <ul>
  *   <li>{@code AnnotatedStructurableText} → 渲染内容节点列表；</li>
  *   <li>{@code PrimitiveStructurableText} → 整体当纯文本；</li>
  *   <li>其他类型 → 抛 {@code RuntimeException}。</li>
  * </ul>
  *
- * <p>因此替换时必须产出上述两种类型之一。为保留 Markdown，优先产出
- * {@code AnnotatedStructurableText}（见 {@link ContentNodes}）；
- * 若构造器缺失或调用失败，替换明确失败，调用方继续渲染未修改的原对象。</p>
+ * <p>为译文优先保留 Annotated 结构；若构造失败，调用方继续使用原始正文。</p>
  */
 public final class StructurableTextFactory {
 
-    private static volatile Class<?> sPrimitiveClass;
-    private static volatile Class<?> sAnnotatedClass;
     private static volatile Constructor<?> sPrimitiveCtor;
     private static volatile Constructor<?> sAnnotatedCtor;
 
@@ -32,14 +32,11 @@ public final class StructurableTextFactory {
     }
 
     /** 由模块入口在拿到目标 ClassLoader 后初始化。 */
-    public static void init(@Nullable ClassLoader cl) {
-        sPrimitiveClass = Reflect.loadClass(cl,
-                "com.discord.chat.bridge.structurabletext.PrimitiveStructurableText");
-        sAnnotatedClass = Reflect.loadClass(cl,
-                "com.discord.chat.bridge.structurabletext.AnnotatedStructurableText");
-
-        sPrimitiveCtor = ctorOf(sPrimitiveClass, String.class);
-        sAnnotatedCtor = ctorOf(sAnnotatedClass, List.class);
+    public static void init(@Nullable ClassLoader cl, HookConfiguration config) {
+        Class<?> primitiveClass = Reflect.loadClass(cl, config.typeClass("PrimitiveStructurableText"));
+        Class<?> annotatedClass = Reflect.loadClass(cl, config.typeClass("AnnotatedStructurableText"));
+        sPrimitiveCtor = ctorOf(primitiveClass, String.class);
+        sAnnotatedCtor = ctorOf(annotatedClass, List.class);
 
     }
 
@@ -58,8 +55,6 @@ public final class StructurableTextFactory {
     }
 
     public static void reset() {
-        sPrimitiveClass = null;
-        sAnnotatedClass = null;
         sPrimitiveCtor = null;
         sAnnotatedCtor = null;
     }
@@ -102,32 +97,34 @@ public final class StructurableTextFactory {
      * @return 替换对象；无法构造时返回 null（调用方应保持原文）
      */
     @Nullable
-    public static Object forTranslation(@Nullable Object original, String translated) {
-        if (original == null || translated == null) {
-            return null;
+    static Object forPlannedTranslation(@Nullable Object original, String translated,
+                                       @Nullable TextExtractor.Result extracted) {
+        if (original == null || translated == null || extracted == null) {
+            return rejectFactory("INVALID_INPUT");
         }
 
         // 1) 原始是 Annotated：尝试保留 Markdown 结构。
         if (ContentNodes.isAnnotated(original)) {
-            List<?> nodes = ContentNodes.listOf(original);
-            List<Object> replaced = ContentNodes.replaceText(nodes, translated);
-            if (replaced != null) {
-                Object out = annotated(replaced);
-                if (out != null) {
-                    return out;
-                }
-            }
-            // 不接受部分重建，也不退化为纯文本（会丢失 emoji/提及/代码）。
-            // 返回 null，让所有调用路径继续使用未修改的原始结构。
-            return null;
+            if (extracted.tree == null) return rejectFactory("MISSING_TREE");
+            List<Object> replaced = ContentNodes.replacePlanned(extracted.tree, translated);
+            if (replaced == null) return null; // Already classified at the content replacement boundary.
+            Object out = annotated(replaced);
+            return out == null ? rejectFactory("ANNOTATED_CONSTRUCTOR") : out;
         }
 
         // 2) 原始是 Primitive：直接给纯文本。
         if (ContentNodes.isPrimitive(original)) {
-            return primitive(translated);
+            Object out = primitive(translated);
+            return out == null ? rejectFactory("PRIMITIVE_CONSTRUCTOR") : out;
         }
 
         // 3) 未知类型：交给渲染器会抛异常，因此坚持不替换。
+        return rejectFactory("UNSUPPORTED_TYPE");
+    }
+
+    @Nullable
+    private static Object rejectFactory(String reason) {
+        ProjectLog.info("structurable replacement rejected reason=" + reason);
         return null;
     }
 }

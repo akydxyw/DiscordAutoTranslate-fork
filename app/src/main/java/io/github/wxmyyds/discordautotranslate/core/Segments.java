@@ -2,29 +2,16 @@ package io.github.wxmyyds.discordautotranslate.core;
 
 import androidx.annotation.Nullable;
 
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 译文净化与防损坏校验。
+ * 单一文本翻译输入的防损坏校验（含格式与保留叶节点定位标记）。
  *
- * <p>本类曾实现「分段标记协议」（请求给每个可翻译文本节点套
- * {@code <sN>…</sN>} 标记、译文按编号一一取回）。单链路重构（一次无标记
- * 纯文本请求 + 渲染层按结构对齐回填，见 {@code ContentNodes}）后请求侧
- * 机器已删除，只保留两件事：</p>
- * <ul>
- *   <li>{@link #plainTextViolation}：引擎侧防损坏校验，残留标记、模板占位符、
- *       长度比例异常（复读/大面积丢失）的译文直接判失败，宁可显示原文也不把
- *       损坏内容送进节点树；</li>
- *   <li>{@link #strip}：防御性剥离译文中的分段标记。正常链路下引擎校验已
- *       保证译文无标记，这里是渲染侧的最后防线（标记若不剥离，会作为
- *       {@code <s1>} 字面量直接显示在消息里）。</li>
- * </ul>
+ * <p>引擎与渲染层共用 {@link #hasSegmentMarkers} 拒绝残留分段标记，
+ * 不解析、剥离或修复标记。{@link #plainTextViolation} 还检查空文本、
+ * 模板占位符与长度比例异常，不把损坏内容送进节点树。</p>
  */
 public final class Segments {
-
-    /** 形如 {@code <s3>} 的开标记。 */
-    private static final Pattern OPEN = Pattern.compile("<s\\s*(\\d+)\\s*>");
 
     /** 段内夹带的标记碎片（开/闭均算）：协议被破坏，会把标记泄漏成字面量。 */
     private static final Pattern STRAY_MARKER = Pattern.compile("</?s\\s*\\d");
@@ -40,58 +27,15 @@ public final class Segments {
     private Segments() {
     }
 
-    /**
-     * 去掉文本中所有分段标记，只保留译文内容。
-     *
-     * <p>标记之间的内容按顺序拼接，保留标记外的字符（换行等）。
-     * 正常链路下引擎校验已保证译文无标记；若模型凭空幻觉出标记，
-     * 这里负责不让它们以字面量显示给用户。</p>
-     */
-    public static String strip(@Nullable String text) {
-        if (text == null || text.isEmpty()) {
-            return text == null ? "" : text;
-        }
-        StringBuilder out = new StringBuilder(text.length());
-        int i = 0;
-        while (i < text.length()) {
-            Matcher open = OPEN.matcher(text);
-            open.region(i, text.length());
-            if (!open.find()) {
-                out.append(text, i, text.length());
-                break;
-            }
-            out.append(text, i, open.start());
-            int index;
-            try {
-                index = Integer.parseInt(open.group(1));
-            } catch (NumberFormatException e) {
-                i = open.end();
-                continue;
-            }
-            int contentStart = open.end();
-            int close = findClose(text, index, contentStart);
-            if (close < 0) {
-                // 闭合标记缺失：丢弃这个开标记，其余内容照常保留。
-                i = contentStart;
-                continue;
-            }
-            out.append(text, contentStart, close);
-            i = skipClose(text, index, close);
-        }
-        return out.toString();
-    }
-
-    /** 返回闭合标记之后的起始下标。 */
-    private static int skipClose(String text, int index, int closeStart) {
-        Matcher m = Pattern.compile("</s\\s*" + index + "\\s*>").matcher(text);
-        m.region(closeStart, text.length());
-        return m.lookingAt() ? m.end() : closeStart;
+    /** 检测开/闭分段标记及未闭合碎片；只拒绝，不修复。 */
+    public static boolean hasSegmentMarkers(@Nullable String text) {
+        return text != null && STRAY_MARKER.matcher(text).find();
     }
 
     /**
-     * 无标记译文的防损坏校验：非空、无残留标记、无占位符、长度比例合理。
+     * 译文的防损坏校验：非空、无旧分段标记、原样保留结构定位、长度比例合理。
      *
-     * <p>单链路（无标记纯文本请求）在引擎侧返回前调用：复读刷屏（长度
+     * <p>单链路在引擎侧返回前调用：复读刷屏（长度
      * 暴涨）、内容大面积丢失（长度骤减）、标记泄漏与模板占位符都在这里
      * 拦下，判失败由用户手动重试。</p>
      *
@@ -106,15 +50,21 @@ public final class Segments {
         if (translated == null || translated.trim().isEmpty()) {
             return "译文为空";
         }
-        if (STRAY_MARKER.matcher(translated).find()) {
+        if (hasSegmentMarkers(translated)) {
             return "译文中残留分段标记";
         }
         if (PLACEHOLDER_RUN.matcher(translated).find()) {
             return "译文含模板占位符";
         }
-        int n = source.length();
+        if (!RetainedNodeMarkers.matchesSource(translated, source)) {
+            return "保留节点定位标记无效";
+        }
+        String sourceWithoutKeep = RetainedNodeMarkers.withoutMarkers(source);
+        String translationWithoutKeep = RetainedNodeMarkers.withoutMarkers(translated);
+        if (translationWithoutKeep.trim().isEmpty()) return "译文为空";
+        int n = sourceWithoutKeep.length();
         if (n >= 40) {
-            int m = translated.length();
+            int m = translationWithoutKeep.length();
             if (m * 4 < n) {
                 return "译文长度异常（" + m + "/" + n + "）：疑似内容丢失";
             }
@@ -123,17 +73,5 @@ public final class Segments {
             }
         }
         return null;
-    }
-
-    /** 找到与开标记配对的下一个 {@code </sN>}。 */
-    private static int findClose(String text, int index, int from) {
-        String close = "</s" + index + ">";
-        int best = text.indexOf(close, from);
-        if (best >= 0) {
-            return best;
-        }
-        // 容忍模型在闭合标记内加了空白，例如 </s1 >
-        Matcher m = Pattern.compile("</s\\s*" + index + "\\s*>").matcher(text);
-        return m.find(from) ? m.start() : -1;
     }
 }

@@ -2,30 +2,29 @@ package io.github.wxmyyds.discordautotranslate.translate;
 
 import androidx.annotation.Nullable;
 
+import java.util.concurrent.Callable;
+
 import io.github.wxmyyds.discordautotranslate.core.Config;
-import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 
 /**
  * 连接测试与测试翻译（需求 §3.1、§5.5、§8：可测试 API 连接和实际翻译）。
  *
- * <p>由设置界面调用，同步执行，调用方需自行放到后台线程。
- * 返回结构化结果以便界面显示明确错误。</p>
+ * <p>由设置界面创建单次 Call，在后台线程同步执行并在页面停止时主动取消。
+ * 返回设置页实际消费的成功标志、译文与耗时。</p>
  */
 public final class ApiTester {
 
     /** 测试结果。 */
     public static final class Result {
         public final boolean ok;
-        public final String message;
         /** 测试翻译时的译文（仅成功时有值）。 */
         @Nullable
         public final String translated;
         /** 耗时毫秒。 */
         public final long elapsedMs;
 
-        Result(boolean ok, String message, @Nullable String translated, long elapsedMs) {
+        Result(boolean ok, @Nullable String translated, long elapsedMs) {
             this.ok = ok;
-            this.message = message;
             this.translated = translated;
             this.elapsedMs = elapsedMs;
         }
@@ -39,38 +38,63 @@ public final class ApiTester {
     }
 
     /**
-     * 测试连接：只做配置校验 + 一次真实请求。
-     *
-     * <p>说明：内置协议没有统一的“健康检查”端点，因此连接测试等价于
-     * 用一段固定文本执行一次真实翻译请求，并校验响应能被解析。
-     * 这样能同时覆盖 URL、认证、协议、模型四项配置。</p>
+     * Create before executor submission so cancellation also covers queued work.
+     * Connection checks use DEFAULT_TEST_TEXT through this same request chain.
      */
-    public static Result testConnection(Config.Snapshot cfg) {
-        return testTranslation(cfg, DEFAULT_TEST_TEXT);
+    public static Call newCall(Config.Snapshot cfg, String text) {
+        return new Call(new JsonApiEngine(cfg), text);
     }
 
-    /** 测试翻译：用指定文本走完整流程，返回译文或明确的错误信息。 */
-    public static Result testTranslation(Config.Snapshot cfg, String text) {
-        long start = System.currentTimeMillis();
-        try {
-            // 与真实请求共用同一套配置校验，避免规则不一致。
-            JsonApiEngine.validateConfig(cfg);
+    /** One-shot synchronous request owner; cancellation actively disconnects HTTP I/O. */
+    public static final class Call implements Callable<Result> {
+        private final JsonApiEngine engine;
+        private final String text;
+        private boolean used;
+        private boolean cancelled;
+        @Nullable
+        private Thread worker;
 
-            JsonApiEngine engine = new JsonApiEngine(cfg);
-            String translated = engine.translate(text);
+        Call(JsonApiEngine engine, String text) {
+            this.engine = engine;
+            this.text = text;
+        }
 
-            long ms = System.currentTimeMillis() - start;
-            return new Result(true, "成功（" + ms + "ms）", translated, ms);
+        @Override
+        public Result call() {
+            long start = System.currentTimeMillis();
+            synchronized (this) {
+                if (used) {
+                    throw new IllegalStateException("API test calls cannot be reused");
+                }
+                used = true;
+                if (cancelled) {
+                    return new Result(false, null, System.currentTimeMillis() - start);
+                }
+                // Publish before engine registration. cancel() interrupts this worker
+                // in that gap; JsonApiEngine checks it before opening a connection.
+                worker = Thread.currentThread();
+            }
+            Result result;
+            try {
+                String translated = engine.translate(text);
+                result = new Result(true, translated, System.currentTimeMillis() - start);
+            } catch (Throwable failure) {
+                result = new Result(false, null, System.currentTimeMillis() - start);
+            }
+            synchronized (this) {
+                worker = null;
+                return cancelled
+                        ? new Result(false, null, System.currentTimeMillis() - start) : result;
+            }
+        }
 
-        } catch (TranslationException e) {
-            long ms = System.currentTimeMillis() - start;
-            return new Result(false, e.userMessage(), null, ms);
-        } catch (Throwable t) {
-            long ms = System.currentTimeMillis() - start;
-            return new Result(false,
-                    "失败：" + t.getClass().getSimpleName()
-                            + (t.getMessage() == null ? "" : "：" + t.getMessage()),
-                    null, ms);
+        public synchronized void cancel() {
+            cancelled = true;
+            if (worker != null) {
+                // Keep ownership until cancel returns: a completed call must never
+                // interrupt unrelated work subsequently assigned to the same thread.
+                engine.cancel(worker);
+            }
         }
     }
 
@@ -84,13 +108,9 @@ public final class ApiTester {
             // 与真实请求共用同一套配置校验，避免两处规则不一致。
             JsonApiEngine.validateConfig(cfg);
             long ms = System.currentTimeMillis() - start;
-            return new Result(true, "配置检查通过（" + ms + "ms）", null, ms);
-        } catch (TranslationException e) {
-            return new Result(false, e.userMessage(), null,
-                    System.currentTimeMillis() - start);
-        } catch (Throwable t) {
-            return new Result(false, "配置检查失败：" + t.getClass().getSimpleName(),
-                    null, System.currentTimeMillis() - start);
+            return new Result(true, null, ms);
+        } catch (Throwable failure) {
+            return new Result(false, null, System.currentTimeMillis() - start);
         }
     }
 }
