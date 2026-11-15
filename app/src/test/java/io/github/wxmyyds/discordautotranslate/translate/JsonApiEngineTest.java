@@ -22,6 +22,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -169,6 +170,53 @@ public class JsonApiEngineTest {
             assertEquals(1, opens.get());
             assertTrue(active(engine).isEmpty());
         }
+    }
+
+    @Test
+    public void httpSuccessWithPartialTranslationCanStillFailWithReadTimeout() throws Exception {
+        byte[] prefix = ("data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n")
+                .getBytes(StandardCharsets.UTF_8);
+        FakeConnection connection = new FakeConnection(new InputStream() {
+            private int offset;
+            @Override public int read() throws IOException {
+                if (offset < prefix.length) return prefix[offset++] & 0xff;
+                throw new SocketTimeoutException("private response detail");
+            }
+        });
+        AtomicInteger opens = new AtomicInteger();
+        JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_COMPATIBLE, true),
+                http(url -> { opens.incrementAndGet(); return connection; }));
+        try {
+            engine.translate("hello");
+            fail("Partial translation without a completed stream must not be accepted");
+        } catch (TranslationException failure) {
+            assertEquals(TranslationException.Kind.TIMEOUT, failure.kind());
+            assertTrue(failure.getCause() instanceof SocketTimeoutException);
+            assertFalse(failure.userMessage().contains("private response detail"));
+        }
+        assertEquals(200, connection.status);
+        assertEquals(1, opens.get());
+        assertTrue(connection.disconnected);
+        assertTrue(active(engine).isEmpty());
+    }
+
+    @Test
+    public void httpSuccessWithEofBeforeDoneRemainsParseFailureNotTimeout() throws Exception {
+        FakeConnection connection = new FakeConnection(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n");
+        AtomicInteger opens = new AtomicInteger();
+        JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_COMPATIBLE, true),
+                http(url -> { opens.incrementAndGet(); return connection; }));
+        try {
+            engine.translate("hello");
+            fail("Missing protocol end event must reject partial translation");
+        } catch (TranslationException failure) {
+            assertEquals(TranslationException.Kind.PARSE, failure.kind());
+        }
+        assertEquals(200, connection.status);
+        assertEquals(1, opens.get());
+        assertTrue(connection.disconnected);
+        assertTrue(active(engine).isEmpty());
     }
 
     @Test

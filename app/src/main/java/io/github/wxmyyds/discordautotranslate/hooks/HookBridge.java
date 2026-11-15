@@ -405,7 +405,11 @@ public final class HookBridge {
                            @Nullable String translated, @Nullable Throwable error) {
         HookDiagnostics.info("translation result received accepted=" + accepted
                 + " translatedPresent=" + (translated != null && !translated.isEmpty())
-                + " errorClass=" + (error == null ? "none" : error.getClass().getSimpleName()));
+                + " errorClass=" + (error == null ? "none" : error.getClass().getSimpleName())
+                + " errorKind=" + (error instanceof TranslationException
+                        ? ((TranslationException) error).kind().name() : "none")
+                + " causeClass=" + (error == null || error.getCause() == null
+                        ? "none" : error.getCause().getClass().getSimpleName()));
         boolean success = accepted && error == null && translated != null && !translated.isEmpty();
         if (!StateStore.get().complete(task, accepted, translated,
                 success ? null : accepted ? describe(error) : null)) return;
@@ -441,7 +445,10 @@ public final class HookBridge {
             return;
         }
         TranslationCache.get().remove(entry.contentHash);
-        if (StateStore.get().rejectRender(id, translated)) refreshTranslation(id);
+        if (StateStore.get().rejectRender(id, translated)) {
+            HookDiagnostics.info("translation render rejected: native structure reconstruction failed");
+            refreshTranslation(id);
+        }
     }
 
     /** 原文/译文切换：由图标点击触发，不触发新请求（需求 §2.4）。 */

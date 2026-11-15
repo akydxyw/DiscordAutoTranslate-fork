@@ -4,6 +4,8 @@ import static org.junit.Assert.*;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
 import io.github.wxmyyds.discordautotranslate.core.TranslationTaskId;
 import io.github.wxmyyds.discordautotranslate.core.TranslationCache;
+import io.github.wxmyyds.discordautotranslate.core.TranslationException;
+import java.net.SocketTimeoutException;
 import org.junit.Before;
 import org.junit.After;
 import org.junit.Test;
@@ -26,6 +28,31 @@ public class TranslationResultOwnershipTest {
         bridge.onTranslateResult(current, true, "new result", null);
         assertEquals("new result", next.translatedText);
         assertEquals("new result", TranslationCache.get().get("new"));
+    }
+
+    @Test public void responseFailureDoesNotCacheAPartialTranslation() {
+        StateStore.Entry entry = store.obtain("row", "hash");
+        TranslationTaskId task = store.begin(entry);
+        bridge.onTranslateResult(task, true, null, new TranslationException(
+                TranslationException.Kind.TIMEOUT, "private detail",
+                new SocketTimeoutException("private cause")));
+        assertEquals(StateStore.Status.FAILED, entry.status);
+        assertNull(entry.translatedText);
+        assertNull(TranslationCache.get().get("hash"));
+        assertFalse(entry.lastError.contains("private"));
+    }
+
+    @Test public void nativeRenderRejectionInvalidatesOnlyTheMatchingCompletedTranslation() {
+        StateStore.Entry entry = store.obtain("row", "hash");
+        bridge.onTranslateResult(store.begin(entry), true, "译文", null);
+        bridge.onTranslationRenderRejected("row", "outdated result");
+        assertEquals(StateStore.Status.TRANSLATED, entry.status);
+        assertEquals("译文", TranslationCache.get().get("hash"));
+        bridge.onTranslationRenderRejected("row", "译文");
+        assertEquals(StateStore.Status.FAILED, entry.status);
+        assertNull(entry.translatedText);
+        assertNull(TranslationCache.get().get("hash"));
+        assertTrue(entry.showingOriginal);
     }
 
     @Test public void inactiveRuntimeCannotCreateStateOrRetryFailedWork() {
