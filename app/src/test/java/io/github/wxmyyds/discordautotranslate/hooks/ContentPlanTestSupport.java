@@ -16,7 +16,8 @@ final class ContentPlanTestSupport {
     static List<String> align(String span, List<Integer> groups,
                               List<Boolean> lists, List<Boolean> lineBreaks) {
         try {
-            return ContentNodes.alignSpanToParts(span, groups, lists, lineBreaks);
+            return ContentNodes.alignSpanToParts(span, groups, lists, lineBreaks,
+                    java.util.Collections.nCopies(groups.size(), 1));
         } catch (ContentNodes.Rejection rejected) {
             return null;
         }

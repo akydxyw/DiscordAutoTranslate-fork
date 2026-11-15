@@ -484,7 +484,7 @@ public class ContentTreeTest {
         ContentTree tree = compiled(list(new TextContentNode("first"), inline, code, unicode,
                 new TextContentNode("second"), url, custom, new TextContentNode("third")));
         TextExtractor.Result result = extracted(tree);
-        assertEquals("first \n \uD83D\uDE42 second https://example.com/ExactId  :wave: third", result.text);
+        assertEquals("first   \uD83D\uDE42 second https://example.com/ExactId  :wave: third", result.text);
         assertEquals(3, result.segmentCount);
         assertEquals(3, result.textNodeCount);
         assertEquals(4, result.opaqueNodeCount);
@@ -694,6 +694,46 @@ public class ContentTreeTest {
         assertEquals(3, compiled(list(new TextContentNode("a\n\nb\n\nc"))).segmentCount);
         assertEquals(1, compiled(list(new TextContentNode("first\nsecond"))).segmentCount);
         assertEquals(1, compiled(list(new TextContentNode("\n\nhello\n\n"))).segmentCount);
+    }
+
+    @Test
+    public void chunkLineCountsAreImmutableAndSharedNodeMutationCannotChangeCapturedAlignment() {
+        String original = " first\ncontinuation\n\nsecond ";
+        TextContentNode shared = new TextContentNode(original);
+        ContentNodesTest.TextContentNode lf = new ContentNodesTest.TextContentNode("\n");
+        ContentTree tree = compiled(list(shared, lf, shared));
+        ContentTree.Node first = tree.root.children.get(0);
+        ContentTree.Node second = tree.root.children.get(2);
+        assertNotSame(first, second);
+        assertSame(shared, first.original);
+        assertSame(shared, second.original);
+        assertEquals(Arrays.asList(2, 1), first.chunkLineCounts);
+        assertEquals(Arrays.asList(2, 1), second.chunkLineCounts);
+        assertEquals(first.chunks.size(), first.chunkLineCounts.size());
+        assertThrows(UnsupportedOperationException.class, () -> first.chunkLineCounts.clear());
+        assertThrows(UnsupportedOperationException.class, () -> second.chunkLineCounts.set(0, 9));
+        assertEquals(2, shared.reads);
+
+        shared.content = "mutated single-line text";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            assertEquals(original + "\n" + original, extracted(tree).text);
+            assertEquals(Arrays.asList(2, 1), first.chunkLineCounts);
+            assertEquals(Arrays.asList(2, 1), second.chunkLineCounts);
+            List<Object> rebuilt = ContentNodes.replaceChecked(tree, "甲\n乙\n\n丙\n丁\n戊\n\n己");
+            assertEquals(" 甲\n乙\n\n丙 ", ((TextContentNode) rebuilt.get(0)).content);
+            assertSame(lf, rebuilt.get(1));
+            assertEquals(" 丁\n戊\n\n己 ", ((TextContentNode) rebuilt.get(2)).content);
+            assertNotSame(rebuilt.get(0), rebuilt.get(2));
+            assertEquals(2, shared.reads);
+            assertEquals("mutated single-line text", shared.content);
+        }
+
+        ContentTree.Node mixed = compiled(list(new TextContentNode(
+                "\n first\ncontinuation\n\nhttps://example.com/ExactId\n\nlast\ncontinuation\n")))
+                .root.children.get(0);
+        assertEquals(Arrays.asList(2, 1, 2), mixed.chunkLineCounts);
+        assertEquals(Arrays.asList(true, false, true), mixed.translatable);
+        assertEquals(2, mixed.segmentCount);
     }
 
     @Test

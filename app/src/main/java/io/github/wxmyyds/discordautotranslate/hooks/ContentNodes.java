@@ -414,7 +414,8 @@ public final class ContentNodes {
         List<String> runParts = alignSpanToParts(run,
                 plan.groupIds.subList(first, last + 1),
                 plan.listFlagsIn(first, last + 1),
-                plan.lineBreakFlagsIn(first, last + 1));
+                plan.lineBreakFlagsIn(first, last + 1),
+                plan.sourceLinesIn(first, last + 1));
         for (int i = 0; i < runParts.size(); i++) {
             String p = runParts.get(i);
             if (p != null && !p.trim().isEmpty()) {
@@ -456,7 +457,7 @@ public final class ContentNodes {
         boolean hasAnchors = !plan.urls.isEmpty() || !plan.emojiAnchors.isEmpty();
         if (!hasAnchors) {
             return alignSpanToParts(plain, plan.groupIds, plan.listFlags,
-                    plan.lineBreakFlagsIn(0, plan.groupIds.size()));
+                    plan.lineBreakFlagsIn(0, plan.groupIds.size()), plan.sourceLineCounts);
         }
         // 逐个令牌定位。锚点只切间隔、不产出片段；片段在其后的间隔里分配。
         List<String> parts = new ArrayList<>(
@@ -478,7 +479,8 @@ public final class ContentNodes {
             List<String> spanParts = alignSpanToParts(plain.substring(from, at),
                     plan.groupIds.subList(segStart, segEnd),
                     plan.listFlagsIn(segStart, segEnd),
-                    plan.lineBreakFlagsIn(segStart, segEnd));
+                    plan.lineBreakFlagsIn(segStart, segEnd),
+                    plan.sourceLinesIn(segStart, segEnd));
             copySpan(spanParts, parts, segStart);
             from = at + anchor.length();
             segStart = segEnd;
@@ -486,7 +488,8 @@ public final class ContentNodes {
         List<String> tailParts = alignSpanToParts(plain.substring(from),
                 plan.groupIds.subList(segStart, plan.groupIds.size()),
                 plan.listFlagsIn(segStart, plan.groupIds.size()),
-                plan.lineBreakFlagsIn(segStart, plan.groupIds.size()));
+                plan.lineBreakFlagsIn(segStart, plan.groupIds.size()),
+                plan.sourceLinesIn(segStart, plan.groupIds.size()));
         copySpan(tailParts, parts, segStart);
         return parts;
     }
@@ -502,12 +505,13 @@ public final class ContentNodes {
     }
 
     /**
-     * 按结构类型执行唯一切分：列表项逐行、显式换行逐行，其余按段落块逐片段对应。
+     * 按结构类型执行唯一切分：源换行/列表边界按每槽捕获行数，其余按段落块对应。
      * 任一数量或结构不匹配都拒绝整条回填。
      */
     static List<String> alignSpanToParts(String span, List<Integer> groups,
                                          @Nullable List<Boolean> listFlags,
-                                         @Nullable List<Boolean> lineBreakBefore) {
+                                         @Nullable List<Boolean> lineBreakBefore,
+                                         List<Integer> sourceLineCounts) {
         int segments = groups.size();
         if (segments == 0) {
             if (!span.trim().isEmpty()) throw reject(RejectionReason.UNASSIGNED_TEXT);
@@ -536,14 +540,22 @@ public final class ContentNodes {
             String block = chunks.get(chunk++);
             if (end - segment > 1) {
                 String[] lines = block.split("\n", -1);
-                if (lines.length != end - segment) {
-                    throw new Rejection(RejectionReason.LINE_COUNT, end - segment, lines.length);
+                int expectedLines = 0;
+                for (int i = segment; i < end; i++) expectedLines += sourceLineCounts.get(i);
+                if (lines.length != expectedLines) {
+                    throw new Rejection(RejectionReason.LINE_COUNT, expectedLines, lines.length);
                 }
-                for (int i = segment; i < end; i++) {
-                    String line = lines[i - segment];
+                for (String line : lines) {
                     if (line.trim().isEmpty()) throw reject(RejectionReason.LINE_EMPTY);
-                    if (isListSegment(listFlags, i)) line = stripListMarker(line);
-                    parts.set(i, line);
+                }
+                List<String> lineValues = java.util.Arrays.asList(lines);
+                int offset = 0;
+                for (int i = segment; i < end; i++) {
+                    int count = sourceLineCounts.get(i);
+                    String value = String.join("\n", lineValues.subList(offset, offset + count));
+                    if (isListSegment(listFlags, i)) value = stripListMarker(value);
+                    parts.set(i, value);
+                    offset += count;
                 }
             } else {
                 String value = block;
@@ -610,8 +622,10 @@ public final class ContentNodes {
         final List<Integer> groupIds = new ArrayList<>();
         /** 与 {@code groupIds} 平行：该片段是否位于列表项内。 */
         final List<Boolean> listFlags = new ArrayList<>();
-        /** 与片段平行：当前片段前是否有显式换行节点。 */
+        /** 与片段平行：当前片段前是否有已捕获的源换行（文本空白或 BREAK）。 */
         final List<Boolean> lineBreakBefore = new ArrayList<>();
+        /** 与片段平行：该片段的源文本内部行数，不能假定每个槽只占一行。 */
+        final List<Integer> sourceLineCounts = new ArrayList<>();
         /** 按树序的 URL 定位标记（原样 URL 文本）。 */
         final List<String> urls = new ArrayList<>();
         /** 与 {@code urls} 平行：该 URL 之前的可翻译片段数（间隔边界）。 */
@@ -631,6 +645,10 @@ public final class ContentNodes {
 
         List<Boolean> lineBreakFlagsIn(int segStart, int segEnd) {
             return new ArrayList<>(lineBreakBefore.subList(segStart, segEnd));
+        }
+
+        List<Integer> sourceLinesIn(int segStart, int segEnd) {
+            return sourceLineCounts.subList(segStart, segEnd);
         }
 
         /** [segStart, segEnd) 范围片段对应的列表项标记子列表。 */
@@ -671,7 +689,7 @@ public final class ContentNodes {
                     continue;
                 case ITEM_START:
                     if (!w.plan.groupIds.isEmpty()) w.forceNewGroup = true;
-                    w.sep.append("\n• ");
+                    w.separatorNewlines++; // Native list-item line boundary, not opaque text.
                     w.listLevel++;
                     continue;
                 case ITEM_END:
@@ -690,43 +708,43 @@ public final class ContentNodes {
                     continue;
                 }
                 if (BlankLines.isBlank(s)) {
-                    w.sep.append(s); // 空行结构节点：段落分隔的一部分
+                    addSourceWhitespace(w, s, 0, s.length());
                     continue;
                 }
                 int lead = node.leadingEnd;
                 int tail = node.trailingStart;
-                w.sep.append(s, 0, lead);
+                addSourceWhitespace(w, s, 0, lead);
                 for (int i = 0; i < node.chunks.size(); i++) {
-                    if (i > 0) w.sep.append(node.separators.get(i - 1));
+                    if (i > 0) {
+                        String separator = node.separators.get(i - 1);
+                        addSourceWhitespace(w, separator, 0, separator.length());
+                    }
                     String chunk = node.chunks.get(i);
                     if (BlankLines.isBlank(chunk)) {
-                        w.sep.append(chunk);
+                        addSourceWhitespace(w, chunk, 0, chunk.length());
                         continue;
                     }
                     if (TextExtractor.isUrlLike(chunk)) {
                         // 节点内的 URL 文本块：定位标记，与链接节点同口径。
                         addUrlToken(w, chunk.trim());
-                        w.sep.append(chunk);
                         continue;
                     }
                     int segIndex = w.plan.groupIds.size();
-                    addSegment(w);
+                    addSegment(w, node.chunkLineCounts.get(i));
                     int styleId = 0;
                     if (event.styled) {
                         styleId = ++w.plan.styleMarkers;
                     }
                     w.plan.tokens.add(new PlanToken(segIndex, styleId));
                 }
-                w.sep.append(s, tail, s.length());
+                addSourceWhitespace(w, s, tail, s.length());
                 continue;
             }
             switch (node.kind) {
-                case INLINE_CODE: case OPAQUE: w.sep.append(' '); break;
-                case CODE_BLOCK: w.sep.append('\n'); break;
-                case URL: addUrlToken(w, node.text); w.sep.append(' '); break;
-                case EMOJI: addEmojiToken(w, node.text);
-                    w.sep.append(' ').append(node.text).append(' '); break;
-                case BREAK: w.lineBreakBefore = true; w.sep.append('\n'); break;
+                case INLINE_CODE: case OPAQUE: case CODE_BLOCK: break;
+                case URL: addUrlToken(w, node.text); break;
+                case EMOJI: addEmojiToken(w, node.text); break;
+                case BREAK: w.separatorNewlines++; break;
                 default: throw new IllegalStateException("Non-leaf content event");
             }
         }
@@ -736,10 +754,9 @@ public final class ContentNodes {
     private static final class PlanWalk {
         final AlignmentPlan plan = new AlignmentPlan();
         int group;
-        final StringBuilder sep = new StringBuilder();
+        int separatorNewlines;
         int listLevel;
         boolean forceNewGroup;
-        boolean lineBreakBefore;
     }
 
     /**
@@ -767,10 +784,10 @@ public final class ContentNodes {
      * <p>URL 与 emoji 都作为必须保留的定位标记；列表项按独立行分组。
      * {@code forceNewGroup} 由列表项边界推进段落组。</p>
      */
-    private static void addSegment(PlanWalk w) {
-        int separatorNewlines = countNewlines(w.sep);
+    private static void addSegment(PlanWalk w, int sourceLines) {
+        int separatorNewlines = w.separatorNewlines;
         boolean lineBoundary = separatorNewlines < 2
-                && (w.forceNewGroup || w.lineBreakBefore);
+                && (w.forceNewGroup || separatorNewlines == 1);
         if (w.forceNewGroup) {
             w.group++;
             w.forceNewGroup = false;
@@ -780,18 +797,13 @@ public final class ContentNodes {
         w.plan.groupIds.add(w.group);
         w.plan.listFlags.add(w.listLevel > 0);
         w.plan.lineBreakBefore.add(lineBoundary);
-        w.lineBreakBefore = false;
-        w.sep.setLength(0);
+        w.plan.sourceLineCounts.add(sourceLines);
+        w.separatorNewlines = 0;
     }
 
-    private static int countNewlines(CharSequence s) {
-        int n = 0;
-        for (int i = 0; i < s.length(); i++) {
-            if (s.charAt(i) == '\n') {
-                n++;
-            }
-        }
-        return n;
+    /** Count only captured text whitespace; URL/emoji/opaque and synthetic code text give no proof. */
+    private static void addSourceWhitespace(PlanWalk w, String text, int start, int end) {
+        for (int i = start; i < end; i++) if (text.charAt(i) == '\n') w.separatorNewlines++;
     }
 
 }

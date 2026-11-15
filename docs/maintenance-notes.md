@@ -66,6 +66,14 @@
 - `ContentNodes.replacePlanned` 是唯一 null-return 边界；其内部分类异常仅持固定枚举与 expected/actual 数量（无正文、译文、URL、emoji alt、ID、hash 或原异常消息）。区分 URL/emoji 次数、锚点顺序、样式开闭/空内容、未分配文本、缺失/多出段落、源边界歧义、行数、空行/列表项、构造及保留结构变化。Factory 构造失败独立固定码；旧配置构造失败日志合并到该边界，不新增替代回填、忽略锚点或纯文本降级。
 - 测试仅在 test source set 将内部分类拒绝适配为旧 null 断言，保留既有覆盖；新增分类/隐私和同链接重复、emoji 与样式混合的成功覆盖。源单换行 TEXT 歧义明确标为 source-side，尚不能认定实际广告命中了该原因。该修改是诊断增强，不宣称修复该消息。
 
+## 已捕获源换行的对齐修正
+
+- `ae4506e` Actions 实际 529 项测试、0 失败/跳过；诊断 APK 设备最新 11:02:27、11:02:35、11:03:25 等多次在 translatedPresent=true 后报告 SOURCE_BOUNDARY_AMBIGUOUS，定位为源槽边界不足，不是该次超时或 URL/emoji 数量拒绝。无法读取完整实机树/译文，不能把所有歧义都推定成同一种节点形态。
+- 源码确定的缺口是：原 TextContentNode 空白/前导/尾随 LF 已进入请求，却只有独立 BREAK 设置逐行对齐。修正为从当前捕获的源空白 LF 认定行/段落边界；不新增宿主树遍历，不更改文本分块、样式号或锚点策略。
+- `ContentTree` 捕获每块内部行数；连续多槽行运行按总行数核对并分配各槽，保留单槽多行和原始首尾空白。删除旧 sep 文本仓库与 BREAK-only 标记，必需行数参数贯穿每个锚点/样式间隔；旧四参数生产重载不保留，单元测试 unit counts 仅在 test source set 构造。
+- 独立复核发现代码块人为换行会让源 First\n + CODE + Second 提取成 First\n\nSecond；因此代码块统一只贡献空格占位，不改变源 LF/BREAK，也不把占位空白作为行边界。代码内容、language/inline 属性、原节点及 codeHeavy 计数不变；请求与当前计划保持同一种解释，无第二解析/修复链。
+- 代码/不透明模型内部行数不作为边界，仍拒绝真实同行多槽歧义。该修正确认需要 GitHub Actions 及设备复测，不宣称所有实机歧义均已修复。
+
 ## 已确认的架构教训（改代码前先读）
 
 1. **文本转换目标按 profile 变化**：`340013` 使用 `TextUtilsKt.toSpannable`，

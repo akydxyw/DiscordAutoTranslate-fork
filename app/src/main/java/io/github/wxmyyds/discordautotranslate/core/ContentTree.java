@@ -26,6 +26,8 @@ public final class ContentTree {
         public final int trailingStart;
         public final List<String> chunks;
         public final List<String> separators;
+        /** Captured LF-based line count for each chunk, including multiline text in one slot. */
+        public final List<Integer> chunkLineCounts;
         public final List<Boolean> translatable;
 
         private Node(Object original, Kind kind, String semantic, String text, List<Node> children) {
@@ -46,14 +48,19 @@ public final class ContentTree {
             chunks = Collections.unmodifiableList(new ArrayList<>(split.chunks));
             separators = Collections.unmodifiableList(new ArrayList<>(split.separators));
             List<Boolean> flags = new ArrayList<>();
+            List<Integer> lines = new ArrayList<>();
             int count = 0;
             for (String chunk : chunks) {
+                int lineCount = 1;
+                for (int i = 0; i < chunk.length(); i++) if (chunk.charAt(i) == '\n') lineCount++;
+                lines.add(lineCount);
                 boolean translate = kind == Kind.TEXT && !BlankLines.isBlank(chunk)
                         && !TextExtractor.isUrlLike(chunk);
                 flags.add(translate);
                 if (translate) count++;
             }
             translatable = Collections.unmodifiableList(flags);
+            chunkLineCounts = Collections.unmodifiableList(lines);
             segmentCount = count;
         }
     }

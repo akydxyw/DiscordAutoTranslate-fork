@@ -91,9 +91,9 @@ public class ContentRejectionTest {
 
     @Test public void ambiguousSourceBoundaryIsNotClaimedAsAModelCountError() {
         List<?> source = Arrays.asList(new ContentNodesTest.HeadingContentNode(
-                Arrays.asList(new TextContentNode("Title")), 1), new TextContentNode("\n"),
+                Arrays.asList(new TextContentNode("Title")), 1), new TextContentNode(" "),
                 new TextContentNode("5M+ FREE TOKENS"));
-        rejected(source, "标题\n500万以上免费令牌", SOURCE_BOUNDARY_AMBIGUOUS);
+        rejected(source, "标题 500万以上免费令牌", SOURCE_BOUNDARY_AMBIGUOUS);
     }
 
     @Test public void explicitLineCountMismatchReportsExpectedAndActual() {
