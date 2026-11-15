@@ -3,20 +3,24 @@ package io.github.wxmyyds.discordautotranslate.hooks;
 import static org.junit.Assert.*;
 
 import android.graphics.drawable.ColorDrawable;
+import android.text.Spannable;
 import android.text.Spanned;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
 
+import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,8 +28,11 @@ import java.util.List;
 public class InlineIconLifecycleTest {
     private final List<FakeTextView> textViews = new ArrayList<>();
     private final List<View> owners = new ArrayList<>();
+    private HookConfiguration previousConfiguration;
 
     @Before public void setUp() throws Exception {
+        previousConfiguration = HookConfiguration.activeConfiguration();
+        activateBodyProfile(shadowGetter().getName());
         assertTrue(HookRuntime.suspendAndAwait(0L));
         RerenderRegistry.clear();
         HookBridge.get().reset();
@@ -35,21 +42,43 @@ public class InlineIconLifecycleTest {
     }
 
     @After public void tearDown() throws Exception {
-        HookRuntime.suspend();
-        installDispatcher();
-        // Use the public lifecycle to release even ownership intentionally retained by failure tests.
-        for (FakeTextView view : textViews) view.text = "native";
-        for (View owner : owners) {
-            if (owner instanceof FakeTree) ((FakeTree) owner).child = textViews.get(0);
-            InlineIconSpan.finishBinding(owner);
-        }
         try {
+            HookRuntime.suspend();
+            installDispatcher();
+            activateBodyProfile(shadowGetter().getName());
+            // Use the public lifecycle to release even ownership intentionally retained by failure tests.
+            for (FakeTextView view : textViews) view.text = "native";
+            for (View owner : owners) {
+                if (owner instanceof FakeBodyView) ((FakeBodyView) owner).text = "native";
+                if (owner instanceof FakeTree) ((FakeTree) owner).child = textViews.get(0);
+                InlineIconSpan.finishBinding(owner);
+            }
             assertTrue(InlineIconSpan.resetAll(0L));
         } finally {
             RerenderRegistry.clear();
             HookBridge.get().reset();
             Scheduler.MainThread.clear();
+            HookConfiguration.activate(previousConfiguration);
         }
+    }
+
+    private static Method shadowGetter() throws Exception {
+        Method getter = FakeBodyView.class.getDeclaredMethod("getShadowView");
+        assertTrue(Modifier.isPrivate(getter.getModifiers()));
+        return getter;
+    }
+
+    private static void activateBodyProfile(String getter) throws Exception {
+        Method render = FakeBodyView.class.getDeclaredMethod("render", Object.class, Object.class);
+        JSONObject target = new JSONObject().put("class", render.getDeclaringClass().getName())
+                .put("name", render.getName()).put("parameterCount", render.getParameterCount())
+                .put("static", Modifier.isStatic(render.getModifiers()));
+        JSONObject root = new JSONObject().put("schemaVersion", 1).put("versionCode", 352017)
+                .put("hooks", new JSONObject().put("message.render", new JSONObject()
+                        .put("enabled", true).put("target", target).put("shadowViewGetter", getter)));
+        HookConfiguration config = HookConfiguration.parse(root.toString(), 352017);
+        assertEquals(render, config.findMethod("message.render", FakeBodyView.class.getClassLoader()));
+        HookConfiguration.activate(config);
     }
 
     private static void installDispatcher() throws Exception {
@@ -85,6 +114,126 @@ public class InlineIconLifecycleTest {
         RerenderRegistry.register("current-message", host, receiver,
                 NativeBinding.class.getMethod("bind", FakeTextView.class, Object.class,
                         Object.class), new Object[]{host, content, options});
+    }
+
+    private ShadowFixture shadowFixture() {
+        FakeTextView shadowView = new FakeTextView();
+        textViews.add(shadowView);
+        FakeBodyView host = new FakeBodyView(shadowView);
+        owners.add(host);
+        ShadowFixture fixture = new ShadowFixture(host);
+        fixture.icon.ownText(fixture.source, fixture.click);
+        fixture.icon.bindHost(host);
+        // Native rendering copies spans to a private buffer while visible text has its own slot.
+        host.text = new IconText("visible translated \uFFFC", fixture.icon);
+        shadowView.text = fixture.shadow;
+        InlineIconSpan.finishBinding(host);
+        assertNotSame(fixture.source, fixture.shadow);
+        assertNotSame(fixture.source, host.getText());
+        assertNotSame(fixture.shadow, host.getText());
+        fixture.assertOwnedSpansPresent();
+        return fixture;
+    }
+
+    private static void registerBody(FakeBodyView host, String messageId,
+                                     Object content, Object options) throws Exception {
+        HookBridge.get().bindView(host, messageId);
+        RerenderRegistry.register(messageId, host, host,
+                FakeBodyView.class.getDeclaredMethod("render", Object.class, Object.class),
+                new Object[]{content, options});
+    }
+
+    @Test public void shadowOnlyIconSurvivesFinishBindingUntilConfirmedNativeCleanup()
+            throws Exception {
+        ShadowFixture fixture = shadowFixture();
+        fixture.host.text = "visible native text without icon";
+        InlineIconSpan.finishBinding(fixture.host);
+        assertTrue("The private shadow must keep its cleanup owner", InlineIconSpan.ownsHost(fixture.host));
+        fixture.assertOwnedSpansPresent();
+        Object options = new Object();
+        registerBody(fixture.host, "shadow-only", "native restored", options);
+
+        assertTrue(InlineIconSpan.resetAll(0L));
+        assertEquals(1, fixture.host.calls);
+        assertEquals("native restored", fixture.host.getText());
+        assertSame(options, fixture.host.options);
+        fixture.assertCleanBuffers();
+        assertFalse(InlineIconSpan.ownsHost(fixture.host));
+    }
+
+    @Test public void noIconRebindClearsSourceAndUnchangedNativeShadow() {
+        ShadowFixture fixture = shadowFixture();
+        try (InlineIconInjector.HostScope ignored = InlineIconInjector.enterHost(fixture.host, null)) {
+            // Native renderer can skip updating its shadow when the next bind needs no icon.
+            fixture.host.text = "next native message";
+            fixture.assertCleanBuffers();
+        }
+        assertEquals("next native message", fixture.host.getText());
+        assertSame(fixture.shadow, fixture.host.shadow.getText());
+        assertEquals(0, fixture.host.calls);
+        assertFalse(InlineIconSpan.ownsHost(fixture.host));
+        Scheduler.MainThread.clear();
+        assertTrue("A completed no-icon bind needs no native replay", InlineIconSpan.resetAll(0L));
+    }
+
+    @Test public void resetClearsBothBuffersBeforeLatestNativeBindRestoresVisibleText()
+            throws Exception {
+        ShadowFixture fixture = shadowFixture();
+        Object oldOptions = new Object();
+        Object latestOptions = new Object();
+        registerBody(fixture.host, "old-body", "old original body", oldOptions);
+        registerBody(fixture.host, "latest-body", "latest original body", latestOptions);
+        fixture.host.expectedSource = fixture.source;
+        fixture.host.expectedShadow = fixture.shadow;
+
+        assertTrue(InlineIconSpan.resetAll(0L));
+        assertEquals(1, fixture.host.calls);
+        assertTrue("Original builder must be clean before native replay", fixture.host.sourceCleanAtReplay);
+        assertTrue("Private shadow must be clean before native replay", fixture.host.shadowCleanAtReplay);
+        assertEquals("latest original body", fixture.host.getText());
+        assertEquals("latest original body", fixture.host.content);
+        assertSame(latestOptions, fixture.host.options);
+        fixture.assertCleanBuffers();
+        assertSame("Cleanup must retain the native shadow buffer", fixture.shadow,
+                fixture.host.shadow.getText());
+        assertFalse(InlineIconSpan.ownsHost(fixture.host));
+    }
+
+    @Test public void replacementSpanClearsPreviousSourceAndShadowWithoutChangingTheirText()
+            throws Exception {
+        ShadowFixture fixture = shadowFixture();
+        InlineIconSpan replacement = icon(StateStore.Status.TRANSLATED);
+        replacement.bindHost(fixture.host);
+        fixture.assertCleanBuffers();
+        fixture.host.text = new IconText("replacement visible \uFFFC", replacement);
+        InlineIconSpan.finishBinding(fixture.host);
+        assertTrue(InlineIconSpan.ownsHost(fixture.host));
+        registerBody(fixture.host, "replacement-body", "native replacement", new Object());
+
+        assertTrue(InlineIconSpan.resetAll(0L));
+        assertEquals(1, fixture.host.calls);
+        assertEquals("native replacement", fixture.host.getText());
+        fixture.assertCleanBuffers();
+    }
+
+    @Test public void unknownShadowGetterRejectsConfirmedCleanupAndRetainsOwnerForRetry()
+            throws Exception {
+        ShadowFixture fixture = shadowFixture();
+        activateBodyProfile("unknownShadowGetter");
+        fixture.host.text = "visible native text without icon";
+        InlineIconSpan.finishBinding(fixture.host);
+        assertTrue(InlineIconSpan.ownsHost(fixture.host));
+        registerBody(fixture.host, "unknown-shadow", "native restored", new Object());
+
+        assertThrows(IllegalStateException.class, () -> InlineIconSpan.resetAll(0L));
+        assertEquals(1, fixture.host.calls);
+        assertTrue("Failed capture cannot confirm cleanup", InlineIconSpan.ownsHost(fixture.host));
+
+        activateBodyProfile(shadowGetter().getName());
+        InlineIconSpan.finishBinding(fixture.host);
+        assertTrue(InlineIconSpan.resetAll(0L));
+        fixture.assertCleanBuffers();
+        assertFalse(InlineIconSpan.ownsHost(fixture.host));
     }
 
     @Test public void recycledHostWithoutIconStopsImmediatelyAndCannotRestartOnReattach() {
@@ -353,6 +502,144 @@ public class InlineIconLifecycleTest {
         assertTrue(InlineIconSpan.resetAll(0L));
         assertEquals(1, binding.calls);
         assertEquals("native text", host.text);
+    }
+
+    /** A TextView body renderer: its shadow is private and is not a child or part of getText(). */
+    public static final class FakeBodyView extends TextView {
+        private final FakeTextView shadow;
+        CharSequence text = "";
+        int calls;
+        Object content;
+        Object options;
+        MutableText expectedSource;
+        MutableText expectedShadow;
+        boolean sourceCleanAtReplay;
+        boolean shadowCleanAtReplay;
+
+        FakeBodyView(FakeTextView shadow) { super(null); this.shadow = shadow; }
+        private TextView getShadowView() { return shadow; }
+        @Override public CharSequence getText() { return text; }
+        @Override public boolean isAttachedToWindow() { return false; }
+        public void render(Object content, Object options) {
+            calls++;
+            this.content = content;
+            this.options = options;
+            sourceCleanAtReplay = expectedSource != null && expectedSource.getSpans(
+                    0, expectedSource.length(), Object.class).length == 1;
+            shadowCleanAtReplay = expectedShadow != null && expectedShadow.getSpans(
+                    0, expectedShadow.length(), Object.class).length == 1;
+            // Deliberately leave shadow unchanged, as native rendering can reuse its measurement text.
+            text = (CharSequence) content;
+        }
+    }
+
+    private static final class ShadowFixture {
+        static final String TEXT = "native formatting \uFEFF\u00A0";
+        final FakeBodyView host;
+        final InlineIconSpan icon = icon(StateStore.Status.TRANSLATED);
+        final Object click = new Object();
+        final Object nativeSpan = new Object();
+        final MutableText source = new MutableText(TEXT);
+        final MutableText shadow;
+
+        ShadowFixture(FakeBodyView host) {
+            this.host = host;
+            source.setSpan(nativeSpan, 0, 6, Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+            source.setSpan(icon, TEXT.length() - 1, TEXT.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            source.setSpan(click, TEXT.length() - 2, TEXT.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            shadow = new MutableText(source);
+        }
+
+        void assertOwnedSpansPresent() {
+            for (MutableText buffer : new MutableText[]{source, shadow}) {
+                assertSame(icon, buffer.getSpans(0, buffer.length(), InlineIconSpan.class)[0]);
+                assertEquals(TEXT.length() - 2, buffer.getSpanStart(click));
+                assertEquals(TEXT.length(), buffer.getSpanEnd(click));
+            }
+        }
+
+        void assertCleanBuffers() {
+            for (MutableText buffer : new MutableText[]{source, shadow}) {
+                assertEquals("Cleanup must not crop text or placeholder characters", TEXT, buffer.toString());
+                assertEquals(0, buffer.getSpans(0, buffer.length(), InlineIconSpan.class).length);
+                assertEquals(-1, buffer.getSpanStart(icon));
+                assertEquals(-1, buffer.getSpanStart(click));
+                assertArrayEquals(new Object[]{nativeSpan}, buffer.getSpans(0, buffer.length(), Object.class));
+                assertEquals(0, buffer.getSpanStart(nativeSpan));
+                assertEquals(6, buffer.getSpanEnd(nativeSpan));
+                assertEquals(Spanned.SPAN_INCLUSIVE_INCLUSIVE, buffer.getSpanFlags(nativeSpan));
+            }
+            assertSame(shadow, host.shadow.getText());
+        }
+    }
+
+    /** Mutable span identities and ranges; Android's local SpannableStringBuilder stub does nothing. */
+    private static final class MutableText implements Spannable {
+        private final String text;
+        private final List<SpanRange> spans = new ArrayList<>();
+
+        MutableText(String text) { this.text = text; }
+        MutableText(MutableText original) {
+            this(original.text);
+            for (SpanRange range : original.spans)
+                setSpan(range.span, range.start, range.end, range.flags);
+        }
+        @Override public int length() { return text.length(); }
+        @Override public char charAt(int index) { return text.charAt(index); }
+        @Override public CharSequence subSequence(int start, int end) { return text.subSequence(start, end); }
+        @Override public String toString() { return text; }
+        @Override public void setSpan(Object span, int start, int end, int flags) {
+            if (start < 0 || end < start || end > text.length()) throw new IndexOutOfBoundsException();
+            removeSpan(span);
+            spans.add(new SpanRange(span, start, end, flags));
+        }
+        @Override public void removeSpan(Object span) { spans.removeIf(range -> range.span == span); }
+        @Override public <T> T[] getSpans(int start, int end, Class<T> type) {
+            List<T> matches = new ArrayList<>();
+            for (SpanRange range : spans) {
+                if (!type.isInstance(range.span) || range.start > end || range.end < start) continue;
+                if (range.start != range.end && start != end
+                        && (range.start == end || range.end == start)) continue;
+                matches.add(type.cast(range.span));
+            }
+            @SuppressWarnings("unchecked")
+            T[] result = (T[]) Array.newInstance(type, matches.size());
+            return matches.toArray(result);
+        }
+        @Override public int getSpanStart(Object span) {
+            for (SpanRange range : spans) if (range.span == span) return range.start;
+            return -1;
+        }
+        @Override public int getSpanEnd(Object span) {
+            for (SpanRange range : spans) if (range.span == span) return range.end;
+            return -1;
+        }
+        @Override public int getSpanFlags(Object span) {
+            for (SpanRange range : spans) if (range.span == span) return range.flags;
+            return 0;
+        }
+        @Override public int nextSpanTransition(int start, int limit, Class type) {
+            int next = limit;
+            for (SpanRange range : spans) {
+                if (type != null && !type.isInstance(range.span)) continue;
+                if (range.start > start && range.start < next) next = range.start;
+                if (range.end > start && range.end < next) next = range.end;
+            }
+            return next;
+        }
+
+        private static final class SpanRange {
+            final Object span;
+            final int start;
+            final int end;
+            final int flags;
+            SpanRange(Object span, int start, int end, int flags) {
+                this.span = span;
+                this.start = start;
+                this.end = end;
+                this.flags = flags;
+            }
+        }
     }
 
     public static final class NativeBinding {

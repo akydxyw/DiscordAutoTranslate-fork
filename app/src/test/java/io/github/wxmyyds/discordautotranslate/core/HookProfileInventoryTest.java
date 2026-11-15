@@ -21,6 +21,20 @@ import java.util.stream.Stream;
 /** Every added profile is parsed by production code; this cannot verify host signatures. */
 public class HookProfileInventoryTest {
     @Test
+    public void bothShippedBodyRenderersDeclarePrivateShadowGetter() throws Exception {
+        for (int version : new int[]{340013, 352017}) {
+            String json = Files.readString(Path.of("src/main/assets/hook-config/" + version + ".json"));
+            HookConfiguration config = HookConfiguration.parse(json, version);
+            JSONObject render = config.hook("message.render");
+            assertNotNull("Body render metadata missing for " + version, render);
+            assertTrue("Shadow getter must be an explicit string for " + version,
+                    render.get("shadowViewGetter") instanceof String);
+            assertEquals("Private native shadow getter for " + version, "getShadowView",
+                    render.getString("shadowViewGetter"));
+        }
+    }
+
+    @Test
     public void everyShippedProfileMatchesItsFilenameAndDeclaresInstalledHooks() throws Exception {
         Set<String> supported = Set.of("message.bind", "message.render", "message.textConversion",
                 "embed.bind", "poll.bind", "poll.answerBind", "poll.textSet", "poll.accessibilitySet");

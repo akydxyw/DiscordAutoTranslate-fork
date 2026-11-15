@@ -146,10 +146,7 @@ public class EmbedCardStateTest {
         Constructor<EmbedBinding> ctor = EmbedBinding.class.getDeclaredConstructor(String.class, List.class);
         ctor.setAccessible(true);
         EmbedBinding binding = ctor.newInstance(ROW, texts);
-        Method register = EmbedHooks.class.getDeclaredMethod("register", EmbedBinding.class, List.class,
-                View.class, Object.class, Method.class, Object[].class);
-        register.setAccessible(true);
-        return (String) register.invoke(null, binding, bridge.embedStateKeys(ROW, texts), view, null,
+        return bridge.registerEmbed(binding, bridge.embedStateKeys(ROW, texts), view, null,
                 EmbedCardStateTest.class.getMethod("nativeBind"), new Object[0]);
     }
 

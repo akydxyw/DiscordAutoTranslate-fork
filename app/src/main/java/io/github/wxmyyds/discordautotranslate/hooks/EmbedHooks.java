@@ -10,7 +10,6 @@ import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -52,7 +51,8 @@ public final class EmbedHooks {
                         binding = EmbedBinding.read(chain.getArgs(), spec);
                         if (binding != null && view != null) {
                             keys = HookBridge.get().embedStateKeys(binding.messageId, binding.texts);
-                            primary = register(binding, keys, view, chain.getThisObject(), bind,
+                            primary = HookBridge.get().registerEmbed(binding, keys, view,
+                                    chain.getThisObject(), bind,
                                     chain.getArgs().toArray());
                         }
                     } catch (Throwable t) {
@@ -67,42 +67,6 @@ public final class EmbedHooks {
                     }
                 }));
         installedHookIds.add("embed.bind");
-    }
-
-    /** Register all current segments before any cache hit can enqueue a native rebind. */
-    private static String register(EmbedBinding binding, List<String> keys, View view, Object target,
-                                   Method bind, Object[] args) {
-        HookBridge bridge = HookBridge.get();
-        String primary = null;
-        for (int i = 0; i < binding.texts.size(); i++) {
-            Object text = binding.texts.get(i);
-            String key = keys.get(i);
-            if (key == null) {
-                continue;
-            }
-            if (primary == null) {
-                primary = key;
-            }
-            // Identity mappings also cover rerenders; conversion never creates a request.
-            bridge.rememberContent(key, text);
-            if (!RenderDispatcher.isRerendering()) {
-                bridge.bindView(view, key);
-                RerenderRegistry.register(key, view, target, bind, args);
-            }
-        }
-        if (!RenderDispatcher.isRerendering()) {
-            if (primary != null) {
-                List<String> members = new ArrayList<>();
-                for (String key : keys) if (key != null) members.add(key);
-                CardState.bind(HookBridge.cardIdentityOf(primary), primary, members);
-            }
-            for (int i = 0; i < keys.size(); i++) {
-                if (keys.get(i) != null) {
-                    bridge.onMessageBound(keys.get(i), binding.texts.get(i));
-                }
-            }
-        }
-        return primary;
     }
 
     private static View hostView(Object target, JSONObject spec) throws org.json.JSONException {

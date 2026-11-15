@@ -224,6 +224,33 @@ public final class HookBridge {
 
     // ------------------------------------------------------- Embed 状态键
 
+    /** Register every current Embed member before a producer/cache hit can enqueue native replay. */
+    String registerEmbed(EmbedBinding binding, java.util.List<String> keys, View view, Object target,
+                         java.lang.reflect.Method bind, Object[] args) {
+        String primary = null;
+        for (int i = 0; i < binding.texts.size(); i++) {
+            String key = keys.get(i);
+            if (key == null) continue;
+            if (primary == null) primary = key;
+            rememberContent(key, binding.texts.get(i));
+            if (!RenderDispatcher.isRerendering()) {
+                bindView(view, key);
+                RerenderRegistry.register(key, view, target, bind, args);
+            }
+        }
+        if (!RenderDispatcher.isRerendering()) {
+            if (primary != null) {
+                java.util.List<String> members = new java.util.ArrayList<>();
+                for (String key : keys) if (key != null) members.add(key);
+                CardState.bind(cardIdentityOf(primary), primary, members);
+            }
+            for (int i = 0; i < keys.size(); i++) {
+                if (keys.get(i) != null) onMessageBound(keys.get(i), binding.texts.get(i));
+            }
+        }
+        return primary;
+    }
+
     /** Card identity includes the complete captured segment sequence, isolating same-row Embeds. */
     java.util.List<String> embedStateKeys(String rowMessageId, java.util.List<?> texts) {
         if (!looksLikeSnowflake(rowMessageId)) throw new IllegalArgumentException("Invalid Embed row identity");
