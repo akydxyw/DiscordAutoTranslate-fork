@@ -119,6 +119,7 @@ public final class IconClickSpanFactory {
                             if (!callbackMethod.equals(method.getName())) {
                                 return objectMethod(proxy, method, args);
                             }
+                            if (!HookRuntime.isActive()) return null;
                             HookDiagnostics.infoOnce("icon.click.callback-reached",
                                     "icon click callback reached configured host span handler");
                             HookBridge.get().onIconClicked(messageId);

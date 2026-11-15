@@ -1,7 +1,5 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
-import android.os.Handler;
-import android.os.Looper;
 import android.view.View;
 
 import androidx.annotation.Nullable;
@@ -13,9 +11,9 @@ import io.github.wxmyyds.discordautotranslate.core.StateStore;
 import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 import io.github.wxmyyds.discordautotranslate.core.TranslationCache;
 import io.github.wxmyyds.discordautotranslate.core.TranslationException;
+import io.github.wxmyyds.discordautotranslate.core.TranslationTaskId;
 import io.github.wxmyyds.discordautotranslate.translate.JsonApiEngine;
 
-import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -28,7 +26,7 @@ import java.util.Map;
  *   <li>维护「正文视图 → 消息 ID」与「内容对象 → 消息 ID」两张映射：
  *       RecyclerView 会复用 {@code MessageContentView} 实例，
  *       译文状态绝不能存在 View 上（需求 §风险 2）。</li>
- *   <li>保存每条消息最近一次的原始渲染参数，用于翻译完成后重新渲染。</li>
+ *   <li>协调唯一翻译生产入口；原生重放由 RenderDispatcher 与订阅表负责。</li>
  *   <li>提供“原文/译文”切换与失败重试入口，供图标点击调用。</li>
  * </ol>
  */
@@ -37,9 +35,6 @@ public final class HookBridge {
     /** Discord 消息 ID 是雪花 ID：纯数字，长度约 17–20。 */
     private static final int SNOWFLAKE_MIN = 15;
     private static final int SNOWFLAKE_MAX = 21;
-
-    /** 重渲染期间的标记：避免重渲染调用再次被 Hook 拦截并覆盖已保存的“原文”。 */
-    private static final ThreadLocal<Boolean> RERENDERING = new ThreadLocal<>();
 
     private static final HookBridge INSTANCE = new HookBridge();
 
@@ -50,8 +45,7 @@ public final class HookBridge {
     /** 正文视图 → 消息 ID（有界，避免列表回收后无限增长）。 */
     private final Map<View, String> viewToMessageId = boundedMap(512);
 
-    /** Canonical body and the message revision observed when that body was bound. */
-    private final Map<String, CanonicalContent> rawContent = boundedMap(512);
+    /** Only native row bindings own edit metadata; source snapshots live with state. */
     private final Map<String, MessageRevision> messageRevisions = boundedMap(512);
 
     private static final class MessageRevision {
@@ -59,16 +53,6 @@ public final class HookBridge {
 
         MessageRevision(@Nullable String editedTimestamp) {
             this.editedTimestamp = editedTimestamp;
-        }
-    }
-
-    private static final class CanonicalContent {
-        final Object content;
-        final MessageRevision revision;
-
-        CanonicalContent(Object content, @Nullable MessageRevision revision) {
-            this.content = content;
-            this.revision = revision;
         }
     }
 
@@ -90,7 +74,9 @@ public final class HookBridge {
     }
 
     void rememberCanonicalContent(String messageId, Object content) {
-        rawContent.put(messageId, new CanonicalContent(content, messageRevisions.get(messageId)));
+        MessageRevision revision = messageRevisions.get(messageId);
+        StateStore.get().rememberSource(messageId, new StateStore.Source(content,
+                revision != null, revision == null ? null : revision.editedTimestamp));
     }
 
     /**
@@ -103,10 +89,10 @@ public final class HookBridge {
         if (messageId == null) {
             return null;
         }
-        CanonicalContent original = rawContent.get(messageId);
+        StateStore.Source original = StateStore.get().source(messageId);
         MessageRevision current = messageRevisions.get(messageId);
-        if (original == null || original.revision == null || current == null
-                || !java.util.Objects.equals(original.revision.editedTimestamp, editedTimestamp)
+        if (original == null || !original.revisionKnown || current == null
+                || !java.util.Objects.equals(original.editedTimestamp, editedTimestamp)
                 || !java.util.Objects.equals(current.editedTimestamp, editedTimestamp)) {
             return null;
         }
@@ -207,7 +193,6 @@ public final class HookBridge {
     /** 清空全部映射。热重载与配置重置时调用。 */
     public void reset() {
         viewToMessageId.clear();
-        rawContent.clear();
         messageRevisions.clear();
         lastView.clear();
         contentIdentityToMessageId.clear();
@@ -344,95 +329,6 @@ public final class HookBridge {
         return Scheduler.contentHash(hashInput, cfg.version());
     }
 
-    // ---------------------------------------------------------------- 渲染拦截
-
-    /** 当前是否处于“重渲染”调用中。 */
-    public boolean isRerendering() {
-        return Boolean.TRUE.equals(RERENDERING.get());
-    }
-
-    /**
-     * 投递重渲染：必须离开当前宿主布局过程再执行。
-     *
-     * <p>调用方（{@code onMessageBound}、点击回调）可能正处于 RecyclerView 的
-     * measure/layout 中，此时直接重渲染会让新的布局请求被本轮遍历丢掉，
-     * 表现为“文字变了但行高/空白行要等滚动才更新”。投递到视图消息队列后，
-     * 下一次遍历再测量，结果立即生效。</p>
-     *
-     * <p>视图是否已被复用的判定见 {@link RerenderRegistry}；投递执行时由
-     * 文本转换 Hook 按当前状态重新决定替换与否，因此不会把译文写错消息。</p>
-     *
-     * <p>排队期间视图可能已被 RecyclerView 复用到其他消息，因此执行前必须
-     * 再校验一次：绑定已变成其他消息则跳过，不能把旧译文渲染到新消息上。
-     * 绑定未知（{@code null}，通常是映射表 LRU 淘汰）不视为复用。</p>
-     *
-     * @param contentView 用于校验复用的正文视图，可为 null（不校验）
-     * @param messageId   期望绑定的消息 ID，可为 null（不校验）
-     * @param invocationTarget 调用 {@code method} 的接收者（正文视图或回复预览容器）
-     */
-    public void requestRerender(@Nullable View contentView, @Nullable String messageId,
-                                @Nullable Object invocationTarget, @Nullable Method method,
-                                @Nullable Object[] args,
-                                java.util.function.BooleanSupplier registrationCurrent) {
-        if (method == null || args == null
-                || (!java.lang.reflect.Modifier.isStatic(method.getModifiers())
-                && invocationTarget == null)) {
-            return;
-        }
-        String bound = messageIdOf(contentView);
-        HookDiagnostics.info("rerender queued targetValid="
-                + (contentView == null || messageId == null
-                || RerenderRegistry.stillBound(messageId, bound))
-                + " viewAttached=" + (contentView != null && contentView.isAttachedToWindow()));
-        if (contentView != null && messageId != null && !RerenderRegistry.stillBound(messageId, bound)) {
-            return;
-        }
-        Runnable task = () -> {
-            // A new bind replaces/removes the registry Target even when the new row
-            // references the same message. Reject old queued whole-row parameters.
-            if (!registrationCurrent.getAsBoolean()) {
-                return;
-            }
-            String currentBound = messageIdOf(contentView);
-            if (contentView != null && messageId != null
-                    && !RerenderRegistry.stillBound(messageId, currentBound)) {
-                return;
-            }
-            HookDiagnostics.info("rerender dispatched viewAttached="
-                    + (contentView != null && contentView.isAttachedToWindow())
-                    + " viewClass=" + (contentView == null
-                    ? "null" : contentView.getClass().getName()));
-            invokeRerender(invocationTarget, contentView, messageId, method, args);
-        };
-        new Handler(Looper.getMainLooper()).post(task);
-    }
-
-    private void invokeRerender(@Nullable Object invocationTarget, @Nullable View contentView,
-                                @Nullable String messageId, Method method, Object[] args) {
-        if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())
-                && invocationTarget == null) {
-            return;
-        }
-        View view = contentView != null
-                ? contentView
-                : (invocationTarget instanceof View ? (View) invocationTarget : null);
-        RERENDERING.set(Boolean.TRUE);
-        try {
-            method.invoke(invocationTarget, args);
-        } catch (Throwable t) {
-            HookDiagnostics.warnOnce("rerender.invoke.failed", "rerender invocation failed error="
-                    + t.getClass().getSimpleName());
-            return;
-        } finally {
-            RERENDERING.remove();
-        }
-        HookDiagnostics.info("rerender method completed viewAttached="
-                + (view != null && view.isAttachedToWindow())
-                + " viewHeight=" + (view == null ? -1 : view.getHeight()));
-        // 回复引用的调用目标是容器，真正需要重新绑定的是内部正文视图。
-        RowRefresher.postInvalidateRow(this::messageIdOf, messageId, view);
-    }
-
     /**
      * 多片段消息附加到缓存键的后缀。
      *
@@ -456,7 +352,7 @@ public final class HookBridge {
      */
     public void onMessageBound(@Nullable View contentView, String messageId,
                                @Nullable Object structurableText) {
-        if (messageId == null || structurableText == null) {
+        if (!HookRuntime.isActive() || messageId == null || structurableText == null) {
             return;
         }
         String nodeTypes = TextExtractor.typeSummary(structurableText);
@@ -499,19 +395,16 @@ public final class HookBridge {
         // 缓存命中：直接出结果，不发请求（需求 §5.6）。
         String cached = TranslationCache.get().get(hash);
         if (cached != null) {
-            entry.translatedText = cached;
-            entry.status = StateStore.Status.TRANSLATED;
-            entry.showingOriginal = false;
-            refreshTranslation(messageId);
+            if (StateStore.get().useCached(entry, cached)) refreshTranslation(messageId);
             return;
         }
 
         if (!cfg.isUsable()) {
             HookDiagnostics.warnOnce("translation.config", "translation API configuration is unusable"
                     + " configErrorPresent=" + (cfg.configError != null));
-            entry.status = StateStore.Status.FAILED;
-            entry.lastError = cfg.configError != null ? cfg.configError : "API 未配置";
-            refreshTranslation(messageId);
+            if (StateStore.get().failIdle(entry,
+                    cfg.configError != null ? cfg.configError : "API 未配置"))
+                refreshTranslation(messageId);
             return;
         }
 
@@ -527,60 +420,25 @@ public final class HookBridge {
 
         HookDiagnostics.infoOnce("translation.started", "translation request started"
                 + " textNodes=" + ex.textNodeCount + " segments=" + ex.segmentCount);
-        entry.status = StateStore.Status.TRANSLATING;
-        // 立即重渲染，让「翻译中」旋转图标显示出来。
+        TranslationTaskId task = StateStore.get().begin(entry);
+        if (task == null) return;
         refreshTranslation(messageId);
-
-        Scheduler.get().submit(messageId, hash, requestText, engine,
-                (generationSnapshot, contentHash) -> {
-                    if (generationSnapshot != StateStore.get().generation()) {
-                        return false; // 模块已热重载/配置已重置：丢弃（需求 §风险 6）
-                    }
-                    if (!config.enabled) {
-                        return false; // 开关已关闭：丢弃在途结果（需求 §2.7 注）
-                    }
-                    StateStore.Entry cur = StateStore.get().peek(messageId);
-                    if (cur == null || !contentHash.equals(cur.contentHash)) {
-                        return false; // 消息已被编辑：丢弃（需求 §风险 3）
-                    }
-                    return true;
-                },
-                (id, accepted, translated, error) ->
-                        onTranslateResult(id, accepted, translated, error));
+        Scheduler.get().submit(task, requestText, engine,
+                identity -> HookRuntime.isActive() && config.enabled && StateStore.get().owns(identity),
+                this::onTranslateResult);
     }
 
-    /** 按 profile 决定的统一翻译结果回写。 */
-    private void onTranslateResult(String id, boolean accepted,
-                                   @Nullable String translated, @Nullable Throwable error) {
+    /** Complete task ownership is validated before every transition, including discarded results. */
+    void onTranslateResult(TranslationTaskId task, boolean accepted,
+                           @Nullable String translated, @Nullable Throwable error) {
         HookDiagnostics.info("translation result received accepted=" + accepted
                 + " translatedPresent=" + (translated != null && !translated.isEmpty())
                 + " errorClass=" + (error == null ? "none" : error.getClass().getSimpleName()));
-        StateStore.Entry cur = StateStore.get().peek(id);
-        if (cur == null) {
-            HookDiagnostics.info("translation result ignored reason=missingState");
-            return;
-        }
-        if (!accepted) {
-            // 被丢弃通常是过期或开关关闭：回到可重试状态，但不显示“失败”。
-            if (cur.status == StateStore.Status.TRANSLATING) {
-                cur.status = cur.translatedText != null
-                        ? StateStore.Status.TRANSLATED
-                        : StateStore.Status.IDLE;
-            }
-            refreshTranslation(id);
-            return;
-        }
-        if (error != null || translated == null || translated.isEmpty()) {
-            cur.status = StateStore.Status.FAILED;
-            cur.lastError = describe(error);
-        } else {
-            cur.translatedText = translated;
-            cur.status = StateStore.Status.TRANSLATED;
-            cur.showingOriginal = false;
-            // 写入缓存，供同内容的其它消息复用（需求 §5.6）。
-            TranslationCache.get().put(cur.contentHash, translated);
-        }
-        refreshTranslation(id);
+        boolean success = accepted && error == null && translated != null && !translated.isEmpty();
+        if (!StateStore.get().complete(task, accepted, translated,
+                success ? null : accepted ? describe(error) : null)) return;
+        if (success) TranslationCache.get().put(task.contentHash, translated);
+        refreshTranslation(task.messageId);
     }
 
     /** A segment update also refreshes the Poll title's aggregate progress/error icon. */
@@ -611,11 +469,7 @@ public final class HookBridge {
             return;
         }
         TranslationCache.get().remove(entry.contentHash);
-        entry.translatedText = null;
-        entry.showingOriginal = true;
-        entry.status = StateStore.Status.FAILED;
-        entry.lastError = "译文结构与原消息不匹配，已保留原文。";
-        RerenderRegistry.rerender(id);
+        if (StateStore.get().rejectRender(id, translated)) refreshTranslation(id);
     }
 
     /** 原文/译文切换：由图标点击触发，不触发新请求（需求 §2.4）。 */
@@ -625,12 +479,7 @@ public final class HookBridge {
             if (card != null) for (String key : card.keys) RerenderRegistry.rerender(key);
             return;
         }
-        StateStore.Entry e = StateStore.get().peek(messageId);
-        if (e == null || e.status != StateStore.Status.TRANSLATED || e.translatedText == null) {
-            return;
-        }
-        e.showingOriginal = !e.showingOriginal;
-        RerenderRegistry.rerender(messageId);
+        if (StateStore.get().toggle(messageId)) RerenderRegistry.rerender(messageId);
     }
 
     /**
@@ -675,16 +524,17 @@ public final class HookBridge {
 
     /** 失败后重试：由图标点击触发（需求 §2.6）。 */
     public void retry(String messageId) {
+        if (!HookRuntime.isActive()) return;
         StateStore.Entry e = StateStore.get().peek(messageId);
         if (e == null) {
             return;
         }
-        CanonicalContent original = rawContent.get(messageId);
+        StateStore.Source original = StateStore.get().source(messageId);
         MessageRevision current = messageRevisions.get(messageId);
-        boolean sameRevision = original != null && (original.revision == null
+        boolean sameRevision = original != null && (!original.revisionKnown
                 ? current == null
                 : current != null && java.util.Objects.equals(
-                        original.revision.editedTimestamp, current.editedTimestamp));
+                        original.editedTimestamp, current.editedTimestamp));
         if (!sameRevision || existingReferencedMessageState(messageId, original.content) != e) {
             // A new model may have bound before its body renderer. Do not relabel
             // the previous body's retry with the latest model revision or reset state.
@@ -692,9 +542,8 @@ public final class HookBridge {
         }
         Object structurable = original.content;
 
-        e.status = StateStore.Status.IDLE;
-        e.lastError = null;
-        RerenderRegistry.rerender(messageId);
+        if (!StateStore.get().prepareRetry(e)) return;
+        refreshTranslation(messageId);
 
         java.lang.ref.WeakReference<View> viewRef = lastView.get(messageId);
         View last = viewRef == null ? null : viewRef.get();

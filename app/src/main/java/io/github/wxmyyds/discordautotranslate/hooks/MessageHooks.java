@@ -48,8 +48,7 @@ public final class MessageHooks {
                     // 回滚尽力而为；单个 unhook 失败不应掩盖原始异常。
                 }
             }
-            handles.clear();
-            installedHookIds.clear();
+            throw new IllegalStateException("Message hook installation failed", t);
         }
         return handles;
     }
@@ -74,6 +73,7 @@ public final class MessageHooks {
                 .setId("dat.bind")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
+                    if (!HookRuntime.isActive()) return chain.proceed();
                     try {
                         bindPre(chain, spec);
                     } catch (Throwable t) {
@@ -345,13 +345,14 @@ public final class MessageHooks {
                 .setId("dat.messageRender")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
+                    if (!HookRuntime.isActive()) return chain.proceed();
                     Object viewObject = viewArgument >= 0
                             ? safeArg(chain, viewArgument) : chain.getThisObject();
                     View view = asView(viewObject);
                     Object content = safeArg(chain, contentArgument);
                     InlineIconInjector.HostScope hostScope = InlineIconInjector.enterHost(view, null);
                     try {
-                        if (!HookBridge.get().isRerendering() && view != null) {
+                        if (!RenderDispatcher.isRerendering() && view != null) {
                             Object[] renderArgs = chain.getArgs().toArray();
                             Object configuredId = safeArg(chain, messageIdArgument);
                             String messageId = "argument".equals(identitySource)
@@ -415,6 +416,7 @@ public final class MessageHooks {
                 .setId("dat.textConversion")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
+                    if (!HookRuntime.isActive()) return chain.proceed();
                     Object source = safeArg(chain, contentArgument);
                     Object[] renderArgs = chain.getArgs().toArray();
                     ReferencedContent reply = REPLY_CONVERSION.get();

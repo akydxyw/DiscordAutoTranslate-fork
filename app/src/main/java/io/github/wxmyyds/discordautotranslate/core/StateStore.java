@@ -2,48 +2,23 @@ package io.github.wxmyyds.discordautotranslate.core;
 
 import androidx.annotation.Nullable;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
-/**
- * 模块实例代次与消息状态仓库。
- *
- * <p>热重载正确性（需求 §风险 6）依赖两点，本类负责其中两点：
- * <ol>
- *   <li>实例代次：每次模块加载（含热重载后的新实例）分配新的 generation。
- *       异步任务在回写 UI 前必须校验 generation 仍为当前值，否则丢弃结果。</li>
- *   <li>内容版本：每条消息用“内容哈希 + 翻译配置版本”作为版本键。
- *       编辑后哈希变化 → 旧译文立即失效，且旧请求的结果不会被接受。</li>
- * </ol>
- */
+/** Bounded translation records: content, source snapshot and active task share one lifetime. */
 public final class StateStore {
+    public enum Status { IDLE, TRANSLATING, TRANSLATED, FAILED }
 
-    /** 单条消息的翻译状态。 */
-    public enum Status {
-        /** 尚未翻译。 */
-        IDLE,
-        /** 翻译进行中。 */
-        TRANSLATING,
-        /** 翻译成功，可显示译文。 */
-        TRANSLATED,
-        /** 翻译失败，可重试。 */
-        FAILED
-    }
-
-    /** 单条消息的状态记录。 */
     public static final class Entry {
         public final String messageId;
-        /** 原文内容哈希（含语言/配置版本），编辑后变化。 */
         public volatile String contentHash;
-        /** 原文纯文本。 */
         public volatile String originalText;
-        /** 译文，仅当 status == TRANSLATED 时有效。 */
         public volatile String translatedText;
         public volatile Status status = Status.IDLE;
-        /** 用户当前是否正在查看原文（true=显示原文，false=显示译文）。 */
-        public volatile boolean showingOriginal = false;
-        /** 最近一次失败原因（用于诊断，不展示给用户）。 */
+        public volatile boolean showingOriginal;
         public volatile String lastError;
+        private TranslationTaskId task;
+        private Source source;
 
         Entry(String messageId, String contentHash, String originalText) {
             this.messageId = messageId;
@@ -52,76 +27,145 @@ public final class StateStore {
         }
     }
 
+    /** Opaque producer snapshot; the repository does not interpret host content. */
+    public static final class Source {
+        public final Object content;
+        public final boolean revisionKnown;
+        @Nullable public final String editedTimestamp;
+
+        public Source(Object content, boolean revisionKnown, @Nullable String editedTimestamp) {
+            this.content = content;
+            this.revisionKnown = revisionKnown;
+            this.editedTimestamp = editedTimestamp;
+        }
+    }
+
     private static final StateStore INSTANCE = new StateStore();
-
-    public static StateStore get() {
-        return INSTANCE;
-    }
-
-    /** 当前模块实例代次。热重载后递增，旧任务据此丢弃结果。 */
-    private final AtomicInteger generation = new AtomicInteger(1);
-
-    private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
-
-    /** 缓存上限，避免无限增长（需求 §5.6）。原型阶段取较小值便于观察淘汰。 */
     private static final int MAX_ENTRIES = 512;
+    // Rendering/producer access moves records explicitly; ownership checks must not alter LRU.
+    private final Map<String, Entry> entries = new LinkedHashMap<>();
+    private int generation = 1;
 
-    private StateStore() {
-    }
+    private StateStore() {}
+    public static StateStore get() { return INSTANCE; }
+    public synchronized int generation() { return generation; }
 
-    public int generation() {
-        return generation.get();
-    }
-
-    /** 热重载：递增代次并清空全部状态，防止旧译文串入新实例。 */
-    public void onNewGeneration() {
-        generation.incrementAndGet();
+    public synchronized void onNewGeneration() {
+        generation++;
         entries.clear();
     }
 
-    /**
-     * 取得或创建某条消息的状态。若内容哈希变化（消息被编辑），
-     * 立即失效旧译文（需求 §2.8）。
-     */
-    public Entry obtain(String messageId, String contentHash, String originalText) {
-        Entry e = entries.get(messageId);
-        if (e == null) {
-            if (entries.size() >= MAX_ENTRIES) {
-                evictSome();
+    /** LRU includes every status; evicted work loses ownership and cannot resurrect a record. */
+    public synchronized Entry obtain(String messageId, String contentHash, String originalText) {
+        Entry entry = entries.get(messageId);
+        if (entry == null || !contentHash.equals(entry.contentHash)) {
+            entry = new Entry(messageId, contentHash, originalText);
+            entries.remove(messageId);
+            entries.put(messageId, entry);
+            if (entries.size() > MAX_ENTRIES) {
+                entries.remove(entries.keySet().iterator().next());
             }
-            Entry created = new Entry(messageId, contentHash, originalText);
-            Entry prev = entries.putIfAbsent(messageId, created);
-            e = prev != null ? prev : created;
+        } else {
+            entry.originalText = originalText;
+            entries.remove(messageId);
+            entries.put(messageId, entry);
         }
-        synchronized (e) {
-            if (!contentHash.equals(e.contentHash)) {
-                e.contentHash = contentHash;
-                e.originalText = originalText;
-                e.translatedText = null;
-                e.status = Status.IDLE;
-                e.showingOriginal = false;
-                e.lastError = null;
-            } else {
-                e.originalText = originalText;
-            }
-        }
-        return e;
+        return entry;
     }
 
-    @Nullable
-    public Entry peek(String messageId) {
-        return entries.get(messageId);
+    @Nullable public synchronized Entry peek(String messageId) {
+        Entry entry = entries.remove(messageId);
+        if (entry != null) entries.put(messageId, entry);
+        return entry;
     }
 
-    private void evictSome() {
-        // 简单策略：先清理失败与空闲项。缓存策略在阶段 2 细化（需求 §5.6 要求上限）。
-        int removed = 0;
-        for (var it = entries.entrySet().iterator(); it.hasNext() && removed < MAX_ENTRIES / 4; ) {
-            Entry e = it.next().getValue();
-            if (e.status == Status.FAILED || e.status == Status.IDLE) {
-                it.remove();
-                removed++;
-            }
-        }
+    /** Attach only to a current record; source and state are evicted/reset together. */
+    public synchronized void rememberSource(String messageId, Source source) {
+        Entry entry = entries.get(messageId);
+        if (entry != null) entry.source = source;
     }
+
+    @Nullable public synchronized Source source(String messageId) {
+        Entry entry = entries.get(messageId);
+        return entry == null ? null : entry.source;
+    }
+
+    /** One attempt owns all subsequent transitions, including cancellation. */
+    @Nullable public synchronized TranslationTaskId begin(Entry expected) {
+        if (entries.get(expected.messageId) != expected || expected.status != Status.IDLE) return null;
+        TranslationTaskId task = TranslationTaskId.create(expected.messageId, expected.contentHash, generation);
+        expected.task = task;
+        expected.lastError = null;
+        expected.status = Status.TRANSLATING;
+        return task;
+    }
+
+    public synchronized boolean owns(TranslationTaskId task) {
+        Entry entry = entries.get(task.messageId);
+        return task.generation == generation && entry != null
+                && task.contentHash.equals(entry.contentHash) && task.equals(entry.task);
+    }
+
+    /** Reject stale attempts before touching the current record, even for rejected results. */
+    public synchronized boolean complete(TranslationTaskId task, boolean accepted,
+                                        @Nullable String translated, @Nullable String error) {
+        if (!owns(task)) return false;
+        Entry entry = entries.get(task.messageId);
+        entry.task = null;
+        if (!accepted) {
+            entry.status = entry.translatedText == null ? Status.IDLE : Status.TRANSLATED;
+        } else if (error != null || translated == null || translated.isEmpty()) {
+            entry.status = Status.FAILED;
+            entry.lastError = error == null ? "未知错误" : error;
+        } else {
+            entry.translatedText = translated;
+            entry.lastError = null;
+            entry.status = Status.TRANSLATED;
+            entry.showingOriginal = false;
+        }
+        return true;
+    }
+
+    /** Synchronous cache/config decisions use the same state owner as async results. */
+    public synchronized boolean useCached(Entry entry, String translated) {
+        if (entries.get(entry.messageId) != entry || entry.status != Status.IDLE) return false;
+        entry.translatedText = translated;
+        entry.status = Status.TRANSLATED;
+        entry.showingOriginal = false;
+        return true;
+    }
+
+    public synchronized boolean failIdle(Entry entry, String error) {
+        if (entries.get(entry.messageId) != entry || entry.status != Status.IDLE) return false;
+        entry.lastError = error;
+        entry.status = Status.FAILED;
+        return true;
+    }
+
+    public synchronized boolean rejectRender(String id, String translated) {
+        Entry entry = entries.get(id);
+        if (entry == null || entry.status != Status.TRANSLATED
+                || !translated.equals(entry.translatedText)) return false;
+        entry.translatedText = null;
+        entry.showingOriginal = true;
+        entry.status = Status.FAILED;
+        entry.lastError = "译文结构与原消息不匹配，已保留原文。";
+        return true;
+    }
+
+    public synchronized boolean toggle(String id) {
+        Entry entry = entries.get(id);
+        if (entry == null || entry.status != Status.TRANSLATED || entry.translatedText == null) return false;
+        entry.showingOriginal = !entry.showingOriginal;
+        return true;
+    }
+
+    public synchronized boolean prepareRetry(Entry entry) {
+        if (entries.get(entry.messageId) != entry || entry.status != Status.FAILED) return false;
+        entry.status = Status.IDLE;
+        entry.lastError = null;
+        return true;
+    }
+
+    synchronized int size() { return entries.size(); }
 }

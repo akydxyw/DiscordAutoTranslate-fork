@@ -35,11 +35,12 @@ public final class EmbedHooks {
                 .setId("dat.embedBind")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
+                    if (!HookRuntime.isActive()) return chain.proceed();
                     View view = hostView(chain.getThisObject(), spec);
                     EmbedBinding binding = null;
                     String primary = null;
                     try {
-                        if (!HookBridge.get().isRerendering() && view != null) {
+                        if (!RenderDispatcher.isRerendering() && view != null) {
                             // Clear even when the new card has no translatable text or invalid input.
                             // Old queued callbacks must never replay earlier same-row card parameters.
                             RerenderRegistry.unregister(view);
@@ -80,12 +81,12 @@ public final class EmbedHooks {
             }
             // Identity mappings also cover rerenders; conversion never creates a request.
             bridge.rememberContent(key, text);
-            if (!bridge.isRerendering()) {
+            if (!RenderDispatcher.isRerendering()) {
                 bridge.bindView(view, key);
                 RerenderRegistry.register(key, view, target, bind, args);
             }
         }
-        if (!bridge.isRerendering()) {
+        if (!RenderDispatcher.isRerendering()) {
             for (int i = 0; i < keys.size(); i++) {
                 if (keys.get(i) != null) {
                     bridge.onMessageBound(view, keys.get(i), binding.texts.get(i));

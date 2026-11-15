@@ -25,15 +25,16 @@ Discord AutoTranslate 是运行在 Discord 进程内的 LSPosed 模块（LibXpos
 io.github.wxmyyds.discordautotranslate
   ModuleEntry.java            模块唯一入口：生命周期、Hook 安装、状态重建
   core/                       与 Discord 无关的纯逻辑
-    Config / MemoryPrefs / PreferenceCommit      默认值、显式配置错误与提交事务
-    StateStore / Scheduler / TranslationCache
+    Config / MemoryPrefs / PreferenceCommit / ConfigurationSync
+    StateStore / TranslationTaskId / Scheduler / TranslationCache
     TextExtractor / BlankLines / Segments / EnglishDetector
     Http / Protocols / JsonPath（JSON 请求与响应提取）
     Reflect / Sha256 / ModuleResources / TranslationException
   hooks/                      Discord Hook 与渲染替换
     MessageHooks / HookBridge / EmbedHooks
     PollHooks / PollBinding / PollCardState / PollTextProjection / PollIconTouch
-    ContentNodes / StructurableTextFactory / RerenderRegistry / RowRefresher
+    ContentNodes / StructurableTextFactory / RerenderRegistry / RenderDispatcher / RowRefresher
+    HookRuntime                  注册完成前的统一业务屏障
     IdentityMessageMap / ReplyTextProjection / HookDiagnostics
     InlineIconInjector / InlineIconSpan / InlineIconGeometry / IconClickSpanFactory
   translate/                  JsonApiEngine / ApiTester（翻译请求与连接测试）
@@ -49,7 +50,7 @@ io.github.wxmyyds.discordautotranslate
 | `340013` | 消息绑定、正文渲染、文本转换（回复消费者映射未提供） | 富 Embed | `MessageContentView` 实例方法；`TextUtilsKt.toSpannable` |
 | `352017` | `MessageView.f` 建立引用作用域并登记预览消费者；回复按消息 ID/编辑版本读取规范正文及已有状态；`embed.bind` 精确匹配 `q9.q.b` 实例方法（34 个 Java 参数，返回 `void`） | Poll 使用精确绑定作用域及原生文本/无障碍 setter；帖子预览未接入 | 正文 `MessageContentView.c`；回复 `af.i` 直接调用 `kl.b.B0`，添加首行 `LeadingMarginSpan` 后交给 Drawee，模块不覆盖 `TextView` |
 
-必需 Hook ID 与数量由 profile 声明；安装前逐项解析并检查所有必需目标，安装后逐项确认这些 ID 均已创建 Hook，缺少任一项时回滚已创建的 Hook。
+必需 Hook ID 与数量由 profile 声明；安装前逐项解析目标，注册期间 `HookRuntime` 不激活，拦截器只执行宿主原方法。全部必需 Hook 注册成功后才激活业务并保存成功 profile。失败统一解绑本次句柄，并清理运行配置、宿主构造缓存、状态、调度和渲染代次；不保留半安装业务。
 
 
 ## 状态与并发（防串位 / 防旧结果覆盖）
@@ -60,17 +61,16 @@ io.github.wxmyyds.discordautotranslate
   `RerenderRegistry.stillBound` 校验“视图当前绑定是否仍是目标消息”。
 - 同正文不同对象用 `IdentityMessageMap`（弱引用 + identity hash）反查，避免
   Kotlin data class 按内容 equal 造成两条相同消息互相覆盖。
-- 异步结果回写前双重校验：
-  - `contentHash = SHA-256(正文 + 配置版本)` —— 消息被编辑后旧结果不落位；
-  - `generation` —— 热重载/配置变更后旧结果不落位。
-- 提交、获得并发许可后及回写前校验；每项任务只调用一次引擎，过期结果丢弃。
+- `TranslationTaskId` 将消息/段键、内容 hash、generation 和唯一 attempt 贯穿状态、调度与回写；包括被丢弃的回调，也只能迁移自己仍拥有的状态。编辑替换状态对象；同内容重新请求不会复用旧 attempt。
+- `StateStore` 强制按 LRU 保留最多 512 条，覆盖所有状态；生产/渲染读取更新活跃顺序，后台任务所有权核对不改变顺序；规范原始内容与观察到的编辑版本保存在对应状态条目中，同步失效/淘汰。被淘汰任务不复活条目；回复仍只消费保留的规范状态，不增加请求。
+- 调度器唯一 FIFO 最多等待 512 项，只把获得执行额度的任务派发到工作线程；并发 1–8，等待不占线程。去重覆盖等待、执行和主线程结果交付；过期等待项可移除，满队列明确报告失败，无备用执行或自动重试。
+- `RenderDispatcher` 独立拥有原生重放作用域、主线程队列与代次失效；嵌套重放恢复前一作用域。渲染订阅和原生行布局传播不由翻译协调器执行。
 
 ## 热重载
 
 - `onHotReloaded` 以保存的版本号从新模块 APK 读取当前 profile，只从该 profile 的消息绑定目标取得宿主 ClassLoader，并核对全部必需目标；排除 Android `Application.attach` 的启动类加载器。不保存/复用旧代次 JSON。读取失败或 ClassLoader 缺失时明确报告需要重启，不重新挂载已经执行完的 `Application.attach` 伪装恢复。
 - `ModuleResources.reset()` 后重新 `attach(this)`，否则图标资源解析失败。
-- `TranslationCache.reset()` 清理旧单例；`Scheduler.shutdown()` 经
-  `Engine.cancel(Thread)` → `Http.cancelRequestOn` 关闭在途连接。
+- `TranslationCache.reset()` 清理旧单例；`Scheduler.shutdown()` 经 `Engine.cancel(Thread)` → `Http.cancelRequestOn` 请求关闭在途连接。热重载只接受已成功安装的运行代次；仅有 bootstrap 或安装失败时拒绝拆卸并报告需重启。停止先暂停所有生产入口，再确认所有当前/退休调度器线程终止，超时明确拒绝重载；不能把请求停止当作已退出。渲染回调与行刷新都使用可清除的自有 Handler，并按代次失效，不把旧模块回调留在脱离窗口的 View 队列。
 
 ## 版本适配
 
@@ -94,4 +94,6 @@ io.github.wxmyyds.discordautotranslate
 - 混淆容器只调用 `nodeConstructors` 指定的精确构造器，参数顺序和字段明确配置；失败不换构造器或改走 copy。未指定构造器的类型使用原 data class copy 规则。
 - 点击 span 只有配置构造器/回调一种实现；无 interfaceProxy。
 - 回复排障的 trace、逐条空白/布局监听和附件快照已删除；保留已验证的显示投影和必要错误日志。
-- 设置读取错误不能用默认值填表并保存；页面锁定并保留存储，用户确认重置后才删除配置。提交失败还必须恢复原内存快照，不能把已改变但未持久化的配置作为成功同步。
+- `ConfigurationSync` 唯一拥有本地配置写入、首次导入和导出策略；本地写入均经过 `PreferenceCommit`，初始化标记只随成功持久化建立权威。设置读取错误不能填默认值覆盖；失败恢复原快照，回滚也失败时阻止读取/同步。页面只消费操作结果。
+- service 连接为进程级唯一监听，页面在 onStart/onStop 独立弱订阅；停止期间完成的持久化延后消费，不覆盖未保存草稿。只有真正未保存的草稿写入实例状态；干净页面重新读取当前权威配置，不恢复旧的干净表单覆盖其他页面已保存内容。
+- 本阶段未改富文本遍历/对齐规则、HTTP 请求级取消协调与 SSE 分层；这些仍是下一阶段明确的架构工作，不声称已解决。

@@ -30,6 +30,15 @@
 - 每行仅有一个 `PollCardState` 显示选择和当前段键列表；重复绑定、标题/选项编辑保留选择并删除旧键，段 Entry 的 `showingOriginal` 不控制显示，完成回调不重置选择；新代次与桥接重置清空整组。仅当前标题图标汇总段状态、按卡片选择着色并控制整组切换/失败段重试，刷新全部当前键。选项无图标和独立切换触摸；图片选项无障碍文本也跟随标题，原生投票点击不变。340013 投票仍未接入。
 - `PollCardStateTest` 与 `PollTextProjectionTest` 使用现有 StateStore 和假 Primitive 模型，覆盖整组选择、迟到译文、编辑/旧键隔离与代次清理，不代替设备投票/点击/布局回归。构建及单测需要通过 GitHub Actions 执行，设备回归尚未确认。
 
+## 架构优化第一阶段
+
+- 任务接口只接受完整 `TranslationTaskId`；旧 ID/hash submit 重载和信号量排队已删除。唯一 FIFO 负责等待、调度和去重；回调离开调度锁执行，不能阻止其他 worker 收尾。
+- `StateStore` 负责任务状态迁移和规范 Source 生命周期；512 条上限覆盖全部状态，后台所有权检查不改变 LRU。旧回调即使被拒绝也不能迁移新 attempt。
+- 原生重放移到 `RenderDispatcher`，HookBridge 不再创建独立 Handler 或持有 rawContent 平行仓库；行刷新也从自有队列派发，清理时移除旧代次回调。
+- `ConfigurationSync` 统一本地事务与首次导入的初始化标记；页面不直接 commit。服务多订阅、未保存草稿恢复与干净表单重读分开。
+- `HookRuntime` 在安装验证完成后才激活；暂停阻止 Hook 和点击重试生产。停止未确认线程终止时拒绝热重载；bootstrap-only 阶段也拒绝重载，不另建恢复链。
+- 本阶段不改回复行段压平、富文本对齐及 Poll 模型/触摸语义。富文本单遍历计划、请求级取消协调和协议主导 SSE 结束仍未实施。编译/测试必须经 GitHub Actions，设备回归需另行确认。
+
 ## 已确认的架构教训（改代码前先读）
 
 1. **文本转换目标按 profile 变化**：`340013` 使用 `TextUtilsKt.toSpannable`，

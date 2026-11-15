@@ -73,12 +73,13 @@ public final class PollHooks {
         handles.add(module.hook(method).setId("dat." + id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
+                    if (!HookRuntime.isActive()) return chain.proceed();
                     PollBinding binding;
                     Object original;
                     String key;
                     HookBridge bridge = HookBridge.get();
                     try {
-                        if (!bridge.isRerendering()) {
+                        if (!RenderDispatcher.isRerendering()) {
                             Object receiver = PollBinding.receiver(chain.getThisObject(),
                                     chain.getArgs(), spec, answer);
                             if (!(receiver instanceof View))
@@ -103,7 +104,7 @@ public final class PollHooks {
                         }
                         key = original == null || !HookBridge.looksLikeSnowflake(binding.messageId) ? null
                                 : bridge.pollStateKey(binding.messageId, binding.slot, original);
-                        if (bridge.isRerendering()) {
+                        if (RenderDispatcher.isRerendering()) {
                             // An answer's saved adapter position may now name another slot or text.
                             // Never replay it merely because it still belongs to the same poll row.
                             if (key == null || !key.equals(bridge.directMessageIdOf(view))
@@ -124,7 +125,7 @@ public final class PollHooks {
                         HookDiagnostics.warnOnce("poll.bind.failed." + answer,
                                 "poll binding failed error=" + failure.getClass().getSimpleName());
                         // Stale positional replays must not reach the native bind with invalid args.
-                        if (bridge.isRerendering()) return null;
+                        if (RenderDispatcher.isRerendering()) return null;
                         try (Scope blocked = new Scope(null, null, null)) {
                             return chain.proceed();
                         }
@@ -172,6 +173,7 @@ public final class PollHooks {
         handles.add(module.hook(method).setId("dat." + id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
+                    if (!HookRuntime.isActive()) return chain.proceed();
                     Scope scope = CURRENT.get();
                     if (scope == null || scope.key == null || contentArgument < 0
                             || contentArgument >= chain.getArgs().size()

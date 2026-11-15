@@ -37,17 +37,19 @@
 
 ## 调度与重试（core/Scheduler + TranslationException）
 
-- 线程池异步执行，`AdjustableSemaphore` 限制并发（`max_concurrency`，可运行时调整）。
-- 去重：`Scheduler.inFlight`（按 messageId + contentHash + generation）+ `TranslationCache`。
+- 单一有界 FIFO 等待队列最多 512 项，按 `max_concurrency`（1–8）派发；等待任务不占工作线程。调低不打断已执行请求，调高可立即派发；队列满明确失败，不改走备用线程/主线程。
+- `TranslationTaskId` 包含消息键、hash、generation 和唯一 attempt。调度按消息版本去重，直到主线程交付结束；状态回写额外检查 attempt 所有权，过期回调不能修改新状态。
 - 错误分类：`CONFIG / NETWORK / TIMEOUT / HTTP / RATE_LIMIT / PARSE / EMPTY / CANCELLED`。
 - 自动重试：无；一次失败后由用户手动点击图标重新发起请求。
-- 过期请求丢弃：提交、获得并发许可后及回写前校验任务是否仍有效。
+- 派发执行前和主线程回写前核对任务所有权；过期等待项可移除，每个有效任务只调用一次引擎。
 
 ## 缓存
 
 `TranslationCache`，LRU 上限 512；键 = `SHA-256(正文 + 配置版本)`。
 配置版本纳入 `apiUrl / model / targetLang / protocol / streaming / systemPrompt /
 凭据 SHA-256 指纹`：任何影响结果的配置变化都会使旧条目不再命中。
+
+`StateStore` 与译文缓存不是同一仓库：状态、规范原内容快照和任务所有权共用最多 512 条 LRU 生命周期，所有状态均受上限约束。淘汰结果不创建新状态，重绑才重新进入正常生产入口。
 
 ## 配置项（core/Config；缺省键使用默认值，显式非法值使快照无效）
 
@@ -65,8 +67,8 @@
 | `timeout_ms` / `max_concurrency` | 正整数 | 超时与并发上限，≤0 视为未配置 |
 
 - `apiKey` 与 `extraHeaders` 默认值为空串；空密钥与空请求头是有效配置。
-- 缺省配置键使用默认值；已保存的类型或必填值无效会使配置整体不可用。设置页不把错误快照中的占位默认值填入可保存表单：锁定保存/测试/同步并保留原存储，只有用户明确确认“重置已保存设置”才删除全部配置。Android commit 可能先改变内存再失败；保存/重置统一保存原始键快照，失败时恢复快照并仍报告失败，恢复持久化也失败时本进程阻止读取/同步，直到用户明确重试成功。这是配置事务原子性，不是替换翻译实现或自动重试请求。
-- 设置页始终先保存到模块自身的私有 SharedPreferences，不依赖 LSPosed service 在线；模块启用并建立 service 后，本地已初始化的配置推送到 remote preferences，否则首次从 remote 导入旧配置。模块进程仍只读取 remote preferences。
+- 缺省配置键使用默认值；已保存的类型或必填值无效会使配置整体不可用。设置页不把错误快照中的占位默认值填入可保存表单：锁定保存/测试/同步并保留原存储，只有用户明确确认“重置已保存设置”才删除全部配置。Android commit 可能先改变内存再失败；保存/重置统一保存原始键快照，失败时恢复快照并仍报告失败，恢复持久化也失败时本进程阻止读取/同步，直到用户明确重试成功。首次 remote→local 导入也使用相同事务和初始化标记，不再直接提交本地配置。这是配置事务原子性，不是替换翻译实现或自动重试请求。
+- `ConfigurationSync` 拥有保存/重置、首次导入与导出规则。设置页先持久化模块私有 SharedPreferences，不依赖 service 在线；本地已确认初始化后才向 remote 导出，否则首次导入。导入失败不得切换权威来源。模块进程仍只读取 remote preferences；连接由进程级唯一 listener 管理，页面可独立订阅。
 - 保存通过 `commit()` 在后台执行；成功后提示 Discord 可能需要重启，因目标进程不监听 remote preferences 变更。
 
 ## 隐私与日志

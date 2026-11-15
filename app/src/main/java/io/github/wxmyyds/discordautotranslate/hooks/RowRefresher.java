@@ -13,8 +13,7 @@ import java.lang.reflect.Method;
  * 行刷新与强制重新布局：译文替换后，宿主 RecyclerView 的行高不会自动更新，
  * 本类集中负责把「内外两层列表都重新测量」所需的全部视图树反射操作。
  *
- * <p>从 {@link HookBridge} 拆出的职责：HookBridge 只负责投递重渲染
- * （{@code requestRerender}），本类负责重渲染之后的行失效与布局传播。
+ * <p>{@link RenderDispatcher} 负责投递原生重渲染，本类负责之后的行失效与布局传播。
  * 两者的衔接点是 {@link #postInvalidateRow}。</p>
  *
  * <p>本类不依赖 HookBridge 的任何状态；“视图当前绑定的消息 ID”
@@ -29,6 +28,9 @@ final class RowRefresher {
 
     private RowRefresher() {
     }
+
+    private static volatile long epoch;
+    static void reset() { epoch++; PENDING_ROW_REFRESH.clear(); }
 
     /**
      * 把行刷新投递到下一轮消息队列，并按消息去重。
@@ -47,7 +49,9 @@ final class RowRefresher {
         if (!PENDING_ROW_REFRESH.add(key)) {
             return; // 同一帧内已经安排过，避免重复通知造成多次重绑。
         }
-        boolean posted = view.post(() -> {
+        final long scheduledEpoch = epoch;
+        boolean posted = RenderDispatcher.post(() -> {
+            if (scheduledEpoch != epoch) return;
             String currentBound = lookup.boundIdOf(view);
             if (messageId != null
                     && !RerenderRegistry.stillBound(messageId, currentBound)) {
@@ -59,7 +63,7 @@ final class RowRefresher {
         });
         if (!posted) {
             PENDING_ROW_REFRESH.remove(key);
-            // 视图未附着：滚动重新绑定时仍会走正常渲染，无需强制刷新。
+            // Dispatcher is stopped or its queue rejected the post; do not retain this refresh.
         }
     }
 

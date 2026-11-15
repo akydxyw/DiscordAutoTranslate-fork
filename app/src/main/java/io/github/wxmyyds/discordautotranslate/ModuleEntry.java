@@ -23,6 +23,8 @@ import io.github.wxmyyds.discordautotranslate.hooks.RerenderRegistry;
 import io.github.wxmyyds.discordautotranslate.hooks.StructurableTextFactory;
 import io.github.wxmyyds.discordautotranslate.hooks.MessageHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.PollHooks;
+import io.github.wxmyyds.discordautotranslate.hooks.RenderDispatcher;
+import io.github.wxmyyds.discordautotranslate.hooks.HookRuntime;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -102,15 +104,20 @@ public class ModuleEntry extends XposedModule {
     @Override
     public boolean onHotReloading(@NonNull XposedModuleInterface.HotReloadingParam param) {
         try {
+            if (!installed) {
+                diagnosticInfo("hot reload rejected: no successfully installed runtime; restart Discord required");
+                return false;
+            }
             Bundle state = new Bundle();
-            if (hookConfiguration != null) {
+            if (installed && hookConfiguration != null) {
                 state.putInt("hookVersionCode", hookConfiguration.versionCode());
             }
             param.setSavedInstanceState(state);
             release();
             return true;
-        } catch (Throwable ignored) {
-            // 释放失败：拒绝本次热重载，让框架保留旧代次。
+        } catch (Throwable failure) {
+            diagnosticInfo("hot reload teardown incomplete error="
+                    + failure.getClass().getSimpleName() + "; restart Discord required");
             return false;
         }
     }
@@ -139,6 +146,7 @@ public class ModuleEntry extends XposedModule {
         HookBridge.get().reset();
         TranslationCache.reset();
         RerenderRegistry.clear();
+        RenderDispatcher.reset();
         StructurableTextFactory.reset();
         // 图标 Drawable 缓存在模块资源加载器里，热重载后必须重新解析：
         // 否则旧代次持有的 Drawable 会被继续使用。
@@ -255,15 +263,16 @@ public class ModuleEntry extends XposedModule {
         if (!config.hasAllRequiredTargets(cl)) {
             throw new IllegalStateException("configured required hook target is unavailable");
         }
-        hookConfiguration = config;
-        HookConfiguration.activate(config);
-        StructurableTextFactory.init(cl, config);
-        Scheduler.MainThread.install();
-        reloadConfig();
-
+        HookRuntime.suspend();
         Set<String> installedHookIds = new HashSet<>();
         List<XposedInterface.HookHandle> created = new ArrayList<>();
         try {
+            ModuleResources.attach(this);
+            HookConfiguration.activate(config);
+            StructurableTextFactory.init(cl, config);
+            Scheduler.MainThread.install();
+            RenderDispatcher.install();
+            reloadConfig();
             created.addAll(MessageHooks.install(this, cl, config, installedHookIds));
             created.addAll(EmbedHooks.install(this, cl, config, installedHookIds));
             created.addAll(PollHooks.install(this, cl, config, installedHookIds));
@@ -278,9 +287,12 @@ public class ModuleEntry extends XposedModule {
                     // Roll back incomplete required hook installation.
                 }
             }
+            clearRuntime();
             throw new IllegalStateException("configured hook installation failed", failure);
         }
         hooks.addAll(created);
+        hookConfiguration = config;
+        HookRuntime.activate();
         diagnosticInfo("installed hook profile versionCode=" + config.versionCode()
                 + " requiredHookIds=" + installedHookIds);
     }
@@ -307,6 +319,11 @@ public class ModuleEntry extends XposedModule {
 
     /** 停止线程、解绑 Hook、清理引用。 */
     private void release() {
+        HookRuntime.suspend();
+        // Refuse reload before removing the old hooks if owned workers are still alive.
+        if (!Scheduler.resetAndAwait(2000L)) {
+            throw new IllegalStateException("Translation workers have not stopped; restart Discord required");
+        }
         for (XposedInterface.HookHandle h : hooks) {
             try {
                 h.unhook();
@@ -315,9 +332,17 @@ public class ModuleEntry extends XposedModule {
             }
         }
         hooks.clear();
+        clearRuntime();
+        bootstrapInstalled = false;
+    }
+
+    /** Installation failure and successful teardown clear the same runtime generation. */
+    private void clearRuntime() {
+        HookRuntime.suspend();
         Scheduler.MainThread.clear();
-        // 等待线程真正结束再返回 true，否则旧代次线程会继续存活（需求 §5.1）。
-        Scheduler.resetAndAwait(2000L);
+        RenderDispatcher.reset();
+        Scheduler.reset();
+        StateStore.get().onNewGeneration();
         HookBridge.get().reset();
         TranslationCache.reset();
         RerenderRegistry.clear();
@@ -325,7 +350,6 @@ public class ModuleEntry extends XposedModule {
         InlineIconSpan.resetAll();
         ModuleResources.reset();
         installed = false;
-        bootstrapInstalled = false;
         hookConfiguration = null;
         HookConfiguration.activate(null);
     }

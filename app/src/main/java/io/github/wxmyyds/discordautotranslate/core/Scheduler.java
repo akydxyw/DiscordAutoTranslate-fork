@@ -2,62 +2,52 @@ package io.github.wxmyyds.discordautotranslate.core;
 
 import androidx.annotation.Nullable;
 
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.SynchronousQueue;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 翻译调度：异步执行、并发限制、按“消息 ID + 内容版本”去重、丢弃过期结果。
- *
- * <p>需求映射：
- * <ul>
- *   <li>§5.4 后台异步、不阻塞主线程 → 线程池执行，结果经主线程回调。</li>
- *   <li>§5.4 限制并发 → {@link Semaphore} 按配置并发上限放行，可运行时变更。</li>
- *   <li>§5.4 去重 → {@link #inFlight} 以消息 ID、内容哈希与 generation 为键。</li>
- *   <li>§5.4 超时/网络失败/HTTP 错误/限流/无效响应 → 由 {@link TranslationException} 分类。</li>
- *   <li>§风险 3 旧结果不得覆盖新译 → 回写前同时校验 generation 与 contentHash。</li>
- * </ul>
+ * FIFO translation scheduling with bounded pending work and main-thread result delivery.
+ * Pending tasks never occupy workers; deduplication covers pending, running and undelivered results.
  */
 public final class Scheduler {
 
-    /** 翻译引擎抽象。实现必须在被中断时尽快返回。 */
+    /** Implementations must return promptly when interrupted or cancelled. */
     public interface Engine {
-        /**
-         * 同步执行翻译。
-         *
-         * @param text 待翻译原文
-         * @return 译文
-         * @throws Exception 网络/解析/配置错误（建议抛 {@link TranslationException}）
-         */
         String translate(String text) throws Exception;
 
-        /** 取消由此引擎执行、且当前绑定到 worker 的请求。 */
+        /** Cancel the request currently bound to this worker. */
         default void cancel(Thread worker) {
             worker.interrupt();
         }
     }
 
-    /** 结果回调，保证在主线程调用。 */
+    /** Results, including explicit admission failures, are delivered on the main thread. */
     public interface Callback {
-        /**
-         * @param accepted 结果是否被接受。false 表示已过期（消息被编辑、开关关闭、热重载或配置重置）。
-         * @param error    失败原因；成功时为 null
-         */
-        void onResult(String messageId, boolean accepted,
+        void onResult(TranslationTaskId taskId, boolean accepted,
                       @Nullable String translated, @Nullable Throwable error);
     }
 
-    /** 结果接受判定。 */
     public interface Acceptance {
-        boolean isStillValid(int generationSnapshot, String contentHash);
+        boolean isStillValid(TranslationTaskId taskId);
     }
 
-    /** 线程池上限。实际并发由 {@link #permits} 按配置控制。 */
     private static final int POOL_MAX = 8;
+    private static final int PENDING_CAPACITY = 512;
 
     private static volatile Scheduler sInstance;
+    /** Retired instances stay reachable until termination has actually been awaited successfully. */
+    private static final List<Scheduler> RETIRED = new ArrayList<>();
 
     public static Scheduler get() {
         Scheduler s = sInstance;
@@ -73,39 +63,60 @@ public final class Scheduler {
         return s;
     }
 
-    /** 热重载：关闭并丢弃当前实例。 */
-    public static void reset() {
-        synchronized (Scheduler.class) {
-            if (sInstance != null) {
-                sInstance.shutdown();
-                sInstance = null;
-            }
+    private static Scheduler retireCurrentLocked() {
+        Scheduler instance = sInstance;
+        if (instance != null) {
+            RETIRED.add(instance);
+            sInstance = null;
         }
+        return instance;
+    }
+
+    /** Request shutdown, retaining the retired instance for a subsequent termination check. */
+    public static void reset() {
+        Scheduler instance;
+        synchronized (Scheduler.class) {
+            instance = retireCurrentLocked();
+        }
+        // Do not acquire the scheduler lock while holding the singleton lock: callbacks can reenter get().
+        if (instance != null) instance.shutdown();
     }
 
     /**
-     * 热重载专用：关闭当前实例并等待线程结束。
-     *
-     * <p>LSPosed 要求 {@code onHotReloading} 返回 true 前停止本模块拥有的线程；
-     * 仅调用 {@link #reset()} 只是请求停止，无法确认旧线程已退出。</p>
-     *
-     * @return true 表示线程已在超时内终止
+     * Stop all retired/current instances within one timeout budget. A timeout never forgets live workers,
+     * even if reset() or get() occurred between two calls.
      */
     public static boolean resetAndAwait(long timeoutMs) {
-        Scheduler instance;
+        List<Scheduler> instances;
         synchronized (Scheduler.class) {
-            instance = sInstance;
-            sInstance = null;
+            retireCurrentLocked();
+            instances = new ArrayList<>(RETIRED);
         }
-        if (instance == null) {
-            return true;
+        long budget = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        long start = System.nanoTime();
+        // Request every shutdown before spending the budget awaiting any one instance.
+        for (Scheduler instance : instances) instance.shutdown();
+        boolean terminated = true;
+        for (Scheduler instance : instances) {
+            long remaining = Math.max(0L, budget - (System.nanoTime() - start));
+            if (instance.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                synchronized (Scheduler.class) {
+                    RETIRED.remove(instance);
+                }
+            } else {
+                terminated = false;
+            }
         }
-        return instance.shutdownAndAwait(timeoutMs);
+        return terminated;
     }
 
+    /**
+     * Only reserved active slots are sent to this dedicated executor. Its internal handoff queue can
+     * contain at most eight reservations; the user-facing pending FIFO lives exclusively in Scheduler.
+     */
     private final ThreadPoolExecutor pool = new ThreadPoolExecutor(
-            0, POOL_MAX, 30L, TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
+            POOL_MAX, POOL_MAX, 30L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(POOL_MAX),
             r -> {
                 Thread t = new Thread(r, "dat-translate");
                 t.setDaemon(true);
@@ -113,38 +124,33 @@ public final class Scheduler {
             },
             new ThreadPoolExecutor.AbortPolicy());
 
-    /** 并发闸门。permit 数等于配置的并发上限，可运行时调整。 */
-    private final AdjustableSemaphore permits = new AdjustableSemaphore(Config.DEF_MAX_CONCURRENCY);
-    private final AtomicInteger configuredConcurrency = new AtomicInteger(Config.DEF_MAX_CONCURRENCY);
-    /** 串行化目标容量调整与 permit 释放，避免快速调高/调低造成许可数漂移。 */
-    private final Object concurrencyLock = new Object();
+    /** The only lock for admission, dispatch, delivery reservation and shutdown; never for callbacks. */
+    private final Object lifecycleLock = new Object();
+    private final ArrayDeque<Task> pending = new ArrayDeque<>();
+    private final Map<TaskKey, Task> inFlight = new HashMap<>();
+    /** Independent of the version map: an obsolete running attempt still owns an active slot. */
+    private final Set<Task> activeTasks = new HashSet<>();
+    private int configuredConcurrency = Math.max(1, Math.min(POOL_MAX, Config.DEF_MAX_CONCURRENCY));
+    /** Includes executor reservations, not callbacks or scheduler-pending work. */
+    private int activeCount;
+    private volatile boolean shutdown;
+    /** Shutdown invalidates queued deliveries; a delivery reserved before it may run outside the lock. */
+    private long deliveryEpoch;
 
-    /**
-     * 可缩减 permit 的信号量。
-     *
-     * <p>{@link Semaphore#reducePermits(int)} 是 protected，无法从外部类调用，
-     * 因此通过子类暴露一个包内可见的封装。</p>
-     */
-    static final class AdjustableSemaphore extends Semaphore {
-        AdjustableSemaphore(int permits) {
-            super(permits, true);
-        }
+    private final AtomicInteger completed = new AtomicInteger();
+    private final AtomicInteger discarded = new AtomicInteger();
+    private final AtomicInteger failed = new AtomicInteger();
 
-        void reduce(int reduction) {
-            reducePermits(reduction);
-        }
-    }
-
-    /** 任务身份包含消息、内容版本与模块代次。 */
+    /** Deduplication deliberately ignores attempt identity, unlike TranslationTaskId.equals(). */
     private static final class TaskKey {
         final String messageId;
         final String contentHash;
         final int generation;
 
-        TaskKey(String messageId, String contentHash, int generation) {
-            this.messageId = messageId;
-            this.contentHash = contentHash;
-            this.generation = generation;
+        TaskKey(TranslationTaskId id) {
+            messageId = id.messageId;
+            contentHash = id.contentHash;
+            generation = id.generation;
         }
 
         @Override
@@ -152,8 +158,7 @@ public final class Scheduler {
             if (this == other) return true;
             if (!(other instanceof TaskKey)) return false;
             TaskKey that = (TaskKey) other;
-            return generation == that.generation
-                    && messageId.equals(that.messageId)
+            return generation == that.generation && messageId.equals(that.messageId)
                     && contentHash.equals(that.contentHash);
         }
 
@@ -161,93 +166,85 @@ public final class Scheduler {
         public int hashCode() {
             int result = messageId.hashCode();
             result = 31 * result + contentHash.hashCode();
-            result = 31 * result + generation;
-            return result;
+            return 31 * result + generation;
         }
     }
 
-    /** 保存任务执行时所需的数据，并记录当前执行线程以便引擎取消请求。 */
-    private static final class Task {
+    private final class Task implements Runnable {
+        final TranslationTaskId id;
         final TaskKey key;
         final String text;
         final Engine engine;
         final Acceptance acceptance;
         final Callback callback;
-        volatile Thread worker;
+        /** Accessed only under lifecycleLock. */
+        Thread worker;
+        boolean delivered;
+        volatile boolean obsolete;
 
-        Task(TaskKey key, String text, Engine engine, Acceptance acceptance, Callback callback) {
-            this.key = key;
+        Task(TranslationTaskId id, String text, Engine engine, Acceptance acceptance, Callback callback) {
+            this.id = id;
+            this.key = new TaskKey(id);
             this.text = text;
             this.engine = engine;
             this.acceptance = acceptance;
             this.callback = callback;
         }
+
+        @Override
+        public void run() {
+            runTask(this);
+        }
     }
 
-    /** task key -> 在途任务；按 key-value 移除，避免旧任务删除同 key 的新标记。 */
-    private final java.util.concurrent.ConcurrentHashMap<TaskKey, Task> inFlight =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
-    private final AtomicInteger completed = new AtomicInteger();
-    private final AtomicInteger discarded = new AtomicInteger();
-    private final AtomicInteger failed = new AtomicInteger();
-    /** 是否已关闭；关闭后的实例拒绝新任务并抑制未交付回调。 */
-    private volatile boolean shutdown;
-    private final Object lifecycleLock = new Object();
-
     public void shutdown() {
+        Map<Thread, Engine> workers = new HashMap<>();
         synchronized (lifecycleLock) {
             if (shutdown) return;
             shutdown = true;
-        }
-
-        java.util.List<Task> active = new java.util.ArrayList<>(inFlight.values());
-        try {
-            pool.shutdownNow();
-        } catch (Throwable ignored) {
-        }
-        for (Task task : active) {
-            Thread worker = task.worker;
-            if (worker != null) {
-                try {
-                    task.engine.cancel(worker);
-                } catch (Throwable ignored) {
-                    // 取消失败不阻断线程池收尾。
-                }
+            deliveryEpoch++;
+            for (Task task : activeTasks) {
+                if (task.worker != null) workers.put(task.worker, task.engine);
+            }
+            pending.clear();
+            inFlight.clear();
+            // Tasks removed from the executor never enter runTask and must release their reservations here.
+            for (Runnable queued : pool.shutdownNow()) {
+                if (activeTasks.remove(queued)) activeCount--;
             }
         }
-        inFlight.clear();
+        // Cancellation may involve engine locks or external code; never hold the scheduler lock here.
+        for (Map.Entry<Thread, Engine> entry : workers.entrySet()) {
+            try {
+                entry.getValue().cancel(entry.getKey());
+            } catch (Throwable ignored) {
+                // All workers were already interrupted by shutdownNow; continue cancelling the others.
+            }
+        }
     }
 
-    /** 关闭并等待线程池终止；超时或当前线程被中断时返回 false。 */
     public boolean shutdownAndAwait(long timeoutMs) {
         shutdown();
+        return awaitTermination(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS);
+    }
+
+    private boolean awaitTermination(long timeout, TimeUnit unit) {
         try {
-            return pool.awaitTermination(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS);
+            return pool.awaitTermination(timeout, unit);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
         }
     }
 
-    /**
-     * 按配置调整并发上限。可在设置变更后调用，立即生效。
-     * 仅在数值变化时调整 permit，避免影响在途任务。
-     */
+    /** Raising starts pending work immediately; lowering never interrupts already reserved/running work. */
     public void setMaxConcurrency(int value) {
-        int target = Math.max(1, Math.min(POOL_MAX, value));
-        synchronized (concurrencyLock) {
-            int current = configuredConcurrency.get();
-            if (target == current) {
-                return;
-            }
-            configuredConcurrency.set(target);
-            if (target > current) {
-                permits.release(target - current);
-            } else {
-                permits.reduce(current - target);
-            }
+        List<Runnable> rejectedResults = new ArrayList<>();
+        synchronized (lifecycleLock) {
+            configuredConcurrency = Math.max(1, Math.min(POOL_MAX, value));
+            dispatchLocked(rejectedResults);
         }
+        for (Runnable result : rejectedResults) result.run();
     }
 
     public int completedCount() {
@@ -263,133 +260,183 @@ public final class Scheduler {
     }
 
     public String stats() {
-        return "scheduler[completed=" + completed.get()
-                + ", discarded=" + discarded.get()
-                + ", failed=" + failed.get()
-                + ", inFlight=" + inFlight.size()
-                + ", concurrency=" + configuredConcurrency.get() + "]";
+        synchronized (lifecycleLock) {
+            return "scheduler[completed=" + completed.get()
+                    + ", discarded=" + discarded.get()
+                    + ", failed=" + failed.get()
+                    + ", inFlight=" + inFlight.size()
+                    + ", active=" + activeCount
+                    + ", pending=" + pending.size()
+                    + ", concurrency=" + configuredConcurrency + "]";
+        }
     }
 
     /**
-     * 提交翻译任务；每个去重键最多执行一次引擎调用。
-     *
-     * @param messageId   消息 ID
-     * @param contentHash 内容版本（含翻译配置版本）
-     * @param text        原文
-     * @param engine      翻译引擎
-     * @param accept      结果接受判定
-     * @param callback    主线程回调
+     * Admit one version of a row, deduping only while the existing attempt remains valid.
+     * Identity is created by the state owner, never by Scheduler. Obsolete pending rows are pruned
+     * before capacity rejection. A still-full FIFO reports an explicit failure, with no caller-runs
+     * or alternate execution path.
      */
-    public void submit(String messageId, String contentHash, String text,
-                       Engine engine, Acceptance accept, Callback callback) {
-        final int gen = StateStore.get().generation();
-        final Task task = new Task(new TaskKey(messageId, contentHash, gen),
-                text, engine, accept, callback);
-
-        if (shutdown) return;
-        Task existing = inFlight.putIfAbsent(task.key, task);
-        if (existing != null) {
-            return;
-        }
-        if (shutdown) {
-            inFlight.remove(task.key, task);
-            return;
-        }
-        try {
-            pool.execute(() -> runTask(task));
-        } catch (Throwable t) {
-            inFlight.remove(task.key, task);
+    public void submit(TranslationTaskId taskId, String text, Engine engine,
+                       Acceptance accept, Callback callback) {
+        Objects.requireNonNull(taskId, "taskId");
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(engine, "engine");
+        Objects.requireNonNull(accept, "accept");
+        Objects.requireNonNull(callback, "callback");
+        Task task = new Task(taskId, text, engine, accept, callback);
+        boolean queueFull;
+        List<Task> obsoletePending = new ArrayList<>();
+        List<Runnable> rejectedResults = new ArrayList<>();
+        synchronized (lifecycleLock) {
             if (shutdown) return;
-            TranslationException error = new TranslationException(
-                    TranslationException.Kind.UNKNOWN, "线程池已满或已关闭");
-            postResult(task, null, error, false);
+            Task existing = inFlight.get(task.key);
+            if (existing != null) {
+                if (isStillValid(existing)) return;
+                if (shutdown) return;
+                // An evicted/recreated row can have the same version but a different owning attempt.
+                // Remove obsolete waiting work rather than strand the new state behind silent dedup.
+                existing.obsolete = true;
+                if (pending.remove(existing)) obsoletePending.add(existing);
+            }
+            if (pending.size() == PENDING_CAPACITY) {
+                // LRU eviction can invalidate unrelated waiting rows. Reclaim those slots before
+                // treating the newest binding as overflow; valid pending work is never displaced.
+                for (Task waiting : new ArrayList<>(pending)) {
+                    if (!isStillValid(waiting) && pending.remove(waiting)) {
+                        waiting.obsolete = true;
+                        obsoletePending.add(waiting);
+                    }
+                    if (shutdown) return;
+                }
+            }
+            inFlight.put(task.key, task);
+            queueFull = pending.size() == PENDING_CAPACITY;
+            if (!queueFull) {
+                pending.addLast(task);
+                dispatchLocked(rejectedResults);
+            }
+        }
+        for (Runnable result : rejectedResults) result.run();
+        for (Task obsolete : obsoletePending) {
+            postResult(obsolete, null, new TranslationException(
+                    TranslationException.Kind.CANCELLED, "任务已失效"));
+        }
+        if (queueFull) {
+            postResult(task, null, new TranslationException(
+                    TranslationException.Kind.UNKNOWN, "翻译等待队列已满（512）"));
+        }
+    }
+
+    /**
+     * Must be called under lifecycleLock. Only dispatched tasks consume active slots. Rejection
+     * deliveries are collected for posting after unlocking, including with a synchronous dispatcher.
+     */
+    private void dispatchLocked(List<Runnable> rejectedResults) {
+        while (!shutdown && activeCount < configuredConcurrency && !pending.isEmpty()) {
+            Task task = pending.removeFirst();
+            activeCount++;
+            activeTasks.add(task);
+            try {
+                pool.execute(task);
+            } catch (RejectedExecutionException e) {
+                activeCount--;
+                activeTasks.remove(task);
+                rejectedResults.add(() -> postResult(task, null, new TranslationException(
+                        TranslationException.Kind.UNKNOWN, "翻译执行器拒绝任务", e)));
+            }
         }
     }
 
     private void runTask(Task task) {
-        task.worker = Thread.currentThread();
+        synchronized (lifecycleLock) {
+            if (shutdown) {
+                activeCount--;
+                activeTasks.remove(task);
+                return;
+            }
+            task.worker = Thread.currentThread();
+        }
         String result = null;
         Throwable error = null;
+        List<Runnable> rejectedResults = new ArrayList<>();
         try {
-            if (shutdown) {
+            if (shutdown || Thread.currentThread().isInterrupted()) {
                 throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
             }
-            result = translateOnce(task);
+            if (!isStillValid(task)) {
+                // Execution rejection is terminal even if settings/ownership become valid before UI delivery.
+                task.obsolete = true;
+                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已失效");
+            }
+            if (shutdown || Thread.currentThread().isInterrupted()) {
+                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
+            }
+            result = task.engine.translate(task.text);
         } catch (Throwable t) {
             error = t;
         } finally {
-            task.worker = null;
-            inFlight.remove(task.key, task);
+            synchronized (lifecycleLock) {
+                task.worker = null;
+                activeCount--;
+                activeTasks.remove(task);
+                dispatchLocked(rejectedResults);
+            }
         }
-
-        if (!shutdown) {
-            postResult(task, result, error, true);
-        }
+        for (Runnable rejected : rejectedResults) rejected.run();
+        postResult(task, result, error);
     }
 
-    /** 主线程交付时再次检查 shutdown 与内容接受状态。 */
-    private void postResult(Task task, @Nullable String translated,
-                            @Nullable Throwable error, boolean countCompletion) {
+    /**
+     * The final epoch check and counter update reserve delivery (its lifecycle start) under the lock.
+     * Shutdown suppresses every later reservation. An already reserved callback may physically enter
+     * or return after shutdown; shutdown neither waits for it nor revokes it. This lets main-thread
+     * callbacks reenter shutdownAndAwait/resetAndAwait without blocking workers' final slot release.
+     * Keep the dedup marker until the external callback returns, including when it throws or reenters.
+     */
+    private void postResult(Task task, @Nullable String translated, @Nullable Throwable error) {
+        final long epoch;
+        synchronized (lifecycleLock) {
+            if (shutdown) return;
+            epoch = deliveryEpoch;
+        }
         MainThread.post(() -> {
+            final boolean accepted;
             synchronized (lifecycleLock) {
-                if (shutdown) return;
-                boolean accepted = isStillValid(task);
-                if (shutdown) return;
-                if (countCompletion) {
-                    if (accepted) {
-                        if (error == null) {
-                            completed.incrementAndGet();
-                        } else {
-                            failed.incrementAndGet();
-                        }
-                    } else {
-                        discarded.incrementAndGet();
-                    }
-                } else if (!accepted) {
-                    discarded.incrementAndGet();
+                if (shutdown || epoch != deliveryEpoch || task.delivered) return;
+                task.delivered = true;
+                accepted = inFlight.get(task.key) == task && isStillValid(task);
+                // Acceptance may reenter shutdown; no reservation or counters may survive that boundary.
+                if (shutdown || epoch != deliveryEpoch) {
+                    inFlight.remove(task.key, task);
+                    return;
                 }
-                task.callback.onResult(task.key.messageId, accepted, translated, error);
+                if (!accepted) {
+                    discarded.incrementAndGet();
+                } else if (error != null) {
+                    failed.incrementAndGet();
+                } else {
+                    completed.incrementAndGet();
+                }
+            }
+            try {
+                task.callback.onResult(task.id, accepted, translated, error);
+            } finally {
+                synchronized (lifecycleLock) {
+                    inFlight.remove(task.key, task);
+                }
             }
         });
     }
 
     private boolean isStillValid(Task task) {
         try {
-            return task.acceptance.isStillValid(task.key.generation, task.key.contentHash);
+            return !task.obsolete && task.acceptance.isStillValid(task.id);
         } catch (Throwable t) {
             return false;
         }
     }
 
-    private String translateOnce(Task task) throws Throwable {
-        if (shutdown || Thread.currentThread().isInterrupted()) {
-            throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
-        }
-
-        boolean acquired = false;
-        try {
-            permits.acquire();
-            acquired = true;
-            if (shutdown || Thread.currentThread().isInterrupted()) {
-                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
-            }
-            if (!isStillValid(task)) {
-                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已失效");
-            }
-            return task.engine.translate(task.text);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消", ie);
-        } finally {
-            if (acquired) {
-                synchronized (concurrencyLock) {
-                    permits.release();
-                }
-            }
-        }
-    }
-
-    /** 稳定内容哈希：内容 + 配置版本（需求 §5.6 缓存键要求）。 */
     public static String contentHash(String text, String configVersion) {
         return Sha256.digestHex(text, configVersion);
     }

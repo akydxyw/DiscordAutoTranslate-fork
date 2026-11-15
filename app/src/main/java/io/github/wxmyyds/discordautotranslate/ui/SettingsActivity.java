@@ -27,6 +27,7 @@ import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.R;
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
 import io.github.wxmyyds.discordautotranslate.core.PreferenceCommit;
@@ -36,7 +37,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -50,21 +50,7 @@ import io.github.libxposed.service.XposedService;
 public class SettingsActivity extends Activity implements XposedServiceConnectionHolder.Listener {
 
     private static final String LOCAL_PREFS_NAME = "settings_before_activation";
-    private static final String KEY_LOCAL_INITIALIZED = "settings_initialized";
-    private static final String[] CONFIG_KEYS = {
-            Config.KEY_ENABLED, Config.KEY_API_URL, Config.KEY_API_KEY, Config.KEY_MODEL,
-            Config.KEY_TARGET_LANG, Config.KEY_EXTRA_HEADERS, Config.KEY_SYSTEM_PROMPT,
-            Config.KEY_PROTOCOL, Config.KEY_STREAMING, Config.KEY_TIMEOUT_MS,
-            Config.KEY_MAX_CONCURRENCY
-    };
-
-    private static final String[] LOCAL_COMMIT_KEYS = localCommitKeys();
-
-    private static String[] localCommitKeys() {
-        String[] keys = Arrays.copyOf(CONFIG_KEYS, CONFIG_KEYS.length + 1);
-        keys[CONFIG_KEYS.length] = KEY_LOCAL_INITIALIZED;
-        return keys;
-    }
+    private static final String STATE_DRAFT = "configuration_draft";
 
     private static final String[] TARGET_LANGUAGE_VALUES = {
             "简体中文", "繁體中文", "English", "日本語", "한국어", "Русский",
@@ -101,10 +87,16 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private Future<?> testFuture;
 
     private long testGeneration;
-    private long serviceGeneration;
+    private volatile long serviceGeneration;
+    private long subscribedConnectionGeneration = -1;
+    private long formGeneration;
+    private long syncAttemptGeneration = -1;
+    private long syncJobGeneration;
     private boolean saveInProgress;
     private boolean syncInProgress;
-    private boolean destroyed;
+    private boolean started;
+    private volatile boolean destroyed;
+    private final List<Runnable> deferredPersistenceCompletions = new ArrayList<>();
 
     private Spinner protocolSpinner;
     private Spinner targetLanguageSpinner;
@@ -146,34 +138,127 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         prefs = getSharedPreferences(LOCAL_PREFS_NAME, MODE_PRIVATE);
         loadIntoUi();
         installDirtyTracking();
+        restoreDraft(savedInstanceState);
         updateSaveButtonState();
         if (!persistedConfigInvalid) {
             updateStatus(getString(R.string.status_local_ready));
         }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        started = true;
+        if (!saveInProgress && !syncInProgress && !hasUnsavedChanges
+                && !PreferenceCommit.isPoisoned(prefs)) loadIntoUi();
+        if (service != null && (XposedServiceConnectionHolder.currentService() == null
+                || subscribedConnectionGeneration
+                        != XposedServiceConnectionHolder.connectionGeneration())) {
+            onServiceDied(service);
+        }
         XposedServiceConnectionHolder.bind(this);
+        List<Runnable> completions = new ArrayList<>(deferredPersistenceCompletions);
+        deferredPersistenceCompletions.clear();
+        for (Runnable completion : completions) {
+            completion.run();
+        }
+        updateSaveButtonState();
+    }
+
+    @Override
+    protected void onStop() {
+        started = false;
+        XposedServiceConnectionHolder.unbind(this);
+        cancelPendingTest();
+        updateSaveButtonState();
+        super.onStop();
     }
 
     @Override
     protected void onDestroy() {
         destroyed = true;
-        XposedServiceConnectionHolder.unbind(this);
+        deferredPersistenceCompletions.clear();
+        mainHandler.removeCallbacksAndMessages(null);
         cancelPendingTest();
         testExecutor.shutdownNow();
         saveExecutor.shutdownNow();
         super.onDestroy();
     }
 
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (persistedConfigInvalid || !hasUnsavedChanges) {
+            return;
+        }
+        Bundle draft = new Bundle();
+        EditText[] fields = configurationFields();
+        for (int i = 0; i < fields.length; i++) {
+            draft.putString("field_" + i, fields[i].getText().toString());
+        }
+        draft.putBoolean("enabled", enabledInput.isChecked());
+        draft.putBoolean("streaming", streamingInput.isChecked());
+        draft.putInt("protocol", protocolSpinner.getSelectedItemPosition());
+        draft.putString("language", selectedTargetLanguage());
+        draft.putString("baseline_protocol", baselineProtocol);
+        draft.putString("baseline_language", baselineTargetLanguage);
+        draft.putBoolean("dirty", hasUnsavedChanges);
+        outState.putBundle(STATE_DRAFT, draft);
+    }
+
+    private void restoreDraft(@Nullable Bundle savedState) {
+        Bundle draft = savedState == null ? null : savedState.getBundle(STATE_DRAFT);
+        if (draft == null || !draft.getBoolean("dirty") || persistedConfigInvalid) {
+            return;
+        }
+        loadingUi = true;
+        try {
+            EditText[] fields = configurationFields();
+            for (int i = 0; i < fields.length; i++) {
+                fields[i].setText(draft.getString("field_" + i));
+            }
+            enabledInput.setChecked(draft.getBoolean("enabled"));
+            protocolSpinner.setSelection(draft.getInt("protocol"));
+            streamingInput.setChecked(draft.getBoolean("streaming"));
+            String language = draft.getString("language");
+            ensureTargetLanguageAvailable(language);
+            targetLanguageSpinner.setSelection(targetLanguagePosition(language));
+            baselineProtocol = draft.getString("baseline_protocol");
+            baselineTargetLanguage = draft.getString("baseline_language");
+            hasUnsavedChanges = draft.getBoolean("dirty");
+            formGeneration++;
+            updateStreamingAvailability();
+        } finally {
+            loadingUi = false;
+        }
+    }
+
+    /** Persistence may finish while stopped; UI consumption waits for an active subscription. */
+    private void postPersistenceCompletion(Runnable completion) {
+        mainHandler.post(() -> {
+            if (destroyed) {
+                return;
+            }
+            if (started) {
+                completion.run();
+            } else {
+                deferredPersistenceCompletions.add(completion);
+            }
+        });
+    }
+
     // ------------------------------------------------------------ 服务连接
 
     @Override
     public void onServiceConnected(@NonNull XposedService connectedService) {
-        if (destroyed || prefs == null) {
+        if (!started || destroyed || prefs == null || service == connectedService) {
             return;
         }
         service = connectedService;
+        subscribedConnectionGeneration = XposedServiceConnectionHolder.connectionGeneration();
         serviceGeneration++;
+        syncJobGeneration++;
         syncInProgress = false;
-        final long generation = serviceGeneration;
         try {
             remotePrefs = connectedService.getRemotePreferences(Config.GROUP);
         } catch (Throwable t) {
@@ -182,51 +267,49 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             updateSaveButtonState();
             return;
         }
+        startServiceSync();
+    }
 
-        // The active save owns synchronization; a reconnect must not read its
-        // memory-before-disk intermediate state or bypass a failed rollback.
-        if (saveInProgress) {
+    private void startServiceSync() {
+        if (!started || destroyed || service == null || remotePrefs == null
+                || saveInProgress || syncInProgress
+                || syncAttemptGeneration == serviceGeneration) {
             return;
         }
-        if (PreferenceCommit.isPoisoned(prefs)) {
-            showInvalidSavedConfig();
-            showPersistenceFailure(true, getString(R.string.status_save_persist_failed));
-            return;
-        }
-        if (persistedConfigInvalid) {
-            updateSaveButtonState();
-            updateStatus(getString(R.string.status_invalid_saved_config));
-            return;
-        }
+        // One attempt per actual connection generation, not per Activity start/replay.
+        syncAttemptGeneration = serviceGeneration;
+        final long generation = serviceGeneration;
+        final long importFormGeneration = formGeneration;
+        final long job = ++syncJobGeneration;
+        final XposedService connectedService = service;
+        final SharedPreferences local = prefs;
+        final SharedPreferences remote = remotePrefs;
         syncInProgress = true;
         updateSaveButtonState();
         updateStatus(getString(R.string.status_syncing));
-        final SharedPreferences local = prefs;
-        final SharedPreferences remote = remotePrefs;
         try {
             saveExecutor.execute(() -> {
-                boolean synced = false;
-                boolean invalidSource = false;
-                try {
-                    synchronized (PreferenceCommit.class) {
-                        if (!PreferenceCommit.isPoisoned(local)) {
-                            boolean initialized = local.getBoolean(KEY_LOCAL_INITIALIZED, false);
-                            SharedPreferences source = initialized ? local : remote;
-                            invalidSource = Config.read(source).configError != null;
-                            if (!invalidSource) {
-                                synced = copyConfigPreferences(source,
-                                        initialized ? remote : local, !initialized);
-                            }
-                        }
+                final ConfigurationSync.Result result;
+                synchronized (PreferenceCommit.class) {
+                    if (destroyed || generation != serviceGeneration) {
+                        return;
                     }
-                } catch (Throwable ignored) {
-                    synced = false;
+                    result = ConfigurationSync.synchronize(local, remote);
                 }
-                final boolean syncResult = synced;
-                final boolean invalidResult = invalidSource;
-                mainHandler.post(() -> {
-                    if (destroyed || generation != serviceGeneration
-                            || local != prefs || remote != remotePrefs) {
+                postPersistenceCompletion(() -> {
+                    if (!started || destroyed || local != prefs) {
+                        return;
+                    }
+                    // Refresh only confirmed authority; never load a failed initial import.
+                    boolean localConfirmed = result.imported()
+                            || result.direction == ConfigurationSync.Direction.EXPORT;
+                    if (localConfirmed && !saveInProgress && !hasUnsavedChanges
+                            && importFormGeneration == formGeneration
+                            && !PreferenceCommit.isPoisoned(local)) {
+                        loadIntoUi();
+                    }
+                    if (generation != serviceGeneration || job != syncJobGeneration
+                            || remote != remotePrefs) {
                         return;
                     }
                     syncInProgress = false;
@@ -236,13 +319,17 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                                 getString(R.string.status_save_persist_failed));
                         return;
                     }
-                    if (invalidResult) {
-                        showInvalidSavedConfig();
-                    } else if (!persistedConfigInvalid && !hasUnsavedChanges) {
-                        loadIntoUi();
+                    if (result.status == ConfigurationSync.Status.INVALID_SOURCE) {
+                        // Invalid remote data cannot invalidate/erase the local draft.
+                        if (result.direction != ConfigurationSync.Direction.IMPORT) {
+                            showInvalidSavedConfig();
+                        }
+                        updateSaveButtonState();
+                        updateStatus(getString(R.string.status_invalid_saved_config));
+                        return;
                     }
                     updateSaveButtonState();
-                    updateStatus(syncResult
+                    updateStatus(result.succeeded()
                             ? getString(R.string.status_connected,
                                     connectedService.getFrameworkVersion(),
                                     connectedService.getApiVersion())
@@ -258,12 +345,13 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
 
     @Override
     public void onServiceDied(@NonNull XposedService deadService) {
-        if (destroyed || service != deadService) {
+        if (!started || destroyed || service != deadService) {
             return;
         }
         service = null;
         remotePrefs = null;
         serviceGeneration++;
+        syncJobGeneration++;
         syncInProgress = false;
         updateSaveButtonState();
         updateStatus(getString(R.string.status_local_ready));
@@ -502,6 +590,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
 
     private void markDirty() {
         if (!loadingUi && !persistedConfigInvalid) {
+            formGeneration++;
             hasUnsavedChanges = true;
         }
     }
@@ -514,6 +603,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         String targetLanguage = selectedTargetLanguage();
         if (!sameValue(protocol, baselineProtocol)
                 || !sameValue(targetLanguage, baselineTargetLanguage)) {
+            formGeneration++;
             hasUnsavedChanges = true;
         }
     }
@@ -652,7 +742,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         if (saveInProgress || syncInProgress) {
             return;
         }
-        if (destroyed || prefs == null) {
+        if (!started || destroyed || prefs == null) {
             updateStatus(getString(R.string.status_save_persist_failed));
             return;
         }
@@ -665,7 +755,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     }
 
     private void confirmResetSavedSettings() {
-        if (destroyed || !persistedConfigInvalid || saveInProgress || syncInProgress) {
+        if (!started || destroyed || !persistedConfigInvalid || saveInProgress || syncInProgress) {
             return;
         }
         new AlertDialog.Builder(this)
@@ -689,7 +779,9 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         final SharedPreferences local = prefs;
         final SharedPreferences remote = remotePrefs;
-        if (destroyed || local == null) {
+        final long savedFormGeneration = formGeneration;
+        final long savedServiceGeneration = serviceGeneration;
+        if (!started || destroyed || local == null) {
             showPersistenceFailure(resetting, getString(R.string.status_save_persist_failed));
             return;
         }
@@ -702,38 +794,13 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         try {
             saveExecutor.execute(() -> {
-                boolean localCommitted = false;
-                boolean remoteCommitted = false;
-                Throwable failure = null;
-                PreferenceCommit.Result transaction = null;
-                try {
-                    synchronized (PreferenceCommit.class) {
-                        transaction = PreferenceCommit.commit(local, local.edit(),
-                                LOCAL_COMMIT_KEYS, editor -> {
-                                    if (resetting) {
-                                        for (String key : CONFIG_KEYS) {
-                                            editor.remove(key);
-                                        }
-                                    } else {
-                                        writeSnapshot(editor, snapshot);
-                                    }
-                                    editor.putBoolean(KEY_LOCAL_INITIALIZED, true);
-                                });
-                        localCommitted = transaction.committed;
-                        failure = transaction.failure;
-                        if (localCommitted && remote != null) {
-                            remoteCommitted = copyConfigPreferences(local, remote, false);
-                        }
-                    }
-                } catch (Throwable t) {
-                    failure = t;
-                }
-                final boolean localResult = localCommitted;
-                final boolean remoteResult = remoteCommitted;
-                final Throwable saveFailure = failure;
-                final PreferenceCommit.Result commitResult = transaction;
-                mainHandler.post(() -> {
-                    if (destroyed || local != prefs) {
+                ConfigurationSync.Result saveResult = ConfigurationSync.save(local, remote, snapshot);
+                final boolean localResult = saveResult.localCommitted;
+                final boolean remoteResult = remote != null && saveResult.succeeded();
+                final Throwable saveFailure = saveResult.failure;
+                final PreferenceCommit.Result commitResult = saveResult.transaction;
+                postPersistenceCompletion(() -> {
+                    if (!started || destroyed || local != prefs) {
                         return;
                     }
                     saveInProgress = false;
@@ -759,22 +826,27 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                     } else if (resetting) {
                         loadIntoUi();
                         String status = getString(remoteResult && remote == remotePrefs
+                                && savedServiceGeneration == serviceGeneration
                                 ? R.string.status_reset_saved_restart
                                 : remote == null ? R.string.status_reset_sync_pending
                                         : R.string.status_reset_sync_failed);
                         resultText.setText(status);
                         updateStatus(status);
-                        // 重置期间的重连不能跳过删除同步，仍复用服务的统一同步流程。
-                        if (service != null && remote != remotePrefs) {
-                            onServiceConnected(service);
-                        }
                     } else {
+                        if (savedFormGeneration == formGeneration) {
+                            baselineProtocol = snapshot.protocol;
+                            baselineTargetLanguage = snapshot.targetLang;
+                            hasUnsavedChanges = false;
+                        }
                         toast(getString(R.string.toast_saved));
                         updateStatus(getString(remoteResult && remote == remotePrefs
+                                && savedServiceGeneration == serviceGeneration
                                 ? R.string.status_saved_restart : R.string.status_sync_pending));
-                        if (service != null && remote != remotePrefs) {
-                            onServiceConnected(service);
-                        }
+                    }
+                    // A new connection blocked by this save gets its one sync attempt;
+                    // this is not a retry against the already attempted remote store.
+                    if (service != null && savedServiceGeneration != serviceGeneration) {
+                        startServiceSync();
                     }
                 });
             });
@@ -793,28 +865,9 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         updateStatus(detail);
     }
 
-    private static void writeSnapshot(SharedPreferences.Editor editor,
-                                     Config.Snapshot snapshot) {
-        editor.putBoolean(Config.KEY_ENABLED, snapshot.enabled);
-        editor.putString(Config.KEY_PROTOCOL, snapshot.protocol);
-        editor.putBoolean(Config.KEY_STREAMING, snapshot.streaming);
-        putUnlessDefault(editor, Config.KEY_API_URL, snapshot.apiUrl, Config.DEF_API_URL);
-        putUnlessDefault(editor, Config.KEY_API_KEY, snapshot.apiKey, Config.DEF_API_KEY);
-        putUnlessDefault(editor, Config.KEY_MODEL, snapshot.model, Config.DEF_MODEL);
-        putUnlessDefault(editor, Config.KEY_TARGET_LANG, snapshot.targetLang,
-                Config.DEF_TARGET_LANG);
-        putUnlessDefault(editor, Config.KEY_EXTRA_HEADERS, snapshot.extraHeaders,
-                Config.DEF_EXTRA_HEADERS);
-        putUnlessDefault(editor, Config.KEY_SYSTEM_PROMPT, snapshot.systemPrompt,
-                Config.DEF_SYSTEM_PROMPT);
-        putUnlessDefault(editor, Config.KEY_TIMEOUT_MS, snapshot.timeoutMs,
-                Config.DEF_TIMEOUT_MS);
-        putUnlessDefault(editor, Config.KEY_MAX_CONCURRENCY, snapshot.maxConcurrency,
-                Config.DEF_MAX_CONCURRENCY);
-    }
-
     private void updateSaveButtonState() {
-        boolean available = !destroyed && prefs != null && !saveInProgress && !syncInProgress;
+        boolean available = started && !destroyed && prefs != null
+                && !saveInProgress && !syncInProgress;
         if (saveButton != null) {
             saveButton.setEnabled(available && !persistedConfigInvalid);
         }
@@ -856,68 +909,6 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         field.setText(def.equals(value) ? "" : value);
     }
 
-    private static void putUnlessDefault(SharedPreferences.Editor editor, String key,
-                                         String value, String def) {
-        if (def.equals(value)) {
-            editor.remove(key);
-        } else {
-            editor.putString(key, value);
-        }
-    }
-
-    private static void putUnlessDefault(SharedPreferences.Editor editor, String key,
-                                         int value, int def) {
-        if (value == def) {
-            editor.remove(key);
-        } else {
-            editor.putInt(key, value);
-        }
-    }
-
-    private static boolean copyConfigPreferences(SharedPreferences source,
-                                                SharedPreferences target,
-                                                boolean markInitialized) {
-        Map<String, ?> values = source.getAll();
-        MemoryPrefs configValues = new MemoryPrefs();
-        for (String key : CONFIG_KEYS) {
-            if (values.containsKey(key)) {
-                configValues.put(key, values.get(key));
-            }
-        }
-        if (Config.read(configValues).configError != null) {
-            throw new IllegalArgumentException("Cannot sync invalid configuration");
-        }
-        SharedPreferences.Editor editor = target.edit();
-        for (String key : CONFIG_KEYS) {
-            if (!values.containsKey(key)) {
-                editor.remove(key);
-            } else {
-                putPreferenceValue(editor, key, values.get(key));
-            }
-        }
-        if (markInitialized) {
-            editor.putBoolean(KEY_LOCAL_INITIALIZED, true);
-        }
-        return editor.commit();
-    }
-
-    private static void putPreferenceValue(SharedPreferences.Editor editor,
-                                           String key, Object value) {
-        if (value instanceof String) {
-            editor.putString(key, (String) value);
-        } else if (value instanceof Boolean) {
-            editor.putBoolean(key, (Boolean) value);
-        } else if (value instanceof Integer) {
-            editor.putInt(key, (Integer) value);
-        } else if (value instanceof Long) {
-            editor.putLong(key, (Long) value);
-        } else if (value instanceof Float) {
-            editor.putFloat(key, (Float) value);
-        } else {
-            throw new IllegalArgumentException("Unsupported preference type");
-        }
-    }
-
     private static String promptOrDefault(EditText editText, String defaultValue) {
         String value = editText.getText().toString();
         return value.trim().isEmpty() ? defaultValue : value;
@@ -952,7 +943,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             updateStatus(getString(R.string.status_invalid_saved_config));
             return;
         }
-        if (destroyed || saveInProgress || syncInProgress || testFuture != null) {
+        if (!started || destroyed || saveInProgress || syncInProgress || testFuture != null) {
             return;
         }
         showResult(ApiTester.selfCheck(snapshotFromUi()));
@@ -964,7 +955,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
      * @param connectionTest true=使用固定测试文本，false=使用测试文本输入框
      */
     private void runTestTranslation(boolean connectionTest) {
-        if (destroyed || persistedConfigInvalid || saveInProgress || syncInProgress
+        if (!started || destroyed || persistedConfigInvalid || saveInProgress || syncInProgress
                 || testFuture != null) {
             return;
         }
@@ -1017,7 +1008,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
 
     private void finishTest(long generation, Future<?> task,
                             @Nullable ApiTester.Result result, @Nullable Throwable failure) {
-        if (destroyed || generation != testGeneration || testFuture != task) {
+        if (!started || destroyed || generation != testGeneration || testFuture != task) {
             return;
         }
         testFuture = null;
@@ -1044,7 +1035,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     }
 
     private void setTestButtonsEnabled(boolean enabled) {
-        enabled = enabled && !destroyed && !persistedConfigInvalid
+        enabled = enabled && started && !destroyed && !persistedConfigInvalid
                 && !saveInProgress && !syncInProgress;
         if (configCheckButton != null) {
             configCheckButton.setEnabled(enabled);

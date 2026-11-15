@@ -170,7 +170,7 @@ public final class RerenderRegistry {
                     it.remove();
                     continue;
                 }
-                HookBridge.get().requestRerender(contentView, messageId,
+                RenderDispatcher.requestRerender(contentView, messageId,
                         invocationTarget, target.method, target.args,
                         () -> isCurrentRegistration(messageId, target));
             }

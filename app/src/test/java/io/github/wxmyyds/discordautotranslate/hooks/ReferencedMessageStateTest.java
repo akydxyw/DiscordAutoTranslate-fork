@@ -24,6 +24,7 @@ public class ReferencedMessageStateTest {
         TranslationCache.get().clear();
         bridge = HookBridge.get();
         bridge.reset();
+        HookRuntime.activate();
     }
 
     @After
@@ -32,6 +33,7 @@ public class ReferencedMessageStateTest {
         TranslationCache.get().clear();
         bridge.reset();
         ContentNodeTestProfile.clear();
+        HookRuntime.suspend();
     }
 
     private StateStore.Entry canonical(Object body) {
@@ -138,6 +140,7 @@ public class ReferencedMessageStateTest {
         assertNull(bridge.referencedTranslation(ID, null));
         assertNull(StateStore.get().peek(ID));
         StateStore.Entry entry = canonical(original);
+        bridge.rememberCanonicalContent(ID, original);
         for (StateStore.Status status : StateStore.Status.values()) {
             entry.status = status;
             entry.showingOriginal = true;
