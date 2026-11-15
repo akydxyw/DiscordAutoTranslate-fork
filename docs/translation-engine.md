@@ -11,6 +11,10 @@
 
 完整语言识别可参考 [Google ML Kit Language Identification](https://developers.google.com/ml-kit/language/identification/android)：官方支持 100 多种语言；打包模型约增加 900 KB，Play Services 版本需等待模型下载。当前方案不引入此依赖，以免 Discord 进程内的模型加载/首次可用性成为翻译前置条件。
 
+## 行内代码位置协议
+
+统一富文本输入用 `<keepN/>` 表示捕获的行内代码出现位置，代码内容不读取、不提交。协议构造统一追加保留规则，已保存/自定义提示词同样适用；模型必须按原位置、数量和顺序回带标记，不得改名或移入样式标记。引擎与原生回填共用 InlineCodeMarkers 语法校验，损坏时明确拒绝，不补标记或另试请求。自然语言检测及长度比例不统计这些结构标记字符；API 测试和 Primitive 文本不产生宿主代码标记。
+
 ## 网络层
 
 - 用 JDK 自带 `HttpURLConnection`，**零第三方依赖**：Discord 已打包 okhttp3，

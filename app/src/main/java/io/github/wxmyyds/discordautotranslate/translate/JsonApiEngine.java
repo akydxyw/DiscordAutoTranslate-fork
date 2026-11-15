@@ -75,7 +75,7 @@ public final class JsonApiEngine implements Scheduler.Engine {
      * 发送一次请求并返回协议提取后的译文。
      */
     private String requestOnce(String text, Http.Request request) throws Exception {
-        // 1) 按协议构造请求体（单链路：无标记纯文本，直接使用用户配置的提示词）
+        // 1) 单一输入按协议构造请求体；已保存提示词也追加原样保留结构标记的规则。
         boolean sse = Protocols.supportsStreaming(cfg.protocol) && cfg.streaming;
         String systemPrompt = Config.DEF_SYSTEM_PROMPT.equals(cfg.systemPrompt)
                 ? Config.defaultSystemPromptFor(cfg.targetLang) : cfg.systemPrompt;

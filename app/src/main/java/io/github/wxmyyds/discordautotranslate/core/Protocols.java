@@ -55,7 +55,11 @@ public final class Protocols {
             "The text between the <translate> and </translate> tags is the source content "
             + "to translate. Translate it according to the rules above and output ONLY the "
             + "translated text: never include the tags themselves and never output "
-            + "anything outside them.";
+            + "anything outside them. Preserve every inline-code position marker such as "
+            + "<keep1/> exactly once in its original position and order; it represents native "
+            + "code not included in the input. Never translate, rename, remove, duplicate, "
+            + "or move these markers inside styled <xN>...</xN> spans. Preserve every styled "
+            + "marker and translate only natural-language text around the markers.";
 
     private static final String SUFFIX_CHAT_COMPLETIONS = "/chat/completions";
     private static final String SUFFIX_RESPONSES = "/responses";

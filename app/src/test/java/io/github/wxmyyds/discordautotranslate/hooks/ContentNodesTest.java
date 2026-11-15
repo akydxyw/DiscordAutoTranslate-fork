@@ -723,7 +723,7 @@ public class ContentNodesTest {
         List<Object> nodes = list(original);
 
         List<Object> out = ContentPlanTestSupport.replace(nodes,
-                "first translated\n<x1>styled translated</x1>\nnested translated\nsecond translated");
+                "first translated<keep1/>\n<x1>styled translated</x1>\nnested translated\nsecond translated");
 
         assertNotNull(out);
         BulletListContentNode rebuilt = (BulletListContentNode) out.get(0);
@@ -813,6 +813,11 @@ public class ContentNodesTest {
         assertFalse("inline code must not be sent verbatim",
                 result.text.contains("npm install"));
         assertTrue("surrounding text must still be sent", result.text.contains("run"));
+        assertEquals("run <keep1/> now", result.text);
+        assertEquals(2, result.segmentCount);
+        assertEquals(2, result.textNodeCount);
+        assertEquals(1, result.opaqueNodeCount);
+        assertFalse(result.codeHeavy);
     }
 
     @Test

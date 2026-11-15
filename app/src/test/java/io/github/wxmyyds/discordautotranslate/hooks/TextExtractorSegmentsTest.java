@@ -211,7 +211,12 @@ public class TextExtractorSegmentsTest {
         assertNotNull(r);
         assertFalse("代码不得进入请求正文", r.text.contains("npm install"));
         assertTrue("两侧文本必须仍在请求里", r.text.contains("run"));
+        assertEquals("行内代码仅输出定位标记，opaque 节点仍输出一个空格",
+                "run<keep1/> now", r.text);
         assertEquals("代码与 emoji 不占片段", 2, r.segmentCount);
+        assertEquals(2, r.textNodeCount);
+        assertEquals(2, r.opaqueNodeCount);
+        assertFalse(r.codeHeavy);
     }
 
     @Test

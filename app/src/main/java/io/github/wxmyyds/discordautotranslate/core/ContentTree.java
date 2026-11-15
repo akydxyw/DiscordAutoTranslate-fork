@@ -73,11 +73,14 @@ public final class ContentTree {
         public final List<Node> containers;
         /** Exact heading occurrence transition not already separated by captured source LF. */
         public final boolean headingBreakBefore;
+        /** Content-free anchor for this inline-code occurrence; null for other kinds. */
+        public final String inlineCodeMarker;
         private Event(EventKind kind, Node node, boolean styled, List<Node> containers,
-                      boolean headingBreakBefore) {
+                      boolean headingBreakBefore, String inlineCodeMarker) {
             this.kind = kind; this.node = node; this.styled = styled;
             this.containers = Collections.unmodifiableList(new ArrayList<>(containers));
             this.headingBreakBefore = headingBreakBefore;
+            this.inlineCodeMarker = inlineCodeMarker;
         }
     }
 
@@ -187,6 +190,7 @@ public final class ContentTree {
         Node previousHeading;
         boolean hasContent;
         boolean separated;
+        int inlineCodeSequence;
 
         void emit(Node node, boolean styled, List<Node> containers) {
             if (node.kind == Kind.SEQUENCE) {
@@ -233,7 +237,11 @@ public final class ContentTree {
                             && hasLf(node.text, node.trailingStart, node.text.length());
                 }
             }
-            output.add(new Event(kind, node, styled, containers, headingBreak));
+            String marker = kind == EventKind.NODE && node.kind == Kind.INLINE_CODE
+                    ? "<keep" + (++inlineCodeSequence) + "/>" : null;
+            if (kind == EventKind.NODE && InlineCodeMarkers.hasReservedPrefix(node.text))
+                throw new IllegalStateException("Reserved inline-code marker in source");
+            output.add(new Event(kind, node, styled, containers, headingBreak, marker));
         }
 
         private static boolean hasLf(String text, int start, int end) {

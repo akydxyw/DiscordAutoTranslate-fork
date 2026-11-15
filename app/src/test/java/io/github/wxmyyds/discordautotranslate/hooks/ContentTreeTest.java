@@ -484,17 +484,19 @@ public class ContentTreeTest {
         ContentTree tree = compiled(list(new TextContentNode("first"), inline, code, unicode,
                 new TextContentNode("second"), url, custom, new TextContentNode("third")));
         TextExtractor.Result result = extracted(tree);
-        assertEquals("first   \uD83D\uDE42 second https://example.com/ExactId  :wave: third", result.text);
+        assertEquals("first<keep1/>  \uD83D\uDE42 second https://example.com/ExactId  :wave: third", result.text);
         assertEquals(3, result.segmentCount);
         assertEquals(3, result.textNodeCount);
         assertEquals(4, result.opaqueNodeCount);
         assertTrue(result.codeHeavy);
         assertFalse(result.text.contains("secret"));
         assertEquals(ContentTree.Kind.INLINE_CODE, tree.root.children.get(1).kind);
+        assertEquals("<keep1/>", tree.events.get(1).inlineCodeMarker);
         assertEquals(ContentTree.Kind.CODE_BLOCK, tree.root.children.get(2).kind);
+        assertNull(tree.events.get(2).inlineCodeMarker);
         assertEquals(0, tree.root.children.get(5).segmentCount);
 
-        String translated = "第一 \uD83D\uDE42 第二 https://example.com/ExactId :wave: 第三";
+        String translated = "第一<keep1/> \uD83D\uDE42 第二 https://example.com/ExactId :wave: 第三";
         List<Object> rebuilt = ContentNodes.replacePlanned(tree, translated);
         assertNotNull(rebuilt);
         assertEquals("第一", ((TextContentNode) rebuilt.get(0)).content);
@@ -510,11 +512,12 @@ public class ContentTreeTest {
         assertEquals("secret block", code.getContent());
         assertEquals("javascript", code.component2());
         assertTrue(code.component3());
+        assertNull(ContentNodes.replacePlanned(tree, translated.replace("<keep1/>", "")));
         assertNull(ContentNodes.replacePlanned(tree, translated.replace("ExactId", "Exactld")));
         assertNull(ContentNodes.replacePlanned(tree, translated.replace("\uD83D\uDE42", "")));
         assertNull(ContentNodes.replacePlanned(tree, translated + " \uD83D\uDE42"));
         assertNull(ContentNodes.replacePlanned(tree,
-                "第一 :wave: 第二 https://example.com/ExactId \uD83D\uDE42 第三"));
+                "第一<keep1/> :wave: 第二 https://example.com/ExactId \uD83D\uDE42 第三"));
         assertEquals(1, unicode.reads);
         assertEquals(1, custom.reads);
     }

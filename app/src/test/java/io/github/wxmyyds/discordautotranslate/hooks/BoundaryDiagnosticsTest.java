@@ -89,17 +89,51 @@ public class BoundaryDiagnosticsTest {
         assertEquals("first<x1>second</x1>", TextExtractor.extractTree(tree).text);
     }
 
-    @Test public void codeAndOpaqueGapReportsKindsNotContents() {
+    @Test public void inlineCodeAndOpaqueGapUsesMarkerBoundaryAndKeepsNativeIdentity() {
+        ContentNodesTest.InlineCodeContentNode code =
+                new ContentNodesTest.InlineCodeContentNode("credential-secret");
+        OpaqueNodeTranslationTest.ChannelMentionContentNode mention =
+                new OpaqueNodeTranslationTest.ChannelMentionContentNode(
+                        Arrays.asList(new TextContentNode("hidden-name")));
+        TextContentNode first = new TextContentNode("first");
+        TextContentNode second = new TextContentNode("second");
+        ContentTree tree = ContentTree.compile(Arrays.asList(first, code, mention, second));
+        assertNotNull(tree);
+        TextExtractor.Result request = TextExtractor.extractTree(tree);
+        assertNotNull(request);
+        assertEquals("first<keep1/> second", request.text);
+        assertEquals(2, request.segmentCount);
+        assertEquals(2, request.textNodeCount);
+        assertEquals(2, request.opaqueNodeCount);
+        assertFalse(request.text.contains("credential-secret"));
+        assertFalse(request.text.contains("hidden-name"));
+
+        List<Object> output = ContentNodes.replaceChecked(tree, "第一<keep1/>第二");
+        assertEquals(4, output.size());
+        assertEquals("第一", ((TextContentNode) output.get(0)).getContent());
+        assertSame(code, output.get(1));
+        assertSame(mention, output.get(2));
+        assertEquals("第二", ((TextContentNode) output.get(3)).getContent());
+        assertEquals("first", first.getContent());
+        assertEquals("second", second.getContent());
+        assertEquals("credential-secret", code.getContent());
+
+        ContentNodes.Rejection missing = assertThrows(ContentNodes.Rejection.class,
+                () -> ContentNodes.replaceChecked(tree, "译文"));
+        assertEquals(ContentNodes.RejectionReason.INLINE_CODE_MARKER, missing.reason);
+        assertEquals("", missing.structure);
+        assertNull(ContentNodes.replacePlanned(tree, "译文"));
+    }
+
+    @Test public void opaqueGapReportsKindsNotContents() {
         String structure = ambiguous(Arrays.asList(new TextContentNode("first"),
-                new ContentNodesTest.InlineCodeContentNode("credential-secret"),
                 new OpaqueNodeTranslationTest.ChannelMentionContentNode(
                         Arrays.asList(new TextContentNode("hidden-name"))),
                 new TextContentNode("second")), "译文").structure;
-        assertTrue(structure.contains("rightGapInlineCode=1"));
+        assertTrue(structure.contains("rightGapInlineCode=0"));
         assertTrue(structure.contains("rightGapOpaque=1"));
         assertTrue(structure.contains("ChannelMentionContentNode"));
         assertTrue(structure.contains("rightSourceLfBefore=0"));
-        assertFalse(structure.contains("credential-secret"));
         assertFalse(structure.contains("hidden-name"));
     }
 

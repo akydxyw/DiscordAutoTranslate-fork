@@ -599,6 +599,37 @@ public class LongTextRegressionTest {
         assertNull("代码两侧没有精确定位标记时拒绝回填",
                 ContentPlanTestSupport.replace(nodes,
                         "<x1>加粗标题</x1>\n\n运行\n现在" + URLS[1]));
+        assertEquals("run", ((TextContentNode) nodes.get(2)).getContent());
+        assertEquals("now", ((TextContentNode) nodes.get(4)).getContent());
+
+        TextExtractor.Result request = TextExtractor.extract(new AnnotatedStructurableText(nodes));
+        assertNotNull(request);
+        assertEquals("<x1>bold title</x1>\n\nrun<keep1/>now\n " + URLS[1] + " ", request.text);
+        assertEquals(3, request.segmentCount);
+        assertEquals(5, request.textNodeCount);
+        assertEquals(2, request.opaqueNodeCount);
+        assertFalse(request.codeHeavy);
+        assertFalse(request.text.contains("npm install"));
+
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
+                "<x1>加粗标题</x1>\n\n运行<keep1/>现在\n" + URLS[1]);
+        assertNotNull(out);
+        assertEquals(nodes.size(), out.size());
+        StrongContentNode rebuilt = (StrongContentNode) out.get(0);
+        assertEquals("加粗标题", ((TextContentNode) rebuilt.getContent().get(0)).getContent());
+        assertSame(nodes.get(1), out.get(1));
+        assertEquals("运行", ((TextContentNode) out.get(2)).getContent());
+        assertSame(code, out.get(3));
+        assertEquals("现在", ((TextContentNode) out.get(4)).getContent());
+        assertSame(nodes.get(5), out.get(5));
+        assertSame(nodes.get(6), out.get(6));
+        assertEquals(URLS[1], ((TextContentNode) ((LinkContentNode) out.get(6))
+                .getContent().get(0)).getContent());
+        assertEquals("npm install", code.getContent());
+        assertEquals("bold title", ((TextContentNode) ((StrongContentNode) nodes.get(0))
+                .getContent().get(0)).getContent());
+        assertEquals("run", ((TextContentNode) nodes.get(2)).getContent());
+        assertEquals("now", ((TextContentNode) nodes.get(4)).getContent());
     }
 
     @Test

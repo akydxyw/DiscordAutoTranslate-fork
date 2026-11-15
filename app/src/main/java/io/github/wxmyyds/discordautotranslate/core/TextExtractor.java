@@ -153,6 +153,7 @@ public final class TextExtractor {
                 return EMPTY;
             }
             // Primitive 整体就是一个片段，不应用 Annotated 文本节点的分块规则。
+            if (InlineCodeMarkers.hasReservedPrefix(s)) return null;
             return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, false, null);
         }
 
@@ -245,6 +246,7 @@ public final class TextExtractor {
         if (tree == null) return null;
         StringBuilder out = new StringBuilder();
         int textNodes = 0, opaque = 0, codeBlocks = 0, styleSeq = 0;
+        java.util.List<String> inlineMarkers = new java.util.ArrayList<>();
         for (ContentTree.Event event : tree.events) {
             if (event.headingBreakBefore) out.append('\n');
             if (event.kind == ContentTree.EventKind.ITEM_START) {
@@ -279,7 +281,10 @@ public final class TextExtractor {
                     break;
                 case URL: case EMOJI:
                     opaque++; out.append(' ').append(node.text).append(' '); break;
-                case INLINE_CODE: case OPAQUE:
+                case INLINE_CODE:
+                    inlineMarkers.add(event.inlineCodeMarker);
+                    opaque++; out.append(event.inlineCodeMarker); break;
+                case OPAQUE:
                     opaque++; out.append(' '); break;
                 case CODE_BLOCK:
                     codeBlocks++; out.append(' '); break;
@@ -288,6 +293,9 @@ public final class TextExtractor {
                 default: throw new IllegalStateException("Non-leaf content event");
             }
         }
-        return new Result(out.toString(), tree.segmentCount, textNodes, opaque, codeBlocks > 0, tree);
+        String extracted = out.toString();
+        // Also catches reserved syntax assembled across adjacent captured text occurrences.
+        if (!InlineCodeMarkers.matchesExpected(extracted, inlineMarkers)) return null;
+        return new Result(extracted, tree.segmentCount, textNodes, opaque, codeBlocks > 0, tree);
     }
 }

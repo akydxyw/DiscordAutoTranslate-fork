@@ -35,7 +35,7 @@ public final class EnglishDetector {
             return new Verdict(false, "code-block");
         }
 
-        String text = rawText.replaceAll("https?://\\S+", " ")
+        String text = InlineCodeMarkers.withoutMarkers(rawText).replaceAll("https?://\\S+", " ")
                 .replaceAll("`[^`]*`", " ")
                 .replaceAll(":([A-Za-z0-9_]+):", " ");
 

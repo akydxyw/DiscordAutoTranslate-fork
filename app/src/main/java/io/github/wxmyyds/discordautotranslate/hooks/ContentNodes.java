@@ -5,6 +5,7 @@ import androidx.annotation.Nullable;
 import io.github.wxmyyds.discordautotranslate.core.BlankLines;
 import io.github.wxmyyds.discordautotranslate.core.ContentTree;
 import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
+import io.github.wxmyyds.discordautotranslate.core.InlineCodeMarkers;
 import io.github.wxmyyds.discordautotranslate.core.Reflect;
 import io.github.wxmyyds.discordautotranslate.core.Segments;
 import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
@@ -49,7 +50,7 @@ public final class ContentNodes {
     /** Fixed classifications only; never carries source text, translation, anchors or identity. */
     enum RejectionReason {
         INVALID_INPUT, NO_TRANSLATABLE_SEGMENTS, SEGMENT_MARKER, EMPTY_TRANSLATION,
-        URL_COUNT, EMOJI_COUNT, ANCHOR_ORDER, STYLE_OPEN, STYLE_CLOSE, STYLE_EMPTY,
+        URL_COUNT, EMOJI_COUNT, INLINE_CODE_MARKER, ANCHOR_ORDER, STYLE_OPEN, STYLE_CLOSE, STYLE_EMPTY,
         UNASSIGNED_TEXT, PARAGRAPH_MISSING, PARAGRAPH_EXTRA, SOURCE_BOUNDARY_AMBIGUOUS,
         LINE_COUNT, LINE_EMPTY, LIST_ITEM_EMPTY, PART_COUNT,
         RETAINED_STRUCTURE_CHANGED, TEXT_CONSTRUCTOR, CONTAINER_CONSTRUCTOR, CONSUMPTION_COUNT
@@ -106,6 +107,9 @@ public final class ContentNodes {
         List<String> parts = alignTranslation(plain, plan);
         if (parts.size() != targetCount) {
             throw new Rejection(RejectionReason.PART_COUNT, targetCount, parts.size());
+        }
+        for (String part : parts) {
+            if (InlineCodeMarkers.hasReservedPrefix(part)) throw reject(RejectionReason.INLINE_CODE_MARKER);
         }
         // 按节点出现的位置分配片段，不能以实例身份为键：共享节点的后一次
         // 空片段会覆盖前一次译文，造成文字全部消失但 emoji 仍保留。
@@ -358,6 +362,8 @@ public final class ContentNodes {
         if (plan.groupIds.isEmpty()) throw reject(RejectionReason.NO_TRANSLATABLE_SEGMENTS);
         requireAnchorCounts(plain, plan.urls, RejectionReason.URL_COUNT);
         requireAnchorCounts(plain, plan.emojiAnchors, RejectionReason.EMOJI_COUNT);
+        if (!InlineCodeMarkers.matchesExpected(plain, plan.inlineCodeMarkers))
+            throw reject(RejectionReason.INLINE_CODE_MARKER);
         if (plan.hasStyleMarkers()) {
             return alignByStyleMarkers(plain, plan);
         }
@@ -375,12 +381,12 @@ public final class ContentNodes {
         List<Integer> pending = new ArrayList<>();
         int cursor = 0;
         for (PlanToken t : plan.tokens) {
-            if (t.url != null) {
-                int at = plain.indexOf(t.url, cursor);
+            if (t.anchor != null) {
+                int at = plain.indexOf(t.anchor, cursor);
                 if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
                 assignRun(plain.substring(cursor, at), pending, parts, plan);
                 pending.clear();
-                cursor = at + t.url.length();
+                cursor = at + t.anchor.length();
             } else if (t.styleId > 0) {
                 String open = "<x" + t.styleId + ">";
                 int at = plain.indexOf(open, cursor);
@@ -450,11 +456,12 @@ public final class ContentNodes {
     /**
      * 按树序令牌流切分译文并对齐片段。
      *
-     * <p>定位标记（URL / emoji）不消费译文片段。按树序依次定位标记，
+     * <p>定位标记（URL / emoji / 行内代码）不消费译文片段。按树序依次定位标记，
      * 标记之间的文本交给 {@link #alignSpanToParts} 按结构类型唯一切分。</p>
      */
     private static List<String> alignTokens(String plain, AlignmentPlan plan) {
-        boolean hasAnchors = !plan.urls.isEmpty() || !plan.emojiAnchors.isEmpty();
+        boolean hasAnchors = !plan.urls.isEmpty() || !plan.emojiAnchors.isEmpty()
+                || !plan.inlineCodeMarkers.isEmpty();
         if (!hasAnchors) {
             return alignInterval(plain, plan, 0, plan.groupIds.size());
         }
@@ -463,18 +470,14 @@ public final class ContentNodes {
                 java.util.Collections.nCopies(plan.groupIds.size(), ""));
         int from = 0;
         int segStart = 0;
-        int urlIndex = 0;
-        int emojiIndex = 0;
         for (PlanToken t : plan.tokens) {
-            if (t.url == null) {
+            if (t.anchor == null) {
                 continue;
             }
-            String anchor = t.url;
+            String anchor = t.anchor;
             int at = plain.indexOf(anchor, from);
             if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
-            int segEnd = t.emoji
-                    ? plan.emojiSegIndex.get(emojiIndex++)
-                    : plan.urlSegIndex.get(urlIndex++);
+            int segEnd = t.segIndex;
             List<String> spanParts = alignInterval(plain.substring(from, at), plan, segStart, segEnd);
             copySpan(spanParts, parts, segStart);
             from = at + anchor.length();
@@ -647,12 +650,10 @@ public final class ContentNodes {
         final List<BoundaryContext> boundaries = new ArrayList<>();
         /** 按树序的 URL 定位标记（原样 URL 文本）。 */
         final List<String> urls = new ArrayList<>();
-        /** 与 {@code urls} 平行：该 URL 之前的可翻译片段数（间隔边界）。 */
-        final List<Integer> urlSegIndex = new ArrayList<>();
+        /** Content-free inline-code anchors from captured occurrences. */
+        final List<String> inlineCodeMarkers = new ArrayList<>();
         /** 按树序的 emoji 定位标记：Unicode 字符或宿主提供的自定义 emoji alt。 */
         final List<String> emojiAnchors = new ArrayList<>();
-        /** 与 {@code emojiAnchors} 平行：该 emoji 之前的可翻译片段数（间隔边界）。 */
-        final List<Integer> emojiSegIndex = new ArrayList<>();
         /** 按树序的定位与可翻译片段令牌。 */
         final List<PlanToken> tokens = new ArrayList<>();
         /** 样式标记总数（>0 表示请求里含 {@code <xN>} 标记）。 */
@@ -737,25 +738,22 @@ public final class ContentNodes {
         }
     }
 
-    /** 树序令牌：URL 定位标记 / emoji / 可翻译片段（样式号 &gt;0 表示包在 {@code <xN>…</xN>} 里）。 */
+    /** One tree-order token representation for URL, emoji, inline-code anchors and text slots. */
     static final class PlanToken {
-        final String url;   // 非 null = URL 或 emoji 定位标记
-        final int segIndex; // URL 令牌为 -1
-        final int styleId;  // 0 = 无样式
-        final boolean emoji; // true = emoji，false = URL
+        final String anchor; // Non-null anchors consume no text slot.
+        final int segIndex; // Anchor boundary or text-slot index, captured in tree order.
+        final int styleId;
 
-        PlanToken(String anchor, boolean isEmoji) {
-            this.url = anchor;
-            this.segIndex = -1;
+        PlanToken(String anchor, int segIndex) {
+            this.anchor = anchor;
+            this.segIndex = segIndex;
             this.styleId = 0;
-            this.emoji = isEmoji;
         }
 
         PlanToken(int segIndex, int styleId) {
-            this.url = null;
+            this.anchor = null;
             this.segIndex = segIndex;
             this.styleId = styleId;
-            this.emoji = false;
         }
     }
 
@@ -833,7 +831,11 @@ public final class ContentNodes {
             w.gapKinds[node.kind.ordinal()]++;
             recordGapType(w, node);
             switch (node.kind) {
-                case INLINE_CODE: case OPAQUE: case CODE_BLOCK: break;
+                case INLINE_CODE:
+                    w.plan.inlineCodeMarkers.add(event.inlineCodeMarker);
+                    w.plan.tokens.add(new PlanToken(event.inlineCodeMarker, w.plan.groupIds.size()));
+                    break;
+                case OPAQUE: case CODE_BLOCK: break;
                 case URL: addUrlToken(w, node.text); break;
                 case EMOJI: addEmojiToken(w, node.text); break;
                 case BREAK: w.separatorNewlines++; break;
@@ -876,14 +878,12 @@ public final class ContentNodes {
      */
     private static void addEmojiToken(PlanWalk w, String emoji) {
         w.plan.emojiAnchors.add(emoji);
-        w.plan.emojiSegIndex.add(w.plan.groupIds.size());
-        w.plan.tokens.add(new PlanToken(emoji, true));
+        w.plan.tokens.add(new PlanToken(emoji, w.plan.groupIds.size()));
     }
 
     private static void addUrlToken(PlanWalk w, String url) {
         w.plan.urls.add(url);
-        w.plan.urlSegIndex.add(w.plan.groupIds.size());
-        w.plan.tokens.add(new PlanToken(url, false));
+        w.plan.tokens.add(new PlanToken(url, w.plan.groupIds.size()));
     }
 
     /**
