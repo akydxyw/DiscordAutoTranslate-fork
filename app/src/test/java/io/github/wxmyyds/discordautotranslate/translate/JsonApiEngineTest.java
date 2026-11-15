@@ -166,8 +166,8 @@ public class JsonApiEngineTest {
                 }
                 assertEquals(2, opens.get());
                 assertTrue(active(engine).isEmpty());
-                assertTrue(new JSONObject(connections.get(0).output.toString("UTF-8"))
-                        .similar(new JSONObject(connections.get(1).output.toString("UTF-8"))));
+                assertEquals(new JSONObject(connections.get(0).output.toString("UTF-8")).toString(),
+                        new JSONObject(connections.get(1).output.toString("UTF-8")).toString());
                 for (FakeConnection connection : connections) {
                     assertTrue(connection.disconnected);
                     assertFalse(connection.getUseCaches());

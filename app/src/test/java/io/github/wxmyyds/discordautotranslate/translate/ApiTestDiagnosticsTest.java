@@ -246,7 +246,7 @@ public class ApiTestDiagnosticsTest {
                 assertRequest(expected, cfg, ApiTester.DEFAULT_TEST_TEXT);
                 for (FakeConnection connection : connections) {
                     JSONObject actual = new JSONObject(connection.output.toString("UTF-8"));
-                    assertTrue(expected.similar(actual));
+                    assertEquals(expected.toString(), actual.toString());
                     assertRequest(actual, cfg, ApiTester.DEFAULT_TEST_TEXT);
                     assertEquals(streaming ? "text/event-stream" : "application/json",
                             connection.getRequestProperty("Accept"));
@@ -282,7 +282,7 @@ public class ApiTestDiagnosticsTest {
                     harness.assertReleased(2);
                     JSONObject connectionBody = new JSONObject(connections.get(0).output.toString("UTF-8"));
                     JSONObject translationBody = new JSONObject(connections.get(1).output.toString("UTF-8"));
-                    assertTrue(connectionBody.similar(translationBody));
+                    assertEquals(connectionBody.toString(), translationBody.toString());
                     assertRequest(connectionBody, cfg, ApiTester.DEFAULT_TEST_TEXT);
                     for (FakeConnection connection : connections) {
                         assertEquals(1, connection.outputOpens);
@@ -591,13 +591,13 @@ public class ApiTestDiagnosticsTest {
     public void connectionCancellationDisconnectsActiveIoAndLateCancelCannotInterruptNextJob()
             throws Exception {
         CountDownLatch reading = new CountDownLatch(1);
-        CountDownLatch disconnected = new CountDownLatch(1);
+        CountDownLatch disconnectSignal = new CountDownLatch(1);
         FakeConnection connection = new FakeConnection(new InputStream() {
             @Override public int read() throws IOException {
                 reading.countDown();
                 while (true) {
                     try {
-                        if (!disconnected.await(5, TimeUnit.SECONDS)) {
+                        if (!disconnectSignal.await(5, TimeUnit.SECONDS)) {
                             throw new IOException("Controlled read not released");
                         }
                         throw new IOException(PRIVATE_MESSAGE);
@@ -609,7 +609,7 @@ public class ApiTestDiagnosticsTest {
         }) {
             @Override public void disconnect() {
                 super.disconnect();
-                disconnected.countDown();
+                disconnectSignal.countDown();
             }
         };
         Harness harness = new Harness(config(CHAT, true, false), url -> connection);
@@ -643,7 +643,7 @@ public class ApiTestDiagnosticsTest {
             releaseNext.countDown();
             assertFalse(next.get(2, TimeUnit.SECONDS));
         } finally {
-            disconnected.countDown();
+            disconnectSignal.countDown();
             releaseNext.countDown();
             executor.shutdownNow();
         }
