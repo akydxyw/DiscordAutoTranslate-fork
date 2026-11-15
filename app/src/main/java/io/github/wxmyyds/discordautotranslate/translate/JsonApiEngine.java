@@ -40,8 +40,24 @@ public final class JsonApiEngine implements Scheduler.Engine {
         this.http = http;
     }
 
+    /** Decoded exchange metadata stays with the single request owner, including late cancellation. */
+    static final class Exchange {
+        final String translated;
+        final int httpStatus;
+
+        Exchange(String translated, int httpStatus) {
+            this.translated = translated;
+            this.httpStatus = httpStatus;
+        }
+    }
+
     @Override
     public String translate(String text) throws Exception {
+        return execute(text, true).translated;
+    }
+
+    /** Connection probes share all request/decoder ownership, but do not judge translation safety. */
+    Exchange execute(String text, boolean validateTranslation) throws Exception {
         Thread worker = Thread.currentThread();
         Http.Request request = new Http.Request();
         if (active.putIfAbsent(worker, request) != null) {
@@ -55,14 +71,23 @@ public final class JsonApiEngine implements Scheduler.Engine {
                 throw new TranslationException(TranslationException.Kind.EMPTY, "原文为空，无需翻译");
             }
             Http.Headers headers = validateConfig(cfg);
-            String translated = requestOnce(text, request, headers);
-            String violation = Segments.plainTextViolation(translated, text);
-            if (violation != null) {
-                throw new TranslationException(TranslationException.Kind.PARSE,
-                        "译文未通过防损坏校验：" + violation);
+            Http.Response response = requestOnce(text, request, headers);
+            String translated = response.body;
+            if (translated == null || translated.trim().isEmpty()) {
+                throw new TranslationException(TranslationException.Kind.EMPTY,
+                        "提取到的译文为空", response.status, null);
+            }
+            translated = translated.trim();
+            if (validateTranslation) {
+                String violation = Segments.plainTextViolation(translated, text);
+                if (violation != null) {
+                    throw new TranslationException(TranslationException.Kind.PARSE,
+                            TranslationException.Reason.TRANSLATION_INVALID,
+                            "译文未通过防损坏校验：" + violation, response.status, null);
+                }
             }
             request.checkCancelled();
-            return translated;
+            return new Exchange(translated, response.status);
         } catch (Exception e) {
             request.checkCancelled();
             throw e;
@@ -71,10 +96,8 @@ public final class JsonApiEngine implements Scheduler.Engine {
         }
     }
 
-    /**
-     * 发送一次请求并返回协议提取后的译文。
-     */
-    private String requestOnce(String text, Http.Request request, Http.Headers headers)
+    /** Sends exactly once and retains the decoded response status for post-request validation. */
+    private Http.Response requestOnce(String text, Http.Request request, Http.Headers headers)
             throws Exception {
         // 1) 单一输入按协议构造请求体；已保存提示词也追加原样保留结构标记的规则。
         boolean sse = cfg.streaming;
@@ -96,11 +119,7 @@ public final class JsonApiEngine implements Scheduler.Engine {
         }
 
         // Successful HTTP bodies have already passed the selected protocol decoder.
-        String translated = resp.body;
-        if (translated == null || translated.trim().isEmpty()) {
-            throw new TranslationException(TranslationException.Kind.EMPTY, "提取到的译文为空");
-        }
-        return translated.trim();
+        return resp;
     }
 
     /**
@@ -141,6 +160,18 @@ public final class JsonApiEngine implements Scheduler.Engine {
         if (!u.startsWith("http://") && !u.startsWith("https://")) {
             throw new TranslationException(TranslationException.Kind.CONFIG,
                     "API URL 必须以 http:// 或 https:// 开头");
+        }
+        try {
+            java.net.URI endpoint = new java.net.URI(Protocols.endpoint(cfg.protocol, cfg.apiUrl));
+            if (endpoint.getHost() == null || endpoint.getHost().isEmpty()
+                    || endpoint.getPort() < -1 || endpoint.getPort() > 65535) {
+                throw new IllegalArgumentException("Invalid HTTP endpoint authority");
+            }
+            endpoint.toURL();
+        } catch (java.net.URISyntaxException | java.net.MalformedURLException
+                 | IllegalArgumentException invalid) {
+            throw new TranslationException(TranslationException.Kind.CONFIG,
+                    "API 基础地址或协议无效", invalid);
         }
         return Http.Headers.parse(cfg.extraHeaders);
     }

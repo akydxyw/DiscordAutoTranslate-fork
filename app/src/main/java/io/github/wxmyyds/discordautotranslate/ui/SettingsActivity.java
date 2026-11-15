@@ -255,6 +255,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             remotePrefs = connectedService.getRemotePreferences(Config.GROUP);
         } catch (Throwable t) {
             remotePrefs = null;
+            ProjectLog.warn("settings sync access status=FAILED exception="
+                    + t.getClass().getSimpleName());
             updateStatus(getString(R.string.status_sync_pending));
             updateSaveButtonState();
             return;
@@ -280,16 +282,19 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         syncInProgress = true;
         updateSaveButtonState();
         updateStatus(getString(R.string.status_syncing));
+        ProjectLog.info("settings sync start");
         try {
             saveExecutor.execute(() -> {
                 final ConfigurationSync.Result result;
                 final ConfigurationSync.LocalState localState;
                 synchronized (PreferenceCommit.class) {
                     if (destroyed || generation != serviceGeneration) {
+                        ProjectLog.info("settings sync end status=CANCELLED");
                         return;
                     }
                     result = ConfigurationSync.synchronize(local, remote);
                     localState = ConfigurationSync.loadLocal(local);
+                    recordConfigurationResult("sync", result, localState.snapshot);
                 }
                 persistence.post(() -> {
                     if (!started || destroyed || local != prefs) {
@@ -331,6 +336,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 });
             });
         } catch (Throwable t) {
+            ProjectLog.warn("settings sync end status=FAILED exception="
+                    + t.getClass().getSimpleName());
             syncInProgress = false;
             updateSaveButtonState();
             updateStatus(getString(R.string.status_sync_failed));
@@ -714,6 +721,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                         startServiceSync();
                     });
         } catch (RuntimeException failure) {
+            ProjectLog.warn("settings load end status=FAILED exception="
+                    + failure.getClass().getSimpleName());
             updateStatus(getString(R.string.status_save_persist_failed));
         }
         updateSaveButtonState();
@@ -784,6 +793,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         Config.Snapshot snapshot = snapshotFromUi();
         if (snapshot.configError != null) {
+            ProjectLog.warn("settings save end status=INVALID_SOURCE");
             updateStatus(getString(R.string.status_invalid_config));
             return;
         }
@@ -807,6 +817,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     /** 保存与显式重置共用本机提交和远程同步链路；null 仅表示已确认的重置。 */
     private void commitConfiguration(@Nullable Config.Snapshot snapshot) {
         final boolean resetting = snapshot == null;
+        final String operation = resetting ? "reset" : "save";
         if (!configurationLoaded || persistence.isLoading() || saveInProgress || syncInProgress
                 || resetting != persistedConfigInvalid) {
             return;
@@ -830,6 +841,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         if (resetting) {
             resultText.setText(R.string.status_resetting);
         }
+        ProjectLog.info("settings " + operation + " start");
         try {
             saveExecutor.execute(() -> {
                 final ConfigurationSync.Result saveResult;
@@ -837,9 +849,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 synchronized (PreferenceCommit.class) {
                     saveResult = ConfigurationSync.save(local, remote, snapshot);
                     localState = ConfigurationSync.loadLocal(local);
-                }
-                if (saveResult.localCommitted) {
-                    ProjectLog.configure(snapshot == null ? Config.read(null) : snapshot);
+                    recordConfigurationResult(operation, saveResult, localState.snapshot);
                 }
                 final boolean localResult = saveResult.localCommitted;
                 final boolean remoteResult = remote != null && saveResult.succeeded();
@@ -898,10 +908,38 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 });
             });
         } catch (Throwable t) {
+            ProjectLog.warn("settings " + operation + " end status=FAILED exception="
+                    + t.getClass().getSimpleName());
             saveInProgress = false;
             updateSaveButtonState();
             showPersistenceFailure(resetting, getString(R.string.status_save_failed,
                     t.getClass().getSimpleName()));
+        }
+    }
+
+    /** Called under the persistence monitor; only confirmed local commits may change the gate. */
+    private static void recordConfigurationResult(String operation, ConfigurationSync.Result result,
+                                                  Config.Snapshot confirmedLocal) {
+        if (result.localCommitted) {
+            ProjectLog.configure(confirmedLocal);
+        }
+        String message = "settings " + operation + " end status=" + result.status.name()
+                + " direction=" + (result.direction == null ? "NONE" : result.direction.name())
+                + " localCommitted=" + result.localCommitted;
+        if (result.failure != null) {
+            message += " exception=" + result.failure.getClass().getSimpleName();
+        }
+        if (result.transaction != null && result.transaction.rollbackFailed) {
+            message += " rollbackFailed=true";
+            if (result.transaction.rollbackFailure != null) {
+                message += " rollbackException="
+                        + result.transaction.rollbackFailure.getClass().getSimpleName();
+            }
+        }
+        if (result.succeeded()) {
+            ProjectLog.info(message);
+        } else {
+            ProjectLog.warn(message);
         }
     }
 
@@ -1023,7 +1061,9 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         resultText.setText(R.string.status_requesting);
         setTestButtonsEnabled(false);
 
-        final ApiTester.Call call = ApiTester.newCall(snapshot, text);
+        final ApiTester.Call call = ApiTester.newCall(snapshot,
+                connectionTest ? ApiTester.TestKind.CONNECTION : ApiTester.TestKind.TRANSLATION,
+                text);
         testCall = call;
         FutureTask<ApiTester.Result> task = new FutureTask<ApiTester.Result>(call) {
             @Override
@@ -1037,11 +1077,13 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                     return;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    recordUnexpectedTestFailure(e);
                     mainHandler.post(() -> finishTest(generation, this, null, e));
                     return;
                 } catch (ExecutionException e) {
-                    mainHandler.post(() -> finishTest(generation, this, null,
-                            e.getCause() == null ? e : e.getCause()));
+                    Throwable cause = e.getCause() == null ? e : e.getCause();
+                    recordUnexpectedTestFailure(cause);
+                    mainHandler.post(() -> finishTest(generation, this, null, cause));
                     return;
                 }
                 mainHandler.post(() -> finishTest(generation, this, result, failure));
@@ -1051,6 +1093,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         try {
             testExecutor.execute(task);
         } catch (Throwable t) {
+            ProjectLog.warn("settings test submission end status=FAILED exception="
+                    + t.getClass().getSimpleName());
             call.cancel();
             task.cancel(true);
             testCall = null;
@@ -1077,6 +1121,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                             : failure.getClass().getSimpleName()));
             updateStatus(getString(R.string.status_test_failed));
         }
+    }
+
+    /** Future boundary diagnostics remain available even when UI delivery is no longer owned. */
+    private static void recordUnexpectedTestFailure(Throwable failure) {
+        ProjectLog.warn("settings test future end status=UNKNOWN_FAILURE exception="
+                + failure.getClass().getSimpleName());
     }
 
     private void cancelPendingTest() {
@@ -1113,16 +1163,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     }
 
     private void showResult(ApiTester.Result result) {
-        StringBuilder message = new StringBuilder();
-        if (result.ok) {
-            message.append(getString(R.string.result_success, result.elapsedMs));
-        } else {
-            message.append(getString(R.string.result_failure));
-        }
-        if (result.translated != null) {
-            message.append(getString(R.string.result_translation, result.translated));
-        }
-        resultText.setText(message.toString());
+        resultText.setText(ApiTestResultFormatter.format(result, this::getString));
         updateStatus(getString(result.ok
                 ? R.string.status_test_passed : R.string.status_test_failed));
     }

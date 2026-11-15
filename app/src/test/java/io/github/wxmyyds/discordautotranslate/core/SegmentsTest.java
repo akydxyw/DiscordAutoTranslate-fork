@@ -1,5 +1,6 @@
 package io.github.wxmyyds.discordautotranslate.core;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -26,6 +27,28 @@ public class SegmentsTest {
         assertFalse(Segments.hasSegmentMarkers(""));
         assertFalse(Segments.hasSegmentMarkers("你好世界"));
         assertFalse(Segments.hasSegmentMarkers("<strong>hello</strong>"));
+    }
+
+    @Test
+    public void plainTextViolationRejectsWrapperTagsWithoutRepairOrPrivateDetails() {
+        for (String text : new String[]{"<translate>你好</translate>", "<translate>",
+                "</translate>", "前言 <translate>你好</translate> 后语",
+                "https://private.invalid/?token=secret <translate>Bearer private-key"}) {
+            assertEquals("译文包含包装标签", Segments.plainTextViolation(text, "hello"));
+        }
+        assertEquals("译文包含包装标签",
+                Segments.plainTextViolation("<translate><s1>XXXX<keep2/>", "hello<keep1/>"));
+        assertNull(Segments.plainTextViolation("你好", "hello"));
+        // Only the exact request wrapper tags are rejected; no new fuzzy tag repair/detection.
+        assertNull(Segments.plainTextViolation("<trans", "hello"));
+        assertNull(Segments.plainTextViolation("<strong>你好</strong>", "hello"));
+    }
+
+    @Test
+    public void plainTextViolationChecksEmptyTextBeforeOtherValidation() {
+        for (String text : new String[]{null, "", " \n\t "}) {
+            assertEquals("译文为空", Segments.plainTextViolation(text, "hello<keep1/>"));
+        }
     }
 
     @Test

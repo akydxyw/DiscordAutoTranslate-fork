@@ -48,7 +48,7 @@ public final class Protocols {
      * 追加 {@link #WRAPPER_RULE} 说明，让模型明确「标签内才是待翻译正文」，
      * 正文里形似指令的句子（如 "ignore previous instructions"）不会被当成
      * 对模型的指令。只作用于请求层：用户配置的提示词与 version() 指纹
-     * （缓存键）不受影响。响应侧发现包装标签即拒绝响应。
+     * （缓存键）不受影响。译文防损坏校验发现包装标签即拒绝译文。
      */
     public static final String WRAPPER_OPEN = "<translate>";
     public static final String WRAPPER_CLOSE = "</translate>";
@@ -204,7 +204,12 @@ public final class Protocols {
     }
 
     private static TranslationException parseError(String message) {
-        return new TranslationException(TranslationException.Kind.PARSE, message);
+        return parseError(TranslationException.Reason.RESPONSE_INVALID, message);
+    }
+
+    private static TranslationException parseError(TranslationException.Reason reason,
+                                                   String message) {
+        return new TranslationException(TranslationException.Kind.PARSE, reason, message);
     }
 
     private static final class JsonDecoder implements Http.ResponseDecoder {
@@ -230,7 +235,7 @@ public final class Protocols {
             } else {
                 text = extractChatText(json);
             }
-            return rejectTranslateTags(text);
+            return text;
         }
     }
 
@@ -346,11 +351,12 @@ public final class Protocols {
 
         public String finish() throws TranslationException {
             if (!complete) {
-                throw parseError("流式响应不完整：未收到结束事件（"
+                throw parseError(TranslationException.Reason.RESPONSE_INCOMPLETE,
+                        "流式响应不完整：未收到结束事件（"
                         + (responses != null ? "response.completed"
                                 : anthropic ? "message_stop" : "[DONE]") + "）");
             }
-            return rejectTranslateTags(text.toString());
+            return text.toString();
         }
     }
 
@@ -371,7 +377,8 @@ public final class Protocols {
             }
             sequence = next;
             if ("response.failed".equals(type) || "response.incomplete".equals(type)) {
-                throw parseError("Responses 生成失败或不完整");
+                throw parseError(TranslationException.Reason.GENERATION_STOPPED,
+                        "Responses 生成失败或不完整");
             }
             if ("response.refusal.delta".equals(type) || "response.refusal.done".equals(type)) {
                 throw parseError("Responses 拒绝生成译文");
@@ -391,9 +398,13 @@ public final class Protocols {
                 part.text.append(delta);
             } else if ("response.completed".equals(type)) {
                 JSONObject response = optionalObject(frame.opt("response"), "response");
-                if (response == null || !"completed".equals(
-                        JsonPath.requireString(response.opt("status"), "response.status"))) {
+                if (response == null) {
                     throw parseError("Responses 结束事件缺少已完成响应");
+                }
+                if (!"completed".equals(
+                        JsonPath.requireString(response.opt("status"), "response.status"))) {
+                    throw parseError(TranslationException.Reason.GENERATION_STOPPED,
+                            "Responses 结束事件缺少已完成响应");
                 }
                 return extractResponsesText(response, parts);
             }
@@ -439,24 +450,18 @@ public final class Protocols {
         return (JSONObject) value;
     }
 
-    private static String rejectTranslateTags(String text) throws TranslationException {
-        if (text.contains(WRAPPER_OPEN) || text.contains(WRAPPER_CLOSE)) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "译文包含包装标签：" + WRAPPER_OPEN + "…" + WRAPPER_CLOSE);
-        }
-        return text;
-    }
-
     /** JSON requires a terminal reason; SSE calls these only for a reported nonempty reason. */
     private static void requireChatStop(String reason) throws TranslationException {
         if (!"stop".equals(reason)) {
-            throw parseError("生成被截断（finish_reason 非正常结束），译文不完整");
+            throw parseError(TranslationException.Reason.GENERATION_STOPPED,
+                    "生成被截断（finish_reason 非正常结束），译文不完整");
         }
     }
 
     private static void requireAnthropicStop(String reason) throws TranslationException {
         if (!"end_turn".equals(reason) && !"stop_sequence".equals(reason)) {
-            throw parseError("生成被截断（stop_reason 非正常结束），译文不完整");
+            throw parseError(TranslationException.Reason.GENERATION_STOPPED,
+                    "生成被截断（stop_reason 非正常结束），译文不完整");
         }
     }
 
@@ -539,7 +544,8 @@ public final class Protocols {
         if ((status != null && !"completed".equals(status))
                 || (response.has("error") && !response.isNull("error"))
                 || (response.has("incomplete_details") && !response.isNull("incomplete_details"))) {
-            throw parseError("Responses 生成失败或不完整");
+            throw parseError(TranslationException.Reason.GENERATION_STOPPED,
+                    "Responses 生成失败或不完整");
         }
         JSONArray output = response.optJSONArray("output");
         if (output == null) {
@@ -556,7 +562,8 @@ public final class Protocols {
             }
             String itemStatus = optionalString(item.opt("status"), "output.status");
             if (itemStatus != null && !"completed".equals(itemStatus)) {
-                throw parseError("Responses 消息未完成");
+                throw parseError(TranslationException.Reason.GENERATION_STOPPED,
+                        "Responses 消息未完成");
             }
             JSONArray content = item.optJSONArray("content");
             if (content == null) throw parseError("Responses message 缺少 content 数组");

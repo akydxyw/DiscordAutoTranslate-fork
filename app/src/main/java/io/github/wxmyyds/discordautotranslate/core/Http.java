@@ -41,6 +41,7 @@ public final class Http {
     public static final class Request {
         private boolean cancelled;
         private boolean used;
+        private int responseStatus;
         private HttpURLConnection connection;
 
         public void cancel() {
@@ -58,10 +59,15 @@ public final class Http {
             return cancelled;
         }
 
-        public void checkCancelled() throws TranslationException {
-            if (isCancelled() || Thread.currentThread().isInterrupted()) {
-                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
+        public synchronized void checkCancelled() throws TranslationException {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                throw new TranslationException(TranslationException.Kind.CANCELLED,
+                        "任务已取消", responseStatus, null);
             }
+        }
+
+        synchronized void responseReceived(int status) {
+            responseStatus = status;
         }
 
         synchronized void attach(HttpURLConnection candidate) throws TranslationException {
@@ -164,6 +170,7 @@ public final class Http {
     public Response postJson(String url, String jsonBody, Headers headers, Request request,
                              ResponseDecoder decoder) throws TranslationException {
         HttpURLConnection conn = null;
+        int status = 0;
         try {
             request.checkCancelled();
             conn = connections.open(new URL(url));
@@ -192,8 +199,10 @@ public final class Http {
                 out.flush();
             }
             request.checkCancelled();
-            int status = conn.getResponseCode();
+            status = conn.getResponseCode();
+            request.responseReceived(status);
             request.checkCancelled();
+            ProjectLog.info("api.http.response httpStatus=" + status);
             boolean success = status >= 200 && status < 300;
             InputStream input = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
             request.checkCancelled();
@@ -202,19 +211,23 @@ public final class Http {
             return new Response(status, body);
         } catch (TranslationException e) {
             request.checkCancelled();
+            if (status != 0 && e.httpStatus() == 0) {
+                throw new TranslationException(e.kind(), e.reason(), e.getMessage(), status,
+                        e.getCause());
+            }
             throw e;
         } catch (SocketTimeoutException e) {
             request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.TIMEOUT,
-                    "请求超时（" + timeoutMs + "ms）", e);
+                    "请求超时（" + timeoutMs + "ms）", status, e);
         } catch (IOException e) {
             request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.NETWORK,
-                    "网络错误：" + e.getClass().getSimpleName(), e);
+                    "网络错误：" + e.getClass().getSimpleName(), status, e);
         } catch (RuntimeException e) {
             request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.UNKNOWN,
-                    "请求失败：" + e.getClass().getSimpleName(), e);
+                    "请求失败：" + e.getClass().getSimpleName(), status, e);
         } finally {
             if (conn != null) {
                 request.detach(conn);
