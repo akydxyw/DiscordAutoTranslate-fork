@@ -231,17 +231,17 @@ public class JsonApiEngineTest {
     @Test
     public void cancellationDuringReadDisconnectsAndLeavesNoWorkerRegistration() throws Exception {
         CountDownLatch reading = new CountDownLatch(1);
-        CountDownLatch disconnected = new CountDownLatch(1);
+        CountDownLatch disconnectSignal = new CountDownLatch(1);
         FakeConnection connection = new FakeConnection(new InputStream() {
             @Override public int read() throws IOException {
                 reading.countDown();
-                awaitIgnoringInterrupts(disconnected);
+                awaitIgnoringInterrupts(disconnectSignal);
                 throw new IOException("Closed");
             }
         }) {
             @Override public void disconnect() {
                 super.disconnect();
-                disconnected.countDown();
+                disconnectSignal.countDown();
             }
         };
         JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_OPENAI_COMPATIBLE, true),

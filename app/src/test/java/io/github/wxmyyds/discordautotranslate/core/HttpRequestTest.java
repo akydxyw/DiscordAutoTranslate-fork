@@ -174,18 +174,18 @@ public class HttpRequestTest {
     @Test
     public void disconnectUnblocksReadAndReportsCancellationNotNetwork() throws Exception {
         CountDownLatch reading = new CountDownLatch(1);
-        CountDownLatch disconnected = new CountDownLatch(1);
+        CountDownLatch disconnectSignal = new CountDownLatch(1);
         InputStream blocked = new InputStream() {
             @Override public int read() throws IOException {
                 reading.countDown();
-                awaitUninterruptibly(disconnected);
+                awaitUninterruptibly(disconnectSignal);
                 throw new IOException("Disconnected");
             }
         };
         FakeConnection connection = new FakeConnection(blocked) {
             @Override public void disconnect() {
                 super.disconnect();
-                disconnected.countDown();
+                disconnectSignal.countDown();
             }
         };
         Http.Request request = new Http.Request();
