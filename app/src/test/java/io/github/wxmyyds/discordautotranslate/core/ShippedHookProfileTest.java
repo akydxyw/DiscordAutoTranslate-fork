@@ -188,21 +188,34 @@ public class ShippedHookProfileTest {
     }
 
     @Test
-    public void olderProfileUsesVerifiedAccessoryIdentityAndRichEmbedMetadata() throws Exception {
+    public void olderProfileUsesNativeMessageIdentityReplyAndRichEmbedMetadata() throws Exception {
         JSONObject root = profile(340013);
         JSONObject hooks = root.getJSONObject("hooks");
+        assertEquals(4, hooks.length());
         JSONObject bind = hooks.getJSONObject("message.bind");
         assertEquals(0, bind.getInt("modelArgument"));
-        assertEquals("getMessageId", bind.getString("messageIdGetter"));
-        assertEquals("getMessageContent", bind.getString("contentGetter"));
-        assertEquals("messageContentView", bind.getString("contentViewField"));
-        assertFalse(bind.has("referencedMessage"));
-        assertFalse(bind.has("replyPreviewField"));
+        assertEquals("getId", bind.getString("messageIdGetter"));
+        assertEquals("getContent", bind.getString("contentGetter"));
+        assertEquals("getEditedTimestamp", bind.getString("editedTimestampGetter"));
+        assertFalse(bind.has("contentViewField"));
+        JSONObject reference = bind.getJSONObject("referencedMessage");
+        assertEquals(7, reference.length());
+        assertEquals("getReferencedMessage", reference.getString("accessor"));
+        assertEquals("com.discord.chat.bridge.referencedmessage.LoadedReferencedMessage",
+                reference.getString("loadedClass"));
+        assertEquals("message", reference.getString("messageField"));
+        assertEquals("getId", reference.getString("messageIdGetter"));
+        assertEquals("systemContent", reference.getString("contentField"));
+        assertEquals("getContent", reference.getString("messageContentGetter"));
+        assertEquals("getEditedTimestamp", reference.getString("editedTimestampGetter"));
+        assertEquals("replyPreview", bind.getString("replyPreviewField"));
+        assertEquals("binding", bind.getString("replyPreviewBindingField"));
+        assertEquals("replyText", bind.getString("replyPreviewTextField"));
         assertFalse(root.has("nodeConstructors"));
         JSONObject render = hooks.getJSONObject("message.render");
-        assertEquals("boundView", render.getString("identitySource"));
+        assertEquals("argument", render.getString("identitySource"));
         assertEquals(1, render.getInt("contentArgument"));
-        assertFalse(render.has("messageIdArgument"));
+        assertEquals(2, render.getInt("messageIdArgument"));
         JSONObject embed = hooks.getJSONObject("embed.bind");
         assertTrue(embed.getBoolean("enabled"));
         JSONObject target = embed.getJSONObject("target");
@@ -234,12 +247,15 @@ public class ShippedHookProfileTest {
         }
         JSONObject types = root.getJSONObject("types");
         JSONObject accessors = root.getJSONObject("accessors");
-        for (String accessory : new String[]{"MessageContentAccessory", "EmbedMessageAccessory"}) {
-            assertEquals("com.discord.chat.presentation.message.messagepart." + accessory,
-                    types.getString(accessory));
-            assertEquals("getMessageId-3Eiw7ao",
-                    accessors.getJSONObject(accessory).getString("getMessageId"));
-        }
+        assertFalse(types.has("MessageContentAccessory"));
+        assertFalse(accessors.has("MessageContentAccessory"));
+        assertEquals(1, root.getJSONObject("fields").getJSONObject("MessageContentViewHolder").length());
+        assertEquals("com.discord.chat.bridge.Message", types.getString("Message"));
+        assertEquals("getId-3Eiw7ao", accessors.getJSONObject("Message").getString("getId"));
+        assertEquals("com.discord.chat.presentation.message.messagepart.EmbedMessageAccessory",
+                types.getString("EmbedMessageAccessory"));
+        assertEquals("getMessageId-3Eiw7ao",
+                accessors.getJSONObject("EmbedMessageAccessory").getString("getMessageId"));
         assertEquals("com.discord.chat.bridge.embed.Embed", types.getString("Embed"));
         assertEquals("com.discord.chat.bridge.embed.EmbedField", types.getString("EmbedField"));
         assertEquals("com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
@@ -250,14 +266,22 @@ public class ShippedHookProfileTest {
     public void olderProfileRetainsCompleteConfiguredMessageSelectors() throws Exception {
         JSONObject hooks = profile(340013).getJSONObject("hooks");
         JSONObject bind = hooks.getJSONObject("message.bind").getJSONObject("target");
-        assertEquals("com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
-                bind.getString("class"));
-        assertEquals("bind", bind.getString("name"));
+        assertEquals("com.discord.chat.presentation.message.MessageView", bind.getString("class"));
+        assertEquals("setMessage", bind.getString("name"));
         assertFalse(bind.getBoolean("static"));
-        assertEquals(17, bind.getInt("parameterCount"));
-        assertEquals(17, bind.getJSONObject("parameterTypes").length());
-        assertEquals("com.discord.chat.presentation.message.messagepart.MessageContentAccessory",
-                bind.getJSONObject("parameterTypes").getString("0"));
+        String[] bindTypes = {
+                "com.discord.chat.bridge.Message",
+                "com.discord.chat.presentation.root.MessageContext",
+                "com.discord.chat.presentation.events.ChatEventHandler",
+                "com.discord.chat.presentation.message.view.botuikit.ComponentProvider",
+                "kotlin.jvm.functions.Function0", "boolean", "boolean"
+        };
+        assertEquals(7, bind.getInt("parameterCount"));
+        assertEquals(bindTypes.length, bind.getJSONObject("parameterTypes").length());
+        for (int i = 0; i < bindTypes.length; i++) {
+            assertEquals("native setMessage parameter " + i, bindTypes[i],
+                    bind.getJSONObject("parameterTypes").getString(Integer.toString(i)));
+        }
         assertEquals("void", bind.getString("returnType"));
         assertEquals(6, bind.length());
 
@@ -274,6 +298,7 @@ public class ShippedHookProfileTest {
                 render.getJSONObject("parameterTypes").getString("0"));
         assertEquals("com.discord.chat.bridge.structurabletext.StructurableText",
                 render.getJSONObject("parameterTypes").getString("1"));
+        assertEquals("java.lang.String", render.getJSONObject("parameterTypes").getString("2"));
         assertEquals("void", render.getString("returnType"));
         assertEquals(6, render.length());
 
@@ -290,6 +315,8 @@ public class ShippedHookProfileTest {
         assertEquals(6, target.length());
         assertEquals(0, conversion.getInt("contentArgument"));
         assertEquals(1, conversion.getInt("contextArgument"));
+        assertEquals(2, conversion.getInt("messageIdArgument"));
+        assertEquals("java.lang.String", target.getJSONObject("parameterTypes").getString("2"));
     }
 
     @Test

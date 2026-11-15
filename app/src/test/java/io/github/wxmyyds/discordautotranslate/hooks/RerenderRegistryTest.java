@@ -69,6 +69,27 @@ public class RerenderRegistryTest {
     }
 
     @Test
+    public void replyRebindingSameReferenceInvalidatesQueuedOuterMessageParameters() throws Exception {
+        RerenderRegistry.clear();
+        try {
+            View preview = new View(null);
+            Method method = getClass().getMethod("nativeBind");
+            String referencedId = "123456789012345678";
+            Object[] first = {"old-containing-message"};
+            RerenderRegistry.register(referencedId, preview, null, method, first);
+            RerenderRegistry.Target old = targets().get(referencedId).get(0);
+            RerenderRegistry.unregister(preview);
+            RerenderRegistry.register(referencedId, preview, null, method,
+                    new Object[]{"new-containing-message"});
+            assertFalse(current(referencedId, old));
+            assertTrue(current(referencedId, targets().get(referencedId).get(0)));
+            RerenderRegistry.unregister(preview);
+            assertFalse(current(referencedId, old));
+            assertTrue(targets().isEmpty());
+        } finally { RerenderRegistry.clear(); }
+    }
+
+    @Test
     public void unknownBindingIsNotTreatedAsReuse() {
         assertTrue(RerenderRegistry.stillBound("123456789012345678", null));
     }

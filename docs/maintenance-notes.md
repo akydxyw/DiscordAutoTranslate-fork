@@ -18,7 +18,7 @@
 
 - 352017 的 `smali/q9/q.smali:764` 为 `b` 的完整描述符；按 Java 参数计数为 34（`J`/`D` 各一个参数），返回 `void`。目标中的 0–33 每个参数类型都必须精确配置，不能只按数量或部分签名匹配。
 - `inputSource=arguments`、`modelArgument=1`、`messageIdArgument=3`、`host.source=this` 与该实例方法对应。描述 `n7.c.j`、标题 `n7.c.f`、字段 `n7.c.g`；结构化字段名/值为 `n7.o.c/d`，不是原始字符串 `a/b`。
-- 340013 已按用户提供的该版 smali 核实9参数入口及 accessory 参数1、宿主字段 itemView；真实 Embed/EmbedField 类型已映射。ID getter 必须通过两个 accessory 独立类型访问器映射 getMessageId-3Eiw7ao，不能继续使用未修饰的全局 getMessageId；其他结构化getter与smali吻合。
+- 340013 已按用户提供的该版 smali 核实9参数入口及 accessory 参数1、宿主字段 itemView；真实 Embed/EmbedField 类型已映射。Embed ID getter 必须通过 accessory 独立类型访问器映射 getMessageId-3Eiw7ao，不能继续使用未修饰的全局 getMessageId；其他结构化getter与smali吻合。
 - 专用全局 `embedHolderViewField` 与 `embed*Getter` 已移除，两版复用同一个配置选择的绑定入口。当前 `4493cee` 已获用户整体功能正常确认；多卡片、全部字段、编辑及回收复用边界未逐项记录，不声称穷尽验证。
 
 ## 投票配置核实
@@ -120,6 +120,14 @@
 - fb8b499明确关闭旧版点击；现在复用唯一constructorProxy，选原生10参数synthetic构造器/mask127及float占位，原生默认priority/宽度/underline/长按，参数7保留统一切换回调。352017七参数协议不变。
 - 刷新metadata从mViewHolder/notifyItemRangeChanged修正为LayoutParams.d/Observable.d，并映射holder.lastMessageContent清绑定缓存，所有操作仍在RowRefresher。
 - 新增实际构造/运行屏障/点击状态切换及类型访问器/绑定缓存/adapter通知回归，模拟类型仅替换不可在Java声明的Kotlin修饰名，不冒充实机证据。新版Actions/设备结果另记，回复/Poll不在本轮扩展范围。
+
+## 340013 引用预览接入
+
+- 244306a Actions实际681项、0失败/跳过，用户确认正文/Embed/点击/刷新正常，另反馈引用未跟随。这不是回填失败：此前profile确实没有引用消费者/revision映射。
+- 将340013唯一message.bind从holder.bind移至已核实外层MessageView.setMessage7参数入口，删除旧Accessory映射/contentViewField；正文render改原生id参数2，不依赖外层scope覆盖异步holder绑定，boundView无消费者后移除。
+- LoadedReferencedMessage字段message/systemContent、Message编辑版本、replyPreview.binding.replyText已核实。configureReply里的Function1立即同步执行文本转换，doOnNextLayout只测高度，不翻译；toSpannable之后native在同builder增加BackgroundSpanDrawer/LeadingMarginSpan再交Drawee。
+- 原引用捕获类型/读取抽成ReplyBinding唯一操作，352017元数据不变，两版复用REPLY_CONVERSION、canonical Source/revision/hash和当前显示选择。引用只消费，重放登记替换同一视图旧Target；原文/译文切换统一刷新自身及引用消费者。系统正文和ID不匹配不能改走正文译文或注入图标。
+- 不新增独立请求/预览缓存/ThreadLocal/手写裁剪或TextView.setText，保持原生用户名避让与两行省略。新增双profile规范复用/系统内容/identity/revision及重绑失效回归，新版Actions及设备结果另记。
 
 ## 冗余与规则审计后的统一清理
 

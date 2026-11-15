@@ -26,7 +26,7 @@ import io.github.libxposed.api.XposedModule;
  */
 public final class MessageHooks {
 
-    private static final ThreadLocal<ReferencedContent> REPLY_CONVERSION = new ThreadLocal<>();
+    private static final ThreadLocal<ReplyBinding> REPLY_CONVERSION = new ThreadLocal<>();
 
     private MessageHooks() {
     }
@@ -60,6 +60,10 @@ public final class MessageHooks {
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
                     if (!HookRuntime.isActive()) return chain.proceed();
+                    // Invalidate old reply consumers before native binding can re-use the row.
+                    View oldPreview = replyPreviewTextView(asView(chain.getThisObject()), spec);
+                    RerenderRegistry.unregister(oldPreview);
+                    HookBridge.get().unbindView(oldPreview);
                     try {
                         bindPre(chain, spec);
                     } catch (Throwable t) {
@@ -67,11 +71,11 @@ public final class MessageHooks {
                                 + t.getClass().getName());
                     }
                     Object[] bindArgs = chain.getArgs().toArray();
-                    ReferencedContent previousReply = REPLY_CONVERSION.get();
+                    ReplyBinding previousReply = REPLY_CONVERSION.get();
                     try {
                         Object model = safeArg(chain, spec.optInt("modelArgument", -1));
-                        ReferencedContent referenced = model == null ? null
-                                : readReferencedContent(model, spec.optJSONObject("referencedMessage"));
+                        ReplyBinding referenced = model == null ? null
+                                : ReplyBinding.read(model, spec.optJSONObject("referencedMessage"));
                         if (referenced == null) {
                             REPLY_CONVERSION.remove();
                         } else {
@@ -115,7 +119,7 @@ public final class MessageHooks {
         if (model == null) {
             return;
         }
-        rememberReferencedContent(model, spec.optJSONObject("referencedMessage"));
+        rememberReplyBinding(model, spec.optJSONObject("referencedMessage"));
         String idGetter = spec.optString("messageIdGetter", null);
         String contentGetter = spec.optString("contentGetter", null);
         if (idGetter == null || contentGetter == null) {
@@ -133,45 +137,21 @@ public final class MessageHooks {
         String revisionGetter = spec.optString("editedTimestampGetter", null);
         if (revisionGetter != null) {
             HookBridge.get().rememberMessageRevision(messageId,
-                    readEditedTimestamp(model, revisionGetter));
+                    ReplyBinding.readEditedTimestamp(model, revisionGetter));
         }
         HookBridge.get().rememberContent(messageId, content);
 
-        // The body TextView is a descendant of MessageView, not necessarily the same
-        // object as Message.getContent(). Bind the row so rendering can resolve through
-        // the ViewParent chain even when Discord supplies a wrapped content instance.
+        // The outer message row owns the canonical identity and edit revision.
+        // Body and preview consumers register their exact views separately.
         View rowView = asView(chain.getThisObject());
         if (rowView != null) {
             HookBridge.get().bindView(rowView, messageId);
         }
-
-        String viewField = spec.optString("contentViewField", null);
-        View contentView = viewField == null ? null
-                : asView(Reflect.getField(chain.getThisObject(), viewField));
-        if (contentView != null) {
-            HookBridge.get().bindView(contentView, messageId);
-        }
     }
 
-    /** Loaded reply data captured from the exact MessageView.f model. */
-    private static final class ReferencedContent {
-        final String messageId;
-        final Object systemContent;
-        final Object messageContent;
-        final String editedTimestamp;
-
-        ReferencedContent(String messageId, Object systemContent, Object messageContent,
-                          @Nullable String editedTimestamp) {
-            this.messageId = messageId;
-            this.systemContent = systemContent;
-            this.messageContent = messageContent;
-            this.editedTimestamp = editedTimestamp;
-        }
-    }
-
-    /** Establish content identity mappings before MessageView.f invokes Discord's converter. */
-    private static void rememberReferencedContent(Object model, @Nullable JSONObject spec) {
-        ReferencedContent referenced = readReferencedContent(model, spec);
+    /** Establish content identity mappings before the native reply converter runs. */
+    private static void rememberReplyBinding(Object model, @Nullable JSONObject spec) {
+        ReplyBinding referenced = ReplyBinding.read(model, spec);
         if (referenced == null) {
             return;
         }
@@ -185,67 +165,6 @@ public final class MessageHooks {
                 "message.bind referenced preview identity idValid=" + validMessageId
                         + " systemContentPresent=" + (referenced.systemContent != null)
                         + " messageContentPresent=" + (referenced.messageContent != null));
-    }
-
-    @Nullable
-    private static ReferencedContent readReferencedContent(Object model, @Nullable JSONObject spec) {
-        if (spec == null) {
-            return null;
-        }
-        String referencedAccessor = spec.optString("accessor", null);
-        String referencedClass = spec.optString("loadedClass", null);
-        String messageField = spec.optString("messageField", null);
-        String idGetter = spec.optString("messageIdGetter", null);
-        String contentField = spec.optString("contentField", null);
-        String messageContentGetter = spec.optString("messageContentGetter", null);
-        String revisionGetter = spec.optString("editedTimestampGetter", null);
-        if (referencedAccessor == null || referencedClass == null || messageField == null
-                || idGetter == null || contentField == null || messageContentGetter == null
-                || revisionGetter == null) {
-            return null;
-        }
-        Method accessorMethod = Reflect.findMethodExact(model.getClass(), referencedAccessor, 0);
-        if (accessorMethod == null) {
-            return null;
-        }
-        Object referenced;
-        try {
-            referenced = accessorMethod.invoke(model);
-        } catch (Throwable t) {
-            Throwable cause = t.getCause() == null ? t : t.getCause();
-            HookDiagnostics.warnOnce("message.bind.replyAccessor",
-                    "referenced message accessor failed with " + cause.getClass().getName());
-            return null;
-        }
-        if (referenced == null || !Reflect.isInstanceOfName(referenced, referencedClass)) {
-            return null;
-        }
-        Object message = Reflect.getField(referenced, messageField);
-        if (message == null) {
-            return null;
-        }
-        String messageId = Reflect.callString(message, idGetter);
-        if (messageId == null) {
-            return null;
-        }
-        Object systemContent = Reflect.getField(referenced, contentField);
-        Object messageContent = Reflect.call(Reflect.findMethodExact(message.getClass(),
-                messageContentGetter, 0), message);
-        return new ReferencedContent(messageId, systemContent, messageContent,
-                readEditedTimestamp(message, revisionGetter));
-    }
-
-    @Nullable
-    private static String readEditedTimestamp(Object model, String getter) {
-        Method method = Reflect.findMethodExact(model.getClass(), getter, 0);
-        if (method == null || method.getReturnType() != String.class) {
-            throw new IllegalStateException("configured edit revision getter unavailable");
-        }
-        try {
-            return (String) method.invoke(model);
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException("edit revision read failed", e);
-        }
     }
 
     /** After Discord has bound the preview, register it on the shared translation/render path. */
@@ -265,13 +184,13 @@ public final class MessageHooks {
             return;
         }
 
-        ReferencedContent replySource = readReferencedContent(model,
+        ReplyBinding replySource = ReplyBinding.read(model,
                 spec.optJSONObject("referencedMessage"));
         Object previewObject = Reflect.getField(row, spec.optString("replyPreviewField", null));
         View previewContainer = asView(previewObject);
         boolean previewActive = previewContainer != null
                 && previewContainer.getVisibility() == View.VISIBLE;
-        // The preview is rendered by af.i through the same text converter as the body.
+        // Native preview callbacks use the same configured converter as the body.
         // Only subscribe to the canonical message here. Never overwrite Discord's
         // Drawee builder: it contains the first-line margin reserved for the username.
         RerenderRegistry.unregister(previewText);
@@ -286,7 +205,7 @@ public final class MessageHooks {
     }
 
     @Nullable
-    private static View replyPreviewTextView(View row, JSONObject spec) {
+    private static View replyPreviewTextView(@Nullable View row, JSONObject spec) {
         String previewField = spec.optString("replyPreviewField", null);
         String bindingField = spec.optString("replyPreviewBindingField", null);
         String textViewField = spec.optString("replyPreviewTextField", null);
@@ -320,7 +239,7 @@ public final class MessageHooks {
                 + render.toGenericString());
         boolean isStatic = java.lang.reflect.Modifier.isStatic(render.getModifiers());
         String identitySource = spec.optString("identitySource", "");
-        if (!"argument".equals(identitySource) && !"boundView".equals(identitySource)) {
+        if (!"argument".equals(identitySource)) {
             throw new IllegalArgumentException("Unsupported message render identity source");
         }
         int viewArgument = spec.optInt("viewArgument", -1);
@@ -341,11 +260,9 @@ public final class MessageHooks {
                         if (!RenderDispatcher.isRerendering() && view != null) {
                             Object[] renderArgs = chain.getArgs().toArray();
                             Object configuredId = safeArg(chain, messageIdArgument);
-                            String messageId = "argument".equals(identitySource)
-                                    ? configuredId instanceof String
+                            String messageId = configuredId instanceof String
                                     && HookBridge.looksLikeSnowflake((String) configuredId)
-                                    ? (String) configuredId : null
-                                    : HookBridge.get().directMessageIdOf(view);
+                                    ? (String) configuredId : null;
                             HookDiagnostics.infoOnce("message.render", "message.render invoked host="
                                     + (view != null) + " idResolved=" + (messageId != null)
                                     + " idSource=" + identitySource
@@ -405,12 +322,12 @@ public final class MessageHooks {
                     if (!HookRuntime.isActive()) return chain.proceed();
                     Object source = safeArg(chain, contentArgument);
                     Object[] renderArgs = chain.getArgs().toArray();
-                    ReferencedContent reply = REPLY_CONVERSION.get();
+                    ReplyBinding reply = REPLY_CONVERSION.get();
                     Object configuredId = safeArg(chain, messageIdArgument);
-                    boolean replyConversion = reply != null && reply.systemContent == null
-                            && source != null && source == reply.messageContent
-                            && reply.messageId.equals(configuredId);
-                    String resolvedMessageId = replyConversion ? reply.messageId
+                    boolean replyConversion = reply != null && reply.ownsSource(source);
+                    boolean replyBody = reply != null && reply.translatesConversion(source, configuredId);
+                    String resolvedMessageId = replyConversion
+                            ? reply.matchesConversion(source, configuredId) ? reply.messageId : null
                             : HookBridge.get().resolveMessageId(source);
                     HookDiagnostics.infoOnce("message.textConversion.idResolved." + (resolvedMessageId != null),
                             "message.textConversion identity resolved=" + (resolvedMessageId != null)
@@ -428,7 +345,7 @@ public final class MessageHooks {
                             HookBridge.get().rememberContent(messageId, source);
 
                             HookBridge.ReferencedTranslation reused = replyConversion
-                                    ? HookBridge.get().referencedTranslation(messageId, reply.editedTimestamp)
+                                    ? (replyBody ? HookBridge.get().referencedTranslation(messageId, reply.editedTimestamp) : null)
                                     : HookBridge.get().currentTranslation(messageId, source);
                             StateStore.Entry e = reused == null ? null : reused.state;
                             Object original = reused == null ? source : reused.originalContent;
@@ -465,16 +382,19 @@ public final class MessageHooks {
                     // 宿主渲染只执行一次；图标注入失败时保留原始渲染结果。
                     Object rendered = chain.proceed(renderArgs);
                     if (replyTranslationApplied) {
-                        // B0's native singleLine mode does not remove embedded LF or
-                        // NewLine nodes. Project only after canonical rich-text alignment,
-                        // before af.i adds LeadingMarginSpan(width, 0) and attaches it.
-                        // Keep oj.c itself and its Drawee attachment registries intact.
+                        // Native singleLine mode does not remove embedded LF or NewLine
+                        // nodes. Project only after canonical alignment and rendering,
+                        // before the host adds LeadingMarginSpan(width, 0) and attaches it.
+                        // Keep the native builder and its Drawee registries intact.
                         Editable preview = (Editable) rendered;
                         ReplyTextProjection.flattenLineBreaks(preview,
                                 index -> preview.replace(index, index + 1, " "));
                     }
+                    // A reference is a consumer only, including native system content.
+                    // Never inherit an enclosing body/card icon host for this conversion.
+                    if (replyConversion) return rendered;
                     return InlineIconInjector.inject(source, rendered,
-                            safeArg(chain, contextArgument), cl, replyConversion ? null : extracted);
+                            safeArg(chain, contextArgument), cl, extracted);
                 }));
         installedHookIds.add("message.textConversion");
     }

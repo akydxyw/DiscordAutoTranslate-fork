@@ -48,35 +48,37 @@
   "hooks": {
     "message.bind": {
       "target": {
-        "class": "com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
-        "name": "bind",
+        "class": "com.discord.chat.presentation.message.MessageView",
+        "name": "setMessage",
         "static": false,
-        "parameterCount": 17,
+        "parameterCount": 7,
         "returnType": "void",
         "parameterTypes": {
-          "0": "com.discord.chat.presentation.message.messagepart.MessageContentAccessory",
-          "1": "kotlin.jvm.functions.Function2",
-          "2": "kotlin.jvm.functions.Function1",
-          "3": "kotlin.jvm.functions.Function3",
-          "4": "kotlin.jvm.functions.Function4",
-          "5": "kotlin.jvm.functions.Function1",
-          "6": "kotlin.jvm.functions.Function2",
-          "7": "kotlin.jvm.functions.Function6",
-          "8": "kotlin.jvm.functions.Function1",
-          "9": "kotlin.jvm.functions.Function1",
-          "10": "kotlin.jvm.functions.Function1",
-          "11": "kotlin.jvm.functions.Function1",
-          "12": "kotlin.jvm.functions.Function1",
-          "13": "kotlin.jvm.functions.Function1",
-          "14": "kotlin.jvm.functions.Function1",
-          "15": "kotlin.jvm.functions.Function1",
-          "16": "kotlin.jvm.functions.Function1"
+          "0": "com.discord.chat.bridge.Message",
+          "1": "com.discord.chat.presentation.root.MessageContext",
+          "2": "com.discord.chat.presentation.events.ChatEventHandler",
+          "3": "com.discord.chat.presentation.message.view.botuikit.ComponentProvider",
+          "4": "kotlin.jvm.functions.Function0",
+          "5": "boolean",
+          "6": "boolean"
         }
       },
       "modelArgument": 0,
-      "messageIdGetter": "getMessageId",
-      "contentGetter": "getMessageContent",
-      "contentViewField": "messageContentView"
+      "messageIdGetter": "getId",
+      "contentGetter": "getContent",
+      "editedTimestampGetter": "getEditedTimestamp",
+      "referencedMessage": {
+        "accessor": "getReferencedMessage",
+        "loadedClass": "com.discord.chat.bridge.referencedmessage.LoadedReferencedMessage",
+        "messageField": "message",
+        "messageIdGetter": "getId",
+        "contentField": "systemContent",
+        "messageContentGetter": "getContent",
+        "editedTimestampGetter": "getEditedTimestamp"
+      },
+      "replyPreviewField": "replyPreview",
+      "replyPreviewBindingField": "binding",
+      "replyPreviewTextField": "replyText"
     },
     "message.render": {
       "target": {
@@ -122,8 +124,9 @@
           "33": "boolean"
         }
       },
-      "identitySource": "boundView",
-      "contentArgument": 1
+      "identitySource": "argument",
+      "contentArgument": 1,
+      "messageIdArgument": 2
     },
     "message.textConversion": {
       "target": {
@@ -165,7 +168,8 @@
         }
       },
       "contentArgument": 0,
-      "contextArgument": 1
+      "contextArgument": 1,
+      "messageIdArgument": 2
     },
     "embed.bind": {
       "enabled": true,
@@ -208,9 +212,6 @@
     "getValue": "getValue"
   },
   "accessors": {
-    "MessageContentAccessory": {
-      "getMessageId": "getMessageId-3Eiw7ao"
-    },
     "EmbedMessageAccessory": {
       "getMessageId": "getMessageId-3Eiw7ao"
     },
@@ -253,7 +254,6 @@
     }
   },
   "types": {
-    "MessageContentAccessory": "com.discord.chat.presentation.message.messagepart.MessageContentAccessory",
     "MessageContentViewHolder": "com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
     "EmbedMessageAccessory": "com.discord.chat.presentation.message.messagepart.EmbedMessageAccessory",
     "Embed": "com.discord.chat.bridge.embed.Embed",

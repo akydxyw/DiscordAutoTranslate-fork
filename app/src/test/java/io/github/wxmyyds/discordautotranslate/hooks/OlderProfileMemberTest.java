@@ -13,12 +13,14 @@ import org.junit.Test;
 
 /** The actual profile supplies all names; fixtures replace only JVM-unavailable host classes. */
 public class OlderProfileMemberTest {
-    public static final class Accessory {
+    public static final class Message {
         private final Object content = new Object();
+        private final String editedTimestamp = "2026-04-05T06:07:08Z";
         int decoyReads;
         public String nativeId() { return "123456789012345678"; }
-        public String getMessageId() { decoyReads++; return "wrong"; }
-        public Object getMessageContent() { return content; }
+        public String getId() { decoyReads++; return "wrong"; }
+        public Object getContent() { return content; }
+        public String getEditedTimestamp() { return editedTimestamp; }
     }
     public static final class Holder { private Object lastMessageContent = new Object(); }
     public static final class Observable {
@@ -49,31 +51,33 @@ public class OlderProfileMemberTest {
         return method.invoke(null, args);
     }
 
-    @Test public void bodyAccessoryReadsTypeScopedIdAndCorrectContentGetter() throws Exception {
+    @Test public void nativeMessageReadsTypeScopedIdContentAndEditedTimestamp() throws Exception {
         JSONObject root = profile();
-        root.getJSONObject("types").put("MessageContentAccessory", Accessory.class.getName());
-        // Java source cannot spell a Kotlin hyphenated name. The shipped-name assertion is separate.
-        root.getJSONObject("accessors").getJSONObject("MessageContentAccessory")
-                .put("getMessageId", "nativeId");
+        root.getJSONObject("types").put("Message", Message.class.getName());
+        // JVM fixture substitution only: Java cannot spell getId-3Eiw7ao.
+        // ShippedHookProfileTest checks the native name; this is not a device invocation test.
+        root.getJSONObject("accessors").getJSONObject("Message").put("getId", "nativeId");
         activate(root);
-        Accessory model = new Accessory();
+        Message model = new Message();
         JSONObject binding = root.getJSONObject("hooks").getJSONObject("message.bind");
         assertEquals("123456789012345678", Reflect.callString(model, binding.getString("messageIdGetter")));
         Object source = Reflect.call(Reflect.findMethodExact(model.getClass(),
                 binding.getString("contentGetter"), 0), model);
         assertSame(model.content, source);
+        Object editedTimestamp = Reflect.call(Reflect.findMethodExact(model.getClass(),
+                binding.getString("editedTimestampGetter"), 0), model);
+        assertEquals(model.editedTimestamp, editedTimestamp);
         assertEquals(0, model.decoyReads);
-        assertNull(Reflect.findMethodExact(model.getClass(), "getContent", 0));
     }
 
     @Test public void wrongIdMappingDoesNotRevertToReadableSemanticGetter() throws Exception {
         JSONObject root = profile();
-        root.getJSONObject("types").put("MessageContentAccessory", Accessory.class.getName());
-        root.getJSONObject("accessors").getJSONObject("MessageContentAccessory")
-                .put("getMessageId", "nativeI");
+        root.getJSONObject("types").put("Message", Message.class.getName());
+        root.getJSONObject("accessors").getJSONObject("Message").put("getId", "nativeI");
         activate(root);
-        Accessory model = new Accessory();
-        assertNull(Reflect.callString(model, "getMessageId"));
+        Message model = new Message();
+        JSONObject binding = root.getJSONObject("hooks").getJSONObject("message.bind");
+        assertNull(Reflect.callString(model, binding.getString("messageIdGetter")));
         assertEquals(0, model.decoyReads);
     }
 

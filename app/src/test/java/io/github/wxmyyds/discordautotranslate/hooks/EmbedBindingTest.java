@@ -172,10 +172,10 @@ public class EmbedBindingTest {
                 .put("getTitle", "getTitle").put("getFields", "getFields");
         root.getJSONObject("types")
                 .put("EmbedMessageAccessory", NativeAccessory.class.getName())
-                .put("MessageContentAccessory", AlternateAccessory.class.getName());
+                .put("AlternateAccessory", AlternateAccessory.class.getName());
         root.put("accessors", new JSONObject()
                 .put("EmbedMessageAccessory", new JSONObject().put("getMessageId", "getMessageIdNative"))
-                .put("MessageContentAccessory", new JSONObject().put("getMessageId", "getAlternateMessageId")));
+                .put("AlternateAccessory", new JSONObject().put("getMessageId", "getAlternateMessageId")));
     }
 
     @Test
