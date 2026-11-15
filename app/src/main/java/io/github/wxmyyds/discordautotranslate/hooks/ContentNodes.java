@@ -633,7 +633,7 @@ public final class ContentNodes {
 
     /**
      * 译文的可翻译段落块：空行切分，剔除空白块与 URL 块，与回填消费片段
-     * 的口径（{@link TextExtractor#countSegments}）一致，日志与切分共用。
+     * 的口径（ContentTree 捕获的文本分块）一致。
      */
     private static List<String> translatableChunks(String translated) {
         List<String> chunks = new ArrayList<>();

@@ -32,8 +32,8 @@ public final class TextExtractor {
          */
         public final String text;
         /**
-         * 可翻译片段数（与回填消费口径一致：空白块与 URL 块不计，见
-         * {@link #countSegments}）。仅用于把多片段消息的缓存条目与单片段
+         * 可翻译片段数（来自 ContentTree 捕获的分块，空白块与 URL 块不计）。
+         * 仅用于把多片段消息的缓存条目与单片段
          * 消息隔离（见 HookBridge 的缓存后缀），不参与请求构造。
          */
         public final int segmentCount;
@@ -152,8 +152,7 @@ public final class TextExtractor {
             if (s == null) {
                 return EMPTY;
             }
-            // 纯文本消息整体就是一个片段：countSegments 的空行拆分口径
-            // 不适用于它（历史上这类消息从不进入多片段缓存命名空间）。
+            // Primitive 整体就是一个片段，不应用 Annotated 文本节点的分块规则。
             return new Result(s, s.isEmpty() ? 0 : 1, s.isEmpty() ? 0 : 1, 0, false, null);
         }
 
@@ -218,33 +217,7 @@ public final class TextExtractor {
         }
     }
 
-    // ------------------------------------------------- 片段计数与空白边界
-
-    /**
-     * 一个文本节点会被拆成多少个可翻译片段（空段落与 URL 不计）。
-     *
-     * <p>提取（{@code Result.segmentCount}）、计数与重建三步必须用同一个
-     * 口径，否则片段会串位。口径：去掉节点首尾空白后按空行切分，非空白且
-     * 非 URL 的块各算一个。</p>
-     */
-    public static int countSegments(@Nullable String content) {
-        if (content == null) {
-            return 0;
-        }
-        int lead = leadingWhitespace(content);
-        int tail = trailingWhitespaceStart(content);
-        if (lead >= tail) {
-            return 0; // 只含空白
-        }
-        BlankLines.Split split = BlankLines.split(content.substring(lead, tail));
-        int count = 0;
-        for (String chunk : split.chunks) {
-            if (!BlankLines.isBlank(chunk) && !isUrlLike(chunk)) {
-                count++;
-            }
-        }
-        return count;
-    }
+    // ------------------------------------------------- 空白边界
 
     /** 前导空白长度。 */
     public static int leadingWhitespace(String s) {

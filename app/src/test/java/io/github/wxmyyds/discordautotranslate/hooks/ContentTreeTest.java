@@ -686,6 +686,17 @@ public class ContentTreeTest {
     }
 
     @Test
+    public void capturedTextChunksDefineSegmentCountsWithoutAnIndependentCounter() {
+        for (String blank : new String[]{null, "", "\n\n"}) {
+            assertEquals(0, compiled(list(new TextContentNode(blank))).segmentCount);
+        }
+        assertEquals(2, compiled(list(new TextContentNode("你好\n\n世界"))).segmentCount);
+        assertEquals(3, compiled(list(new TextContentNode("a\n\nb\n\nc"))).segmentCount);
+        assertEquals(1, compiled(list(new TextContentNode("first\nsecond"))).segmentCount);
+        assertEquals(1, compiled(list(new TextContentNode("\n\nhello\n\n"))).segmentCount);
+    }
+
+    @Test
     public void snapshotChildAndEventCollectionsAreImmutable() {
         ContentTree tree = compiled(list(new ParagraphContentNode(list(new TextContentNode("hello")))));
         assertThrows(UnsupportedOperationException.class, () -> tree.root.children.clear());
