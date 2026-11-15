@@ -37,16 +37,16 @@ public class ReferencedMessageStateTest {
     }
 
     private StateStore.Entry canonical(Object body) {
-        String key = bridge.embedStateKey(ID, body);
-        String hash = key.substring((ID + "\u0000embed\u0000").length());
+        String key = bridge.embedStateKeys(ID, java.util.Collections.singletonList(body)).get(0);
+        String hash = key.substring(key.lastIndexOf('\u0000') + 1);
         return StateStore.get().obtain(ID, hash);
     }
 
     @Test
     public void missingStateIsNotCreatedEvenIfContentCacheExists() {
         Object body = new ContentNodesTest.PrimitiveStructurableText("Hello world");
-        String key = bridge.embedStateKey(ID, body);
-        TranslationCache.get().put(key.substring((ID + "\u0000embed\u0000").length()), "你好");
+        String key = bridge.embedStateKeys(ID, java.util.Collections.singletonList(body)).get(0);
+        TranslationCache.get().put(key.substring(key.lastIndexOf('\u0000') + 1), "你好");
         assertNull(bridge.currentTranslation(ID, body));
         assertNull(StateStore.get().peek(ID));
     }
@@ -213,9 +213,9 @@ public class ReferencedMessageStateTest {
                 new ContentNodesTest.TextContentNode("same text")));
         Object second = new ContentNodesTest.AnnotatedStructurableText(Arrays.asList(
                 new ContentNodesTest.TextContentNode("same text")));
-        String key = bridge.embedStateKey(ID, first);
-        assertEquals(key, bridge.embedStateKey(ID, second));
-        String hash = key.substring((ID + "\u0000embed\u0000").length());
+        String key = bridge.embedStateKeys(ID, java.util.Collections.singletonList(first)).get(0);
+        assertEquals(key, bridge.embedStateKeys(ID, java.util.Collections.singletonList(second)).get(0));
+        String hash = key.substring(key.lastIndexOf('\u0000') + 1);
         StateStore.Entry entry = StateStore.get().obtain(key, hash);
         bridge.rememberCanonicalContent(key, second);
         entry.status = StateStore.Status.TRANSLATED;

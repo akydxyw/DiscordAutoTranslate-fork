@@ -132,7 +132,7 @@ public final class HookBridge {
         if (old == null || !old.version().equals(c.version())) {
             StateStore.get().onNewGeneration();
             TranslationCache.get().clear();
-            PollCardState.clear();
+            CardState.clear();
         }
         // 引擎随配置重建，保证下一次请求使用最新配置。
         this.engine = new JsonApiEngine(c);
@@ -181,7 +181,7 @@ public final class HookBridge {
         viewToMessageId.clear();
         messageRevisions.clear();
         contentIdentityToMessageId.clear();
-        PollCardState.clear();
+        CardState.clear();
     }
 
     private static <K, V> Map<K, V> boundedMap(int maxEntries) {
@@ -209,41 +209,40 @@ public final class HookBridge {
     /**
      * 反查某个 {@code StructurableText} 属于哪条消息。
      *
-     * <p>只按对象身份映射反查。不得按正文哈希兜底：不同消息完全可能有相同正文，
-     * 将哈希映射到单个 ID 会把译文错误地套用到另一条消息。</p>
+     * <p>按当前对象身份读取；Embed 在同步绑定作用域内使用已捕获的段键，
+     * 其他消费者读取规范身份映射。不得按正文哈希反查消息 ID。</p>
      */
     @Nullable
     public String resolveMessageId(@Nullable Object structurableText) {
         if (structurableText == null) {
             return null;
         }
+        InlineIconInjector.HostScope host = InlineIconInjector.currentHost();
+        if (host != null && host.ownsCardIdentity()) return host.messageIdOf(structurableText);
         return contentIdentityToMessageId.get(structurableText);
     }
 
     // ------------------------------------------------------- Embed 状态键
 
-    /**
-     * 为 Embed 文本生成独立的状态键。
-     *
-     * <p>格式：{@code 行消息ID + "\u0000embed\u0000" + 内容哈希}。它与正文共用
-     * 同一套翻译管线（StateStore/Scheduler/缓存/重渲染/替换），但：
-     * <ul>
-     *   <li>与正文的状态条目、与同消息内不同 Embed 文本（标题/描述/字段）
-     *       互不覆盖：每段文本按内容哈希各占一条；</li>
-     *   <li>哈希与 {@link #onMessageBound} 完全同口径，保证键与条目一致；</li>
-     *   <li>分隔符含 {@code U+0000}，真实雪花 ID 不可能包含，可安全区分
-     *       Embed 键与正文键。</li>
-     * </ul>
-     *
-     * @return 状态键；文本为空或类型未知时返回 null（调用方应跳过）
-     */
-    @Nullable
-    public String embedStateKey(String rowMessageId, @Nullable Object structurable) {
-        TextExtractor.Result ex = TextExtractor.extract(structurable);
-        if (ex == null || ex.text.trim().isEmpty()) {
-            return null;
+    /** Card identity includes the complete captured segment sequence, isolating same-row Embeds. */
+    java.util.List<String> embedStateKeys(String rowMessageId, java.util.List<?> texts) {
+        if (!looksLikeSnowflake(rowMessageId)) throw new IllegalArgumentException("Invalid Embed row identity");
+        java.util.List<String> hashes = new java.util.ArrayList<>(texts.size());
+        StringBuilder identity = new StringBuilder();
+        for (Object text : texts) {
+            TextExtractor.Result ex = TextExtractor.extract(text);
+            String hash = ex == null || ex.text.trim().isEmpty() ? null : contentHashOf(ex, config);
+            hashes.add(hash);
+            identity.append(hash == null ? "EMPTY" : hash).append('\u0000');
         }
-        return stateKey(rowMessageId, EMBED_KEY_PREFIX, contentHashOf(ex, config));
+        String cardHash = io.github.wxmyyds.discordautotranslate.core.Sha256.digestHex(
+                identity.toString(), "embed-card");
+        java.util.List<String> keys = new java.util.ArrayList<>(hashes.size());
+        for (String hash : hashes) {
+            keys.add(hash == null ? null
+                    : stateKey(rowMessageId, EMBED_KEY_PREFIX + cardHash + "\u0000", hash));
+        }
+        return keys;
     }
 
     /** One current capture feeds identity verification, native reconstruction and icon eligibility. */
@@ -298,6 +297,15 @@ public final class HookBridge {
         return i >= 0 ? key.substring(0, i) : key;
     }
 
+    static String cardIdentityOf(String key) {
+        return isPollKey(key) ? cardRowOf(key) : key.substring(0, key.lastIndexOf('\u0000'));
+    }
+
+    boolean showingOriginal(String key, StateStore.Entry entry) {
+        CardState.Card card = isCardKey(key) ? CardState.forKey(key) : null;
+        return isCardKey(key) ? card == null || card.showingOriginal() : entry.showingOriginal;
+    }
+
     private static String stateKey(String rowMessageId, String namespace, String contentHash) {
         return rowMessageId + namespace + contentHash;
     }
@@ -329,9 +337,13 @@ public final class HookBridge {
      * 消息绑定后的处理入口：识别英文、查缓存、按需发起翻译。
      */
     public void onMessageBound(String messageId, @Nullable Object structurableText) {
-        if (!HookRuntime.isActive() || messageId == null || structurableText == null) {
-            return;
+        try (HookRuntime.Lease lease = HookRuntime.enter()) {
+            if (lease == null || messageId == null || structurableText == null) return;
+            produceTranslation(messageId, structurableText);
         }
+    }
+
+    private void produceTranslation(String messageId, Object structurableText) {
         TextExtractor.Result ex = TextExtractor.extract(structurableText);
         String nodeTypes = TextExtractor.typeSummary(structurableText, ex);
         ProjectLog.infoOnce("translation.nodeTypes." + nodeTypes,
@@ -397,7 +409,11 @@ public final class HookBridge {
         refreshTranslation(messageId);
         Scheduler.get().submit(task, requestText, engine,
                 identity -> HookRuntime.isActive() && config.enabled && StateStore.get().owns(identity),
-                this::onTranslateResult);
+                (identity, accepted, translated, error) -> {
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease != null) onTranslateResult(identity, accepted, translated, error);
+                    }
+                });
     }
 
     /** Complete task ownership is validated before every transition, including discarded results. */
@@ -417,10 +433,10 @@ public final class HookBridge {
         refreshTranslation(task.messageId);
     }
 
-    /** A segment update also refreshes the Poll title's aggregate progress/error icon. */
+    /** A segment update also refreshes its card's aggregate progress/error icon. */
     private static void refreshTranslation(String key) {
         RerenderRegistry.rerender(key);
-        PollCardState.Card card = PollCardState.forKey(key);
+        CardState.Card card = CardState.forKey(key);
         if (card != null && card.titleKey != null && !key.equals(card.titleKey))
             RerenderRegistry.rerender(card.titleKey);
     }
@@ -452,8 +468,8 @@ public final class HookBridge {
 
     /** 原文/译文切换：由图标点击触发，不触发新请求（需求 §2.4）。 */
     public void toggleShowingOriginal(String messageId) {
-        if (isPollKey(messageId)) {
-            PollCardState.Card card = PollCardState.toggle(messageId);
+        if (isCardKey(messageId)) {
+            CardState.Card card = CardState.toggle(messageId);
             if (card != null) for (String key : card.keys) RerenderRegistry.rerender(key);
             return;
         }
@@ -470,8 +486,8 @@ public final class HookBridge {
         if (messageId == null) {
             return;
         }
-        if (isPollKey(messageId)) {
-            PollCardState.Card card = PollCardState.forKey(messageId);
+        if (isCardKey(messageId)) {
+            CardState.Card card = CardState.forKey(messageId);
             if (card == null || !messageId.equals(card.titleKey)) return;
             toggleShowingOriginal(messageId);
             // Switching back to translation is the sole user retry action for failed slots.

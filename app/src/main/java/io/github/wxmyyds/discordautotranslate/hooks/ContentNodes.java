@@ -369,10 +369,33 @@ public final class ContentNodes {
         requireAnchorCounts(plain, plan.emojiAnchors, RejectionReason.EMOJI_COUNT);
         if (!RetainedNodeMarkers.matchesExpected(plain, plan.retainedMarkers))
             throw reject(RejectionReason.RETAINED_MARKER);
+        requireStyleMarkers(plain, plan);
         if (plan.hasStyleMarkers()) {
             return alignByStyleMarkers(plain, plan);
         }
         return alignTokens(plain, plan);
+    }
+
+    // Recognize malformed reserved tags too; an exact-tag-only scan would let them reach Text.
+    private static final java.util.regex.Pattern STYLE_PREFIX =
+            java.util.regex.Pattern.compile("<\\s*/?\\s*x(?![A-Za-z_])",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /** The captured flat sequence must occur exactly once, with no nesting or extra reserved tags. */
+    private static void requireStyleMarkers(String plain, AlignmentPlan plan) {
+        java.util.regex.Matcher markers = STYLE_PREFIX.matcher(plain);
+        int styleId = 1;
+        boolean closing = false;
+        while (markers.find()) {
+            RejectionReason reason = closing ? RejectionReason.STYLE_CLOSE : RejectionReason.STYLE_OPEN;
+            if (styleId > plan.styleMarkers) throw reject(reason);
+            String expected = (closing ? "</x" : "<x") + styleId + ">";
+            if (!plain.startsWith(expected, markers.start())) throw reject(reason);
+            if (closing) styleId++;
+            closing = !closing;
+        }
+        if (closing) throw reject(RejectionReason.STYLE_CLOSE);
+        if (styleId <= plan.styleMarkers) throw reject(RejectionReason.STYLE_OPEN);
     }
 
     /**
@@ -389,7 +412,7 @@ public final class ContentNodes {
             if (t.anchor != null) {
                 int at = plain.indexOf(t.anchor, cursor);
                 if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
-                String prefix = anchorPrefix(plain.substring(cursor, at), t);
+                String prefix = itemPrefix(plain.substring(cursor, at), t);
                 assignRun(prefix, pending, parts, plan);
                 pending.clear();
                 cursor = at + t.anchor.length();
@@ -397,17 +420,13 @@ public final class ContentNodes {
                 String open = "<x" + t.styleId + ">";
                 int at = plain.indexOf(open, cursor);
                 if (at < 0) throw reject(RejectionReason.STYLE_OPEN);
-                assignRun(plain.substring(cursor, at), pending, parts, plan);
+                assignRun(itemPrefix(plain.substring(cursor, at), t), pending, parts, plan);
                 pending.clear();
                 String close = "</x" + t.styleId + ">";
                 int end = plain.indexOf(close, at + open.length());
                 if (end < 0) throw reject(RejectionReason.STYLE_CLOSE);
                 String styled = plain.substring(at + open.length(), end).trim();
                 if (styled.isEmpty()) throw reject(RejectionReason.STYLE_EMPTY);
-                if (t.segIndex < plan.listFlags.size()
-                        && Boolean.TRUE.equals(plan.listFlags.get(t.segIndex))) {
-                    styled = stripListMarker(styled);
-                }
                 parts.set(t.segIndex, styled);
                 cursor = end + close.length();
             } else {
@@ -484,7 +503,7 @@ public final class ContentNodes {
             int at = plain.indexOf(anchor, from);
             if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
             int segEnd = t.segIndex;
-            String prefix = anchorPrefix(plain.substring(from, at), t);
+            String prefix = itemPrefix(plain.substring(from, at), t);
             List<String> spanParts = alignInterval(prefix, plan, segStart, segEnd);
             copySpan(spanParts, parts, segStart);
             from = at + anchor.length();
@@ -496,13 +515,13 @@ public final class ContentNodes {
         return parts;
     }
 
-    /** A list item can begin with a retained leaf; consume its native item prefix, never body text. */
-    private static String anchorPrefix(String prefix, PlanToken token) {
+    /** Consume only the structural item prefix before its first anchor or styled slot. */
+    private static String itemPrefix(String prefix, PlanToken token) {
         if (!token.listPrefix) return prefix;
         int tail = prefix.length();
         while (tail > 0 && Character.isWhitespace(prefix.charAt(tail - 1))) tail--;
         int lineStart = prefix.lastIndexOf('\n', tail - 1) + 1;
-        // Native source LF/BREAK may lie between ITEM_START and its first anchor.
+        // Native source LF/BREAK may lie between ITEM_START and its first token.
         // Only a marker followed entirely by whitespace can be consumed, never item body text.
         if (!LIST_MARKER.matcher(prefix.substring(lineStart)).matches()) return prefix;
         int lineEnd = prefix.indexOf('\n', lineStart);
@@ -513,7 +532,7 @@ public final class ContentNodes {
     private static List<String> alignInterval(String span, AlignmentPlan plan, int start, int end) {
         try {
             return alignSpanToParts(span, plan.groupIds.subList(start, end),
-                    plan.listFlagsIn(start, end), plan.lineBreakFlagsIn(start, end),
+                    plan.listPrefixesIn(start, end), plan.lineBreakFlagsIn(start, end),
                     plan.sourceLinesIn(start, end));
         } catch (Rejection rejection) {
             if (rejection.reason == RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS) {
@@ -558,7 +577,7 @@ public final class ContentNodes {
      * 任一数量或结构不匹配都拒绝整条回填。
      */
     static List<String> alignSpanToParts(String span, List<Integer> groups,
-                                         @Nullable List<Boolean> listFlags,
+                                         @Nullable List<Boolean> listPrefixes,
                                          @Nullable List<Boolean> lineBreakBefore,
                                          List<Integer> sourceLineCounts) {
         int segments = groups.size();
@@ -607,13 +626,13 @@ public final class ContentNodes {
                 for (int i = segment; i < end; i++) {
                     int count = sourceLineCounts.get(i);
                     String value = String.join("\n", lineValues.subList(offset, offset + count));
-                    if (isListSegment(listFlags, i)) value = stripListMarker(value);
+                    if (isListPrefix(listPrefixes, i)) value = stripListMarker(value);
                     parts.set(i, value);
                     offset += count;
                 }
             } else {
                 String value = block;
-                if (isListSegment(listFlags, segment)) value = stripListMarker(value);
+                if (isListPrefix(listPrefixes, segment)) value = stripListMarker(value);
                 parts.set(segment, value);
             }
             segment = end;
@@ -624,9 +643,9 @@ public final class ContentNodes {
         return parts;
     }
 
-    private static boolean isListSegment(@Nullable List<Boolean> listFlags, int index) {
-        return listFlags != null && index < listFlags.size()
-                && Boolean.TRUE.equals(listFlags.get(index));
+    private static boolean isListPrefix(@Nullable List<Boolean> listPrefixes, int index) {
+        return listPrefixes != null && index < listPrefixes.size()
+                && Boolean.TRUE.equals(listPrefixes.get(index));
     }
 
     private static boolean isLineBreakBefore(@Nullable List<Boolean> flags, int index) {
@@ -674,8 +693,8 @@ public final class ContentNodes {
     static final class AlignmentPlan {
         /** 每个可翻译片段的段落组号（0 起，与片段枚举同序）。 */
         final List<Integer> groupIds = new ArrayList<>();
-        /** 与 {@code groupIds} 平行：该片段是否位于列表项内。 */
-        final List<Boolean> listFlags = new ArrayList<>();
+        /** 与 {@code groupIds} 平行：该片段是否消费列表项起始前缀。 */
+        final List<Boolean> listPrefixes = new ArrayList<>();
         /** 与片段平行：当前片段前是否有已捕获的源换行（文本空白或 BREAK）。 */
         final List<Boolean> lineBreakBefore = new ArrayList<>();
         /** 与片段平行：该片段的源文本内部行数，不能假定每个槽只占一行。 */
@@ -705,9 +724,9 @@ public final class ContentNodes {
             return sourceLineCounts.subList(segStart, segEnd);
         }
 
-        /** [segStart, segEnd) 范围片段对应的列表项标记子列表。 */
-        List<Boolean> listFlagsIn(int segStart, int segEnd) {
-            return listFlags.subList(segStart, segEnd);
+        /** [segStart, segEnd) 范围片段对应的列表项起始前缀。 */
+        List<Boolean> listPrefixesIn(int segStart, int segEnd) {
+            return listPrefixes.subList(segStart, segEnd);
         }
     }
 
@@ -777,6 +796,7 @@ public final class ContentNodes {
         final String anchor; // Non-null anchors consume no text slot.
         final int segIndex; // Anchor boundary or text-slot index, captured in tree order.
         final int styleId;
+        /** True only for the first anchor or translatable slot after captured ITEM_START. */
         final boolean listPrefix;
 
         PlanToken(String anchor, int segIndex, boolean listPrefix) {
@@ -786,11 +806,11 @@ public final class ContentNodes {
             this.listPrefix = listPrefix;
         }
 
-        PlanToken(int segIndex, int styleId) {
+        PlanToken(int segIndex, int styleId, boolean listPrefix) {
             this.anchor = null;
             this.segIndex = segIndex;
             this.styleId = styleId;
-            this.listPrefix = false;
+            this.listPrefix = listPrefix;
         }
     }
 
@@ -856,13 +876,11 @@ public final class ContentNodes {
                         addUrlToken(w, chunk.trim());
                         continue;
                     }
-                    int segIndex = w.plan.groupIds.size();
-                    addSegment(w, event, node.chunkLineCounts.get(i));
                     int styleId = 0;
                     if (event.styled) {
                         styleId = ++w.plan.styleMarkers;
                     }
-                    w.plan.tokens.add(new PlanToken(segIndex, styleId));
+                    addSegment(w, event, node.chunkLineCounts.get(i), styleId);
                 }
                 addSourceWhitespace(w, s, tail, s.length());
                 continue;
@@ -936,7 +954,10 @@ public final class ContentNodes {
      * <p>URL 与 emoji 都作为必须保留的定位标记；列表项按独立行分组。
      * {@code forceNewGroup} 由列表项边界推进段落组。</p>
      */
-    private static void addSegment(PlanWalk w, ContentTree.Event event, int sourceLines) {
+    private static void addSegment(PlanWalk w, ContentTree.Event event, int sourceLines, int styleId) {
+        PlanToken token = new PlanToken(w.plan.groupIds.size(), styleId, w.pendingListPrefix);
+        w.plan.tokens.add(token);
+        w.plan.listPrefixes.add(token.listPrefix);
         w.pendingListPrefix = false;
         w.plan.boundaries.add(new BoundaryContext(event, w, sourceLines));
         int separatorNewlines = w.separatorNewlines;
@@ -949,7 +970,6 @@ public final class ContentNodes {
             w.group++;
         }
         w.plan.groupIds.add(w.group);
-        w.plan.listFlags.add(w.listLevel > 0);
         w.plan.lineBreakBefore.add(lineBoundary);
         w.plan.sourceLineCounts.add(sourceLines);
         w.separatorNewlines = 0;

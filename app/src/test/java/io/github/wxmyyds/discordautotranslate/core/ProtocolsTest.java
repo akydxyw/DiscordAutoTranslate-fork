@@ -79,7 +79,7 @@ public class ProtocolsTest {
                 Config.PROTOCOL_OPENAI_COMPATIBLE, "hello", "prompt", "model", false));
         assertFalse(body.getBoolean("stream"));
         assertEquals("你好", decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
-                "{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}", false));
+                "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"你好\"}}]}", false));
     }
 
     /** Responses 请求体用 instructions/input；不得携带官方接口不接受的 frequency_penalty。 */
@@ -161,7 +161,8 @@ public class ProtocolsTest {
     /** 流式模式不接受服务端忽略 stream 参数后返回的普通 JSON。 */
     @Test
     public void streamingModeRejectsNonStreamingJson() throws Exception {
-        String json = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"普通\"}}]}";
+        String json = "{\"choices\":[{\"finish_reason\":\"stop\","
+                + "\"message\":{\"role\":\"assistant\",\"content\":\"普通\"}}]}";
         try {
             decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE, json, true);
             fail("流式模式必须拒绝 JSON 响应");
@@ -215,6 +216,9 @@ public class ProtocolsTest {
         String resp = "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\","
                 + "\"content\":[{\"type\":\"thinking\",\"thinking\":\"推理\"},"
                 + "{\"type\":\"text\",\"text\":\"你好\"},"
+                + "{\"type\":\"thinking\",\"thinking\":\"更多推理\"},"
+                + "{\"type\":\"redacted_thinking\",\"data\":\"opaque\"},"
+                + "{\"type\":\"text\",\"text\":\"\"},"
                 + "{\"type\":\"text\",\"text\":\"，世界\"}],"
                 + "\"model\":\"claude\",\"stop_reason\":\"end_turn\"}";
         assertEquals("你好，世界",
@@ -386,8 +390,8 @@ public class ProtocolsTest {
     /** Compatible 提取路径固定为 choices.0.message.content。 */
     @Test
     public void compatibleExtractionReadsFirstChoiceContent() throws Exception {
-        String resp = "{\"choices\":[{\"message\":{\"role\":\"assistant\","
-                + "\"content\":\"你好\"}}]}";
+        String resp = "{\"choices\":[{\"finish_reason\":\"stop\","
+                + "\"message\":{\"role\":\"assistant\",\"content\":\"你好\"}}]}";
         assertEquals("你好",
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp));
     }
@@ -395,7 +399,7 @@ public class ProtocolsTest {
     /** 模型回显包装标签时严格拒绝，不剥离后继续回填。 */
     @Test
     public void echoedWrapperTagsAreRejected() throws Exception {
-        String resp = "{\"choices\":[{\"message\":{\"content\":"
+        String resp = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":"
                 + "\"<translate>\\n你好\\n</translate>\"}}]}";
         try {
             extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp);
@@ -408,7 +412,7 @@ public class ProtocolsTest {
     /** 剥离后仍残留标签 = 输出结构损坏，按解析失败拒绝（宁显原文不显字面量）。 */
     @Test
     public void residualWrapperTagsAreRejectedAsParseError() {
-        String resp = "{\"choices\":[{\"message\":{\"content\":"
+        String resp = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":"
                 + "\"前言 <translate>你好</translate>\"}}]}";
         try {
             extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp);
@@ -457,13 +461,144 @@ public class ProtocolsTest {
     }
 
     @Test
+    public void jsonRequiresExplicitTypedNormalCompletionReasons() throws Exception {
+        for (Object invalid : new Object[]{JSONObject.NULL, 42, true, false,
+                new JSONObject(), new JSONArray(), "", "unknown", "length", "max_tokens",
+                "refusal", "content_filter", "tool_calls", "function_call", "tool_use",
+                "pause_turn", "model_context_window_exceeded"}) {
+            JSONObject chat = chatResult("你好");
+            chat.getJSONArray("choices").getJSONObject(0).put("finish_reason", invalid);
+            assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false);
+            assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    anthropicResult("你好").put("stop_reason", invalid).toString(), false);
+        }
+        JSONObject chat = chatResult("你好");
+        chat.getJSONArray("choices").getJSONObject(0).remove("finish_reason");
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false);
+        JSONObject anthropic = anthropicResult("你好");
+        anthropic.remove("stop_reason");
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES, anthropic.toString(), false);
+        // A terminal reason from the other protocol cannot stand in for this protocol's status.
+        chat.getJSONArray("choices").getJSONObject(0).put("finish_reason", "end_turn");
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false);
+        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                anthropic.put("stop_reason", "stop").toString(), false);
+    }
+
+    @Test
+    public void jsonAndStreamingAcceptTheSameNormalTerminalReasons() throws Exception {
+        assertEquals("你好", decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                chatResult("你好").toString(), false));
+        assertEquals("你好", decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},"
+                        + "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", true));
+        for (String reason : new String[]{"end_turn", "stop_sequence"}) {
+            assertEquals("你好", decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    anthropicResult("你好").put("stop_reason", reason).toString(), false));
+            assertEquals("你好", decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    "data: {\"type\":\"content_block_delta\","
+                            + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
+                            + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\""
+                            + reason + "\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n", true));
+        }
+    }
+
+    @Test
+    public void compatibleJsonRequiresChoicesAndMessageObjects() throws Exception {
+        for (String body : new String[]{"[]", "42", "null", "{}"}) {
+            assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, body, false);
+        }
+        for (Object invalid : new Object[]{JSONObject.NULL, "text", 42, true,
+                new JSONObject(), new JSONArray()}) {
+            assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                    chatResult("你好").put("choices", invalid).toString(), false);
+        }
+        for (Object invalid : new Object[]{JSONObject.NULL, "text", 42, true, new JSONArray()}) {
+            assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                    chatResult("你好").put("choices", new JSONArray().put(invalid)).toString(), false);
+            JSONObject chat = chatResult("你好");
+            chat.getJSONArray("choices").getJSONObject(0).put("message", invalid);
+            assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false);
+        }
+        JSONObject missingMessage = chatResult("你好");
+        missingMessage.getJSONArray("choices").getJSONObject(0).remove("message");
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, missingMessage.toString(), false);
+        // An object with a numeric key is not a choices array.
+        JSONObject numericKeys = new JSONObject().put("0",
+                chatResult("你好").getJSONArray("choices").getJSONObject(0));
+        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                chatResult("你好").put("choices", numericKeys).toString(), false);
+    }
+
+    @Test
+    public void compatibleJsonRejectsRefusalAndToolCallsAlongsideNormalText() throws Exception {
+        for (String field : new String[]{"refusal", "tool_calls", "function_call"}) {
+            for (Object value : new Object[]{"refused", "", 42, false,
+                    new JSONArray(), new JSONObject()}) {
+                JSONObject chat = chatResult("你好");
+                chat.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+                        .put(field, value);
+                assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false);
+            }
+            JSONObject normal = chatResult("你好");
+            normal.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+                    .put(field, JSONObject.NULL);
+            assertEquals("你好", decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                    normal.toString(), false));
+        }
+    }
+
+    @Test
+    public void jsonErrorWrappersRejectOtherwiseValidText() throws Exception {
+        String[] protocols = {Config.PROTOCOL_OPENAI_COMPATIBLE, Config.PROTOCOL_ANTHROPIC_MESSAGES};
+        JSONObject[] bodies = {chatResult("你好"), anthropicResult("你好")};
+        for (int i = 0; i < protocols.length; i++) {
+            for (Object error : new Object[]{JSONObject.NULL, "secret", 42, false,
+                    new JSONArray(), new JSONObject().put("message", "secret")}) {
+                JSONObject wrapped = new JSONObject(bodies[i].toString()).put("error", error);
+                assertParseError(protocols[i], wrapped.toString(), false);
+            }
+            assertParseError(protocols[i], new JSONObject(bodies[i].toString())
+                    .put("type", "error").toString(), false);
+            for (Object invalid : new Object[]{42, true, new JSONObject(), new JSONArray()}) {
+                assertParseError(protocols[i], new JSONObject(bodies[i].toString())
+                        .put("type", invalid).toString(), false);
+            }
+        }
+    }
+
+    @Test
+    public void jsonCompletionFailuresDoNotLeakPrivateReasons() throws Exception {
+        String secret = "private body\nhttps://private.invalid/?token=secret Bearer private-key";
+        JSONObject chat = chatResult(secret);
+        chat.getJSONArray("choices").getJSONObject(0).put("finish_reason", secret);
+        String[] protocols = {Config.PROTOCOL_OPENAI_COMPATIBLE, Config.PROTOCOL_ANTHROPIC_MESSAGES};
+        String[] bodies = {chat.toString(), anthropicResult(secret).put("stop_reason", secret).toString()};
+        for (int i = 0; i < protocols.length; i++) {
+            try {
+                decodeFixture(protocols[i], bodies[i], false);
+                fail("Private completion reason must reject text");
+            } catch (TranslationException e) {
+                assertEquals(TranslationException.Kind.PARSE, e.kind());
+                for (String detail : new String[]{secret, "private body", "private.invalid", "private-key"}) {
+                    assertFalse(e.getMessage().contains(detail));
+                    assertFalse(e.toString().contains(detail));
+                    assertFalse(e.userMessage().contains(detail));
+                }
+                assertTrue(e.getCause() == null);
+            }
+        }
+    }
+
+    @Test
     public void compatibleNonStreamingContentMustBeAnActualString() {
         for (String value : new String[]{"42", "true", "false", "{}", "[]", "null"}) {
             assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
-                    "{\"choices\":[{\"message\":{\"content\":" + value + "}}]}", false);
+                    "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":"
+                            + value + "}}]}", false);
         }
         assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
-                "{\"choices\":[{\"message\":{}}]}", false);
+                "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{}}]}", false);
     }
 
     @Test
@@ -506,14 +641,14 @@ public class ProtocolsTest {
             assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                     "{\"content\":[{\"type\":\"text\",\"text\":\"前段\"},"
                             + "{\"type\":\"text\",\"text\":" + value + "},"
-                            + "{\"type\":\"text\",\"text\":\"后段\"}]}", false);
+                            + "{\"type\":\"text\",\"text\":\"后段\"}],\"stop_reason\":\"end_turn\"}", false);
             assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                     "data: {\"type\":\"content_block_delta\","
                             + "\"delta\":{\"type\":\"text_delta\",\"text\":" + value + "}}\n\n"
                             + "data: {\"type\":\"message_stop\"}\n\n", true);
         }
         assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
-                "{\"content\":[{\"type\":\"text\"}]}", false);
+                "{\"content\":[{\"type\":\"text\"}],\"stop_reason\":\"end_turn\"}", false);
         assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                 "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\"}}\n\n"
                         + "data: {\"type\":\"message_stop\"}\n\n", true);
@@ -544,10 +679,11 @@ public class ProtocolsTest {
     public void nonStreamingProtocolsRejectTrailingDocumentsAndAcceptWhitespace() throws Exception {
         String[] protocols = {Config.PROTOCOL_OPENAI_COMPATIBLE,
                 Config.PROTOCOL_OPENAI_RESPONSES, Config.PROTOCOL_ANTHROPIC_MESSAGES};
-        String[] bodies = {"{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}",
+        String[] bodies = {"{\"choices\":[{\"finish_reason\":\"stop\","
+                        + "\"message\":{\"content\":\"你好\"}}]}",
                 "{\"output\":[{\"type\":\"message\",\"content\":["
                         + "{\"type\":\"output_text\",\"text\":\"你好\"}]}]}",
-                "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}]}"};
+                "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}],\"stop_reason\":\"end_turn\"}"};
         for (int i = 0; i < protocols.length; i++) {
             assertEquals("你好", decodeFixture(protocols[i], bodies[i] + " \n", false));
             assertParseError(protocols[i], bodies[i] + " garbage", false);
@@ -993,6 +1129,17 @@ public class ProtocolsTest {
                             + responseSse(responseDelta(1, 0, 0, "msg_1", second))
                             + responseSse(responseCompleted(2, responseResult(tag + "你好"))), true);
         }
+    }
+
+    private static JSONObject chatResult(String text) throws Exception {
+        return new JSONObject().put("choices", new JSONArray().put(new JSONObject()
+                .put("finish_reason", "stop").put("message", new JSONObject()
+                        .put("role", "assistant").put("content", text))));
+    }
+
+    private static JSONObject anthropicResult(String text) throws Exception {
+        return new JSONObject().put("stop_reason", "end_turn").put("content", new JSONArray()
+                .put(new JSONObject().put("type", "text").put("text", text)));
     }
 
     private static JSONObject responseEvent(String type, int sequence) throws Exception {

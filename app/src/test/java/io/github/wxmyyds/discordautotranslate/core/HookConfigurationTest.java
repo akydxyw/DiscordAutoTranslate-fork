@@ -7,7 +7,9 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Test;
 
@@ -20,6 +22,36 @@ public class HookConfigurationTest {
         }
 
         public static void render(SelectorFixture view, String text, int flags) {
+        }
+    }
+
+    public static final class OverloadedFixture {
+        public String render(String text, int flags) {
+            return text;
+        }
+
+        public Object render(String text, long flags) {
+            return text;
+        }
+
+        public static String render(int text, int flags) {
+            return Integer.toString(text);
+        }
+
+        public void render(String text) {
+        }
+
+        public void renderMetadata(String text, int flags) {
+        }
+    }
+
+    public static final class ReversedOverloadedFixture {
+        public Object render(String text, long flags) {
+            return text;
+        }
+
+        public String render(String text, int flags) {
+            return text;
         }
     }
 
@@ -102,6 +134,109 @@ public class HookConfigurationTest {
         assertFalse(config.hasAllRequiredHooks(Collections.<String>emptySet()));
         assertEquals(3, method.getParameterCount());
         assertEquals(SelectorFixture.class, method.getParameterTypes()[0]);
+    }
+
+    private static JSONObject overloadedSelector() throws JSONException {
+        return new JSONObject().put("class", OverloadedFixture.class.getName())
+                .put("name", "render").put("static", false).put("parameterCount", 2);
+    }
+
+    private static HookConfiguration configurationWithTarget(JSONObject target, boolean enabled)
+            throws JSONException {
+        JSONObject root = new JSONObject().put("schemaVersion", 1).put("versionCode", 352017)
+                .put("requiredHooks", new JSONArray().put("body"))
+                .put("hooks", new JSONObject().put("body", new JSONObject()
+                        .put("enabled", enabled).put("target", target)));
+        return HookConfiguration.parse(root.toString(), 352017);
+    }
+
+    @Test
+    public void deprecatedSelectorPropertiesAreRejectedEvenAlongsideExactFields() throws Exception {
+        String[] properties = {"namePrefix", "minParameterCount", "selection", "selection"};
+        Object[] values = {"render", 1, "first", "mostParameters"};
+        for (int i = 0; i < properties.length; i++) {
+            JSONObject selector = overloadedSelector().put(properties[i], values[i]);
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, true));
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, false));
+            assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        }
+    }
+
+    @Test
+    public void exactNameCountAndTypedConstraintsAreValidatedBeforeResolution() throws Exception {
+        for (String missing : new String[]{"name", "parameterCount", "static"}) {
+            JSONObject selector = overloadedSelector();
+            selector.remove(missing);
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, true));
+            assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        }
+        String[] properties = {"name", "name", "name", "name", "parameterCount",
+                "parameterCount", "parameterCount", "parameterCount", "static", "returnType",
+                "returnType", "parameterTypes", "parameterTypes", "parameterTypes",
+                "parameterTypes", "parameterTypes", "parameterTypes", "parameterTypes"};
+        Object[] values = {"", "render*", " render", 123, -1, 1.5, "2", JSONObject.NULL, "false",
+                "*", JSONObject.NULL, new JSONArray(), JSONObject.NULL,
+                new JSONObject().put("2", "int"), new JSONObject().put("01", "int"),
+                new JSONObject().put("x", "int"), new JSONObject().put("0", "*"),
+                new JSONObject().put("0", "void")};
+        assertEquals(properties.length, values.length);
+        for (int i = 0; i < properties.length; i++) {
+            JSONObject selector = overloadedSelector().put(properties[i], values[i]);
+            assertThrows(JSONException.class, () -> configurationWithTarget(selector, true));
+            assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        }
+    }
+
+    @Test
+    public void partialTypesResolveOnlyTheUniqueCandidateAndNeverRelaxConstraints() throws Exception {
+        JSONObject selector = overloadedSelector()
+                .put("parameterTypes", new JSONObject().put("1", "int"));
+        HookConfiguration config = configurationWithTarget(selector, true);
+        Method expected = OverloadedFixture.class.getDeclaredMethod("render", String.class, int.class);
+        assertEquals(expected, config.findMethod("body", getClass().getClassLoader()));
+        assertEquals(expected, config.findMethod("body", getClass().getClassLoader()));
+        assertTrue(config.hasAllRequiredTargets(getClass().getClassLoader()));
+
+        selector.getJSONObject("parameterTypes").put("0", "int");
+        config = configurationWithTarget(selector, true);
+        assertNull(config.findMethod("body", getClass().getClassLoader()));
+        assertFalse(config.hasAllRequiredTargets(getClass().getClassLoader()));
+    }
+
+    @Test
+    public void multipleCandidatesAreRejectedRegardlessOfDeclarationOrder() throws Exception {
+        for (Class<?> owner : new Class<?>[]{OverloadedFixture.class, ReversedOverloadedFixture.class}) {
+            JSONObject selector = overloadedSelector().put("class", owner.getName());
+            assertNull(HookConfiguration.findMethod(owner, selector));
+            selector.put("parameterTypes", new JSONObject().put("0", "java.lang.String"));
+            HookConfiguration config = configurationWithTarget(selector, true);
+            assertNull(config.findMethod("body", getClass().getClassLoader()));
+            assertFalse(config.hasAllRequiredTargets(getClass().getClassLoader()));
+            assertNull(HookConfiguration.findMethod(owner, selector));
+        }
+    }
+
+    @Test
+    public void exactNameCountStaticAndReturnTypeAllConstrainResolution() throws Exception {
+        JSONObject selector = overloadedSelector().put("returnType", "java.lang.String");
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("render", String.class, int.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("returnType", "void");
+        assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.remove("returnType");
+        selector.put("static", true);
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("render", int.class, int.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("static", false).put("parameterCount", 1);
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("render", String.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("parameterCount", 0);
+        assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("parameterCount", 2).put("name", "renderMeta");
+        assertNull(HookConfiguration.findMethod(OverloadedFixture.class, selector));
+        selector.put("name", "renderMetadata");
+        assertEquals(OverloadedFixture.class.getDeclaredMethod("renderMetadata", String.class, int.class),
+                HookConfiguration.findMethod(OverloadedFixture.class, selector));
     }
 
     @Test

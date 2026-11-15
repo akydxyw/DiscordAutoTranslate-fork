@@ -9,14 +9,39 @@ import android.widget.TextView;
 
 /** Title-only control: consume the injected icon, never install on Poll answer views. */
 final class PollIconTouch implements View.OnTouchListener {
+    private static final java.util.Map<TextView, PollIconTouch> ATTACHED = new java.util.WeakHashMap<>();
     private ClickableSpan pressed;
 
     static void attach(TextView view, Spanned text) {
-        view.setOnTouchListener(text.getSpans(0, text.length(), InlineIconSpan.class).length == 0
-                ? null : new PollIconTouch());
+        detach(view);
+        if (text.getSpans(0, text.length(), InlineIconSpan.class).length == 0) return;
+        PollIconTouch listener = new PollIconTouch();
+        synchronized (ATTACHED) { ATTACHED.put(view, listener); }
+        view.setOnTouchListener(listener);
+    }
+
+    static void detach(TextView view) {
+        PollIconTouch previous;
+        synchronized (ATTACHED) { previous = ATTACHED.remove(view); }
+        if (previous != null) {
+            previous.pressed = null;
+            view.setOnTouchListener(null);
+        }
+    }
+
+    static boolean hasAttachments() {
+        synchronized (ATTACHED) { return !ATTACHED.isEmpty(); }
+    }
+
+    static void detachAll() {
+        java.util.List<TextView> views;
+        synchronized (ATTACHED) { views = new java.util.ArrayList<>(ATTACHED.keySet()); }
+        for (TextView view : views) if (view != null) detach(view);
     }
 
     @Override public boolean onTouch(View view, MotionEvent event) {
+        try (HookRuntime.Lease lease = HookRuntime.enter()) {
+        if (lease == null) return false;
         TextView textView = (TextView) view;
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
             pressed = hit(textView, event);
@@ -31,6 +56,7 @@ final class PollIconTouch implements View.OnTouchListener {
             pressed = null;
         }
         return true;
+        }
     }
 
     private static ClickableSpan hit(TextView view, MotionEvent event) {

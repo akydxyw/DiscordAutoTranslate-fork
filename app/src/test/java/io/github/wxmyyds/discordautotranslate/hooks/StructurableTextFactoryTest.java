@@ -71,8 +71,8 @@ public class StructurableTextFactoryTest {
             PrimitiveStructurableText original = new PrimitiveStructurableText("line one\nline two");
             AnnotatedStructurableText projected = new AnnotatedStructurableText(
                     list(new TextContentNode("line one line two")));
-            String key = bridge.embedStateKey(id, original);
-            String hash = key.substring((id + "\u0000embed\u0000").length());
+            String key = bridge.embedStateKeys(id, java.util.Collections.singletonList(original)).get(0);
+            String hash = key.substring(key.lastIndexOf('\u0000') + 1);
             io.github.wxmyyds.discordautotranslate.core.StateStore.Entry entry =
                     store.obtain(id, hash);
             String translated = "译文第一行\n" + "完整译文".repeat(100);

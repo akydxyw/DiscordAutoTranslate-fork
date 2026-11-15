@@ -20,10 +20,10 @@ public class PollBindingTest {
 
     @Before public void setup() {
         ContentNodeTestProfile.activate(ContentNodesTest.class);
-        PollCardState.clear();
+        CardState.clear();
     }
     @After public void cleanup() {
-        PollCardState.clear();
+        CardState.clear();
         ContentNodeTestProfile.clear();
     }
     private static String key(PollBinding binding) {
@@ -251,27 +251,27 @@ public class PollBindingTest {
         PollBinding captured = answer(adapter, holder, 0);
         String boundKey = key(captured);
         String secondKey = key(answer(adapter, holder, 1));
-        PollCardState.bind(ROW, null, Arrays.asList(boundKey, secondKey));
-        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
+        CardState.bind(ROW, null, Arrays.asList(boundKey, secondKey));
+        assertTrue(CardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
         Collections.swap(items, 0, 1);
         PollBinding replacement = answer(adapter, holder, 0);
         assertEquals(captured.text, replacement.text);
         assertSame(captured.receiver, replacement.receiver);
         assertNotEquals(captured.slot, replacement.slot);
-        assertFalse(PollCardState.canReplay(key(replacement), boundKey));
-        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
-        assertFalse(PollCardState.canReplay(null, boundKey));
-        assertFalse(PollCardState.canReplay(boundKey, null));
+        assertFalse(CardState.canReplay(key(replacement), boundKey));
+        assertTrue(CardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        assertFalse(CardState.canReplay(null, boundKey));
+        assertFalse(CardState.canReplay(boundKey, null));
         first.answer.label.text = "edited label";
-        assertFalse(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        assertFalse(CardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
         first.answer.label.text = "same label";
         first.message.id = OTHER_ROW;
-        assertFalse(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        assertFalse(CardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
         first.message.id = ROW;
-        PollCardState.invalidate(ROW);
-        assertFalse(PollCardState.canReplay(boundKey, boundKey));
-        PollCardState.bind(ROW, null, Collections.singletonList(secondKey));
-        assertFalse(PollCardState.canReplay(boundKey, boundKey));
+        CardState.invalidate(ROW);
+        assertFalse(CardState.canReplay(boundKey, boundKey));
+        CardState.bind(ROW, null, Collections.singletonList(secondKey));
+        assertFalse(CardState.canReplay(boundKey, boundKey));
     }
 
     @Test
@@ -289,8 +289,8 @@ public class PollBindingTest {
         assertTrue(binding.accessibility);
         assertTrue(binding.matches(views.image, raw, true));
         String boundKey = key(binding);
-        PollCardState.bind(ROW, null, Collections.singletonList(boundKey));
-        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
+        CardState.bind(ROW, null, Collections.singletonList(boundKey));
+        assertTrue(CardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
         assertFalse(binding.matches(views.image, raw, false));
         assertFalse(binding.matches(views.image, new StringBuilder(raw), true));
         assertFalse(binding.matches(views.image, "another description", true));

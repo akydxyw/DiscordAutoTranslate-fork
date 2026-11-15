@@ -12,6 +12,7 @@ import org.junit.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -41,6 +42,33 @@ public class HookProfileInventoryTest {
             Set<String> configured = new HashSet<>();
             hooks.keys().forEachRemaining(configured::add);
             assertEquals(supported, configured);
+            for (String id : configured) {
+                JSONObject target = hooks.getJSONObject(id).getJSONObject("target");
+                String context = version + " " + id;
+                assertTrue(context, target.get("name") instanceof String);
+                assertFalse(context, target.getString("name").isEmpty());
+                assertFalse(context, target.has("namePrefix"));
+                assertFalse(context, target.has("minParameterCount"));
+                assertFalse(context, target.has("selection"));
+                assertTrue(context, target.get("parameterCount") instanceof Integer);
+                int count = target.getInt("parameterCount");
+                assertTrue(context, count >= 0);
+                assertTrue(context, target.get("static") instanceof Boolean);
+                JSONObject types = target.optJSONObject("parameterTypes");
+                if (types != null) {
+                    Iterator<String> keys = types.keys();
+                    while (keys.hasNext()) {
+                        String key = keys.next();
+                        int index = Integer.parseInt(key);
+                        assertEquals(context, Integer.toString(index), key);
+                        assertTrue(context, index >= 0 && index < count);
+                        assertTrue(context, types.get(key) instanceof String);
+                        String type = types.getString(key);
+                        assertFalse(context, type.isEmpty());
+                        assertFalse(context, type.contains("*"));
+                    }
+                }
+            }
             JSONArray required = root.getJSONArray("requiredHooks");
             Set<String> ids = new HashSet<>();
             for (int i = 0; i < required.length(); i++) {

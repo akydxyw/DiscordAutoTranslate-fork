@@ -15,6 +15,12 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /** JVM-only interface proxies model memory-before-disk writes and failed restoration. */
 public class ConfigurationSyncTest {
@@ -379,6 +385,146 @@ public class ConfigurationSyncTest {
         }
     }
 
+    @Test
+    public void detachedLocalLoadChecksPoisonAndValidatesOneRawSnapshotUnderMonitor() {
+        FakePrefs local = localBeforeImport();
+        local.requireMonitor = true;
+        ConfigurationSync.LocalState initial = ConfigurationSync.loadLocal(local.prefs);
+        assertFalse(initial.poisoned);
+        assertNull(initial.snapshot.configError);
+        assertEquals("https://old.example/v1", initial.snapshot.apiUrl);
+        assertEquals(1, local.reads);
+        local.memory.put(Config.KEY_API_URL, "https://changed.example/v1");
+        assertEquals("https://old.example/v1", initial.snapshot.apiUrl);
+
+        local.memory.put(Config.KEY_LOGGING_ENABLED, null);
+        assertNotNull(ConfigurationSync.loadLocal(local.prefs).snapshot.configError);
+        local.memory.remove(Config.KEY_LOGGING_ENABLED);
+        local.outcomes.add(false);
+        local.outcomes.add(false);
+        assertFalse(ConfigurationSync.save(local.prefs, null, null).localCommitted);
+        int reads = local.reads;
+        ConfigurationSync.LocalState poisoned = ConfigurationSync.loadLocal(local.prefs);
+        assertTrue(poisoned.poisoned);
+        assertNotNull(poisoned.snapshot.configError);
+        assertEquals(reads, local.reads);
+    }
+
+    @Test
+    public void replacementPageSnapshotWaitsOffThreadForCommitRollbackAndPoison() throws Exception {
+        for (int outcome = 0; outcome < 3; outcome++) {
+            FakePrefs local = localBeforeImport();
+            local.requireMonitor = true;
+            local.outcomes.add(outcome == 0);
+            if (outcome != 0) {
+                local.outcomes.add(outcome == 1);
+            }
+            CountDownLatch committing = new CountDownLatch(1);
+            CountDownLatch releaseCommit = new CountDownLatch(1);
+            local.onCommit = () -> {
+                committing.countDown();
+                await(releaseCommit);
+            };
+            ExecutorService oldPage = Executors.newSingleThreadExecutor();
+            ExecutorService newPage = Executors.newSingleThreadExecutor();
+            try {
+                Future<ConfigurationSync.Result> save = oldPage.submit(() -> ConfigurationSync.save(
+                        local.prefs, null, Config.read(new MemoryPrefs()
+                                .put(Config.KEY_MODEL, "new-model"))));
+                assertTrue(committing.await(2, TimeUnit.SECONDS));
+                CountDownLatch loading = new CountDownLatch(1);
+                Future<ConfigurationSync.LocalState> load = newPage.submit(() -> {
+                    loading.countDown();
+                    return ConfigurationSync.loadLocal(local.prefs);
+                });
+                assertTrue(loading.await(2, TimeUnit.SECONDS));
+                assertWaiting(load);
+                releaseCommit.countDown();
+                ConfigurationSync.Result saved = save.get(2, TimeUnit.SECONDS);
+                ConfigurationSync.LocalState state = load.get(2, TimeUnit.SECONDS);
+                assertEquals(outcome == 0, saved.localCommitted);
+                assertEquals(outcome == 2, state.poisoned);
+                if (outcome != 2) {
+                    assertNull(state.snapshot.configError);
+                    assertEquals(outcome == 0 ? "new-model" : Config.DEF_MODEL,
+                            state.snapshot.model);
+                } else {
+                    assertNotNull(state.snapshot.configError);
+                }
+            } finally {
+                releaseCommit.countDown();
+                oldPage.shutdownNow();
+                newPage.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    public void loadAndReconnectCannotOvertakeTheRemotePartOfAnOldPagesSave() throws Exception {
+        FakePrefs local = localBeforeImport();
+        FakePrefs remote = remoteValues();
+        FakePrefs reconnected = remoteValues();
+        local.outcomes.add(true);
+        remote.outcomes.add(true);
+        reconnected.outcomes.add(true);
+        CountDownLatch remoteCommit = new CountDownLatch(1);
+        CountDownLatch releaseRemote = new CountDownLatch(1);
+        remote.onCommit = () -> {
+            remoteCommit.countDown();
+            await(releaseRemote);
+        };
+        ExecutorService oldPage = Executors.newSingleThreadExecutor();
+        ExecutorService newPage = Executors.newSingleThreadExecutor();
+        try {
+            Future<ConfigurationSync.Result> save = oldPage.submit(() -> ConfigurationSync.save(
+                    local.prefs, remote.prefs, Config.read(new MemoryPrefs()
+                            .put(Config.KEY_MODEL, "confirmed-model"))));
+            assertTrue(remoteCommit.await(2, TimeUnit.SECONDS));
+            CountDownLatch loading = new CountDownLatch(1);
+            Future<ConfigurationSync.LocalState> load = newPage.submit(() -> {
+                loading.countDown();
+                return ConfigurationSync.loadLocal(local.prefs);
+            });
+            Future<ConfigurationSync.Result> reconnect = newPage.submit(
+                    () -> ConfigurationSync.synchronize(local.prefs, reconnected.prefs));
+            assertTrue(loading.await(2, TimeUnit.SECONDS));
+            assertWaiting(load);
+            assertEquals(0, reconnected.reads);
+            assertEquals(0, reconnected.commits);
+            releaseRemote.countDown();
+            assertTrue(save.get(2, TimeUnit.SECONDS).succeeded());
+            assertEquals("confirmed-model", load.get(2, TimeUnit.SECONDS).snapshot.model);
+            assertEquals(ConfigurationSync.Direction.EXPORT,
+                    reconnect.get(2, TimeUnit.SECONDS).direction);
+            assertEquals("confirmed-model", reconnected.disk.get(Config.KEY_MODEL));
+            assertEquals(1, local.commits);
+            assertEquals(1, remote.commits);
+            assertEquals(1, reconnected.commits);
+        } finally {
+            releaseRemote.countDown();
+            oldPage.shutdownNow();
+            newPage.shutdownNow();
+        }
+    }
+
+    private static void assertWaiting(Future<?> future) throws Exception {
+        try {
+            future.get(100, TimeUnit.MILLISECONDS);
+            throw new AssertionError("Snapshot overtook an unfinished persistence transaction");
+        } catch (TimeoutException expected) {
+            // Only a background worker is allowed to wait on this transaction monitor.
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
+
     private static FakePrefs localBeforeImport() {
         FakePrefs fake = new FakePrefs();
         fake.memory.put(Config.KEY_API_URL, "https://old.example/v1");
@@ -408,6 +554,7 @@ public class ConfigurationSyncTest {
         boolean throwOnRestore;
         boolean requireMonitor;
         Runnable onEdit;
+        Runnable onCommit;
         final SharedPreferences prefs = (SharedPreferences) Proxy.newProxyInstance(
                 SharedPreferences.class.getClassLoader(), new Class<?>[]{SharedPreferences.class},
                 (proxy, method, args) -> {
@@ -453,6 +600,9 @@ public class ConfigurationSyncTest {
                                 }
                             }
                             staged.clear();
+                            if (onCommit != null) {
+                                onCommit.run();
+                            }
                             Object outcome = outcomes.removeFirst();
                             if (outcome instanceof RuntimeException) {
                                 throw (RuntimeException) outcome;

@@ -28,14 +28,14 @@ public class PollTextProjectionTest {
         ContentNodeTestProfile.activate(ContentNodesTest.class);
         store.onNewGeneration();
         Scheduler.reset();
-        PollCardState.clear();
+        CardState.clear();
         titleKey = key("question", "Question");
         answerKey = key("answer:a", ORIGINAL);
     }
 
     @After
     public void cleanup() {
-        PollCardState.clear();
+        CardState.clear();
         store.onNewGeneration();
         Scheduler.reset();
         ContentNodeTestProfile.clear();
@@ -46,11 +46,11 @@ public class PollTextProjectionTest {
                 new ContentNodesTest.PrimitiveStructurableText(text));
     }
 
-    private PollCardState.Card card(boolean showingOriginal) {
-        PollCardState.clear();
-        PollCardState.Card card = PollCardState.bind(ROW, titleKey,
+    private CardState.Card card(boolean showingOriginal) {
+        CardState.clear();
+        CardState.Card card = CardState.bind(ROW, titleKey,
                 Arrays.asList(titleKey, answerKey));
-        if (showingOriginal) assertSame(card, PollCardState.toggle(titleKey));
+        if (showingOriginal) assertSame(card, CardState.toggle(titleKey));
         assertEquals(showingOriginal, card.showingOriginal());
         return card;
     }
@@ -117,7 +117,7 @@ public class PollTextProjectionTest {
         Map<?, ?> before = entriesSnapshot();
         int generation = store.generation();
         for (boolean cardOriginal : new boolean[] {false, true}) {
-            PollCardState.Card card = card(cardOriginal);
+            CardState.Card card = card(cardOriginal);
             for (StateStore.Status status : StateStore.Status.values()) {
                 for (boolean entryOriginal : new boolean[] {false, true}) {
                     for (String translated : Arrays.asList(null, "", "  完整译文\n😀  ")) {
@@ -130,7 +130,7 @@ public class PollTextProjectionTest {
                         assertSame(expected, PollTextProjection.display(ORIGINAL, entry, card));
                         snapshot.assertUnchanged(entry);
                         assertEquals(cardOriginal, card.showingOriginal());
-                        assertSame(card, PollCardState.forKey(answerKey));
+                        assertSame(card, CardState.forKey(answerKey));
                         assertSame(entry, store.peek(answerKey));
                         assertEquals(before, entriesSnapshot());
                         assertEquals(generation, store.generation());
@@ -154,11 +154,11 @@ public class PollTextProjectionTest {
             EntrySnapshot snapshot = new EntrySnapshot(entry);
             for (String original : Arrays.asList(null, "", "  ", ORIGINAL)) {
                 assertSame(original, PollTextProjection.display(original, entry,
-                        PollCardState.forKey(answerKey)));
+                        CardState.forKey(answerKey)));
             }
             snapshot.assertUnchanged(entry);
         }
-        assertNull(PollCardState.forKey(answerKey));
+        assertNull(CardState.forKey(answerKey));
         assertEquals(before, entriesSnapshot());
         assertEquals(generation, store.generation());
         assertNoScheduler();
@@ -169,7 +169,7 @@ public class PollTextProjectionTest {
         Map<?, ?> before = entriesSnapshot();
         int generation = store.generation();
         for (boolean showingOriginal : new boolean[] {false, true}) {
-            PollCardState.Card card = card(showingOriginal);
+            CardState.Card card = card(showingOriginal);
             for (String original : Arrays.asList(null, "", "  ", ORIGINAL)) {
                 for (int i = 0; i < 3; i++) {
                     assertSame(original, PollTextProjection.display(original,
@@ -189,7 +189,7 @@ public class PollTextProjectionTest {
         StateStore.Entry entry = state();
         entry.lastError = "keep me";
         for (boolean cardOriginal : new boolean[] {false, true}) {
-            PollCardState.Card card = card(cardOriginal);
+            CardState.Card card = card(cardOriginal);
             for (StateStore.Status status : StateStore.Status.values()) {
                 entry.status = status;
                 for (String original : Arrays.asList(null, "", "  ")) {
@@ -219,7 +219,7 @@ public class PollTextProjectionTest {
         entry.translatedText = "另一答案译文";
         entry.showingOriginal = true;
         entry.lastError = "retained";
-        PollCardState.Card card = card(false);
+        CardState.Card card = card(false);
         EntrySnapshot snapshot = new EntrySnapshot(entry);
         Map<?, ?> before = entriesSnapshot();
         assertSame(ORIGINAL, PollTextProjection.display(ORIGINAL, store.peek(titleKey), card));

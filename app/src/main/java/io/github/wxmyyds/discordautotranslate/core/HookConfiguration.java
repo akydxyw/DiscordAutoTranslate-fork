@@ -54,17 +54,66 @@ public final class HookConfiguration {
             if (hook == null) {
                 throw new JSONException("hook entry is not an object: " + id);
             }
-            if (!hook.optBoolean("enabled", true)) {
+            JSONObject target = hook.optJSONObject("target");
+            if (!hook.optBoolean("enabled", true) && target == null) {
                 continue;
             }
-            JSONObject target = hook.optJSONObject("target");
-            if (target == null || target.optString("class", "").isEmpty()
-                    || (!target.has("name") && !target.has("namePrefix"))
-                    || (!target.has("parameterCount") && !target.has("minParameterCount"))
-                    || !target.has("static")) {
+            if (target == null) {
                 throw new JSONException("enabled hook has an incomplete target: " + id);
             }
+            requireExactSelectorString(target.get("class"), "hook target class: " + id);
+            validateMethodSelector(target);
         }
+    }
+
+    private static void validateMethodSelector(JSONObject selector) throws JSONException {
+        if (selector.has("namePrefix") || selector.has("minParameterCount")
+                || selector.has("selection")) {
+            throw new JSONException("deprecated hook selector property");
+        }
+        requireExactSelectorString(selector.get("name"), "hook method name");
+        Object count = selector.get("parameterCount");
+        if ((!(count instanceof Integer) && !(count instanceof Long))
+                || ((Number) count).longValue() < 0
+                || ((Number) count).longValue() > Integer.MAX_VALUE) {
+            throw new JSONException("hook selector needs an exact nonnegative parameterCount");
+        }
+        if (!(selector.get("static") instanceof Boolean)) {
+            throw new JSONException("hook selector needs a static boolean");
+        }
+        if (selector.has("returnType")) {
+            requireExactSelectorString(selector.get("returnType"), "hook return type");
+        }
+        if (selector.has("parameterTypes")) {
+            JSONObject types = selector.getJSONObject("parameterTypes");
+            Iterator<String> keys = types.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                final int index;
+                try {
+                    index = Integer.parseInt(key);
+                } catch (NumberFormatException error) {
+                    throw new JSONException("invalid hook parameter index: " + key);
+                }
+                if (index < 0 || index >= ((Number) count).intValue()
+                        || !Integer.toString(index).equals(key)) {
+                    throw new JSONException("invalid hook parameter index: " + key);
+                }
+                String type = requireExactSelectorString(types.get(key), "hook parameter type");
+                if ("void".equals(type)) {
+                    throw new JSONException("hook parameter type cannot be void");
+                }
+            }
+        }
+    }
+
+    private static String requireExactSelectorString(Object value, String description)
+            throws JSONException {
+        String text = requireMetadataString(value, description);
+        if (text.indexOf('*') >= 0) {
+            throw new JSONException("hook selector needs an exact " + description);
+        }
+        return text;
     }
 
     private static void validateEmbedInput(JSONObject hooks) throws JSONException {
@@ -382,34 +431,28 @@ public final class HookConfiguration {
         return owner == null ? null : findMethod(owner, target);
     }
 
+    /** Returns the unique declared match, or null for an invalid or ambiguous selector. */
     @Nullable
     public static Method findMethod(Class<?> owner, JSONObject selector) {
-        String exactName = selector.optString("name", null);
-        String prefix = selector.optString("namePrefix", null);
-        boolean requireStatic = selector.optBoolean("static", false);
-        int exactCount = selector.optInt("parameterCount", -1);
-        int minCount = selector.optInt("minParameterCount", -1);
+        try {
+            validateMethodSelector(selector);
+        } catch (JSONException invalidSelector) {
+            return null;
+        }
+        String exactName = selector.optString("name");
+        boolean requireStatic = selector.optBoolean("static");
+        int exactCount = selector.optInt("parameterCount");
         String returnType = selector.optString("returnType", null);
         JSONObject parameterTypes = selector.optJSONObject("parameterTypes");
-        String selection = selector.optString("selection", "first");
 
-        Method best = null;
+        Method match = null;
         for (Method method : owner.getDeclaredMethods()) {
-            if (exactName != null && !exactName.equals(method.getName())) {
-                continue;
-            }
-            if (prefix != null && !method.getName().startsWith(prefix)) {
-                continue;
-            }
-            if ((exactName == null && prefix == null)
+            if (!exactName.equals(method.getName())
                     || Modifier.isStatic(method.getModifiers()) != requireStatic) {
                 continue;
             }
             Class<?>[] actualTypes = method.getParameterTypes();
-            if (exactCount >= 0 && actualTypes.length != exactCount) {
-                continue;
-            }
-            if (minCount >= 0 && actualTypes.length < minCount) {
+            if (actualTypes.length != exactCount) {
                 continue;
             }
             if (returnType != null && !returnType.equals(typeName(method.getReturnType()))) {
@@ -418,15 +461,15 @@ public final class HookConfiguration {
             if (!matchesParameterTypes(actualTypes, parameterTypes)) {
                 continue;
             }
-            if (best == null || ("mostParameters".equals(selection)
-                    && actualTypes.length > best.getParameterCount())) {
-                best = method;
+            if (match != null) {
+                return null;
             }
+            match = method;
         }
-        if (best != null) {
-            best.setAccessible(true);
+        if (match != null) {
+            match.setAccessible(true);
         }
-        return best;
+        return match;
     }
 
     private static boolean matchesParameterTypes(Class<?>[] actualTypes,
@@ -437,17 +480,8 @@ public final class HookConfiguration {
         Iterator<String> keys = expectedTypes.keys();
         while (keys.hasNext()) {
             String key = keys.next();
-            final int index;
-            try {
-                index = Integer.parseInt(key);
-            } catch (NumberFormatException ignored) {
-                return false;
-            }
-            if (index < 0 || index >= actualTypes.length) {
-                return false;
-            }
-            String expected = expectedTypes.optString(key, "*");
-            if (!"*".equals(expected) && !expected.equals(typeName(actualTypes[index]))) {
+            int index = Integer.parseInt(key);
+            if (!typeName(actualTypes[index]).equals(expectedTypes.optString(key, null))) {
                 return false;
             }
         }

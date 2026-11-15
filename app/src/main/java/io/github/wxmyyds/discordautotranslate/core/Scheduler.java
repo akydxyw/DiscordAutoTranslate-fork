@@ -10,11 +10,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * FIFO translation scheduling with bounded pending work and main-thread result delivery.
@@ -497,6 +499,79 @@ public final class Scheduler {
             if (old != null) {
                 old.removeCallbacksAndMessages(null);
             }
+        }
+
+        /**
+         * Complete owned UI work before returning. Timeout cancels work that has not started;
+         * an already running action may finish later, so false must reject lifecycle completion.
+         * Runnable failures are rethrown on the awaiting caller. No dispatcher is created here.
+         */
+        public static boolean runAndAwait(Runnable runnable, long timeoutMs) {
+            Objects.requireNonNull(runnable, "runnable");
+            final android.os.Handler handler;
+            final Dispatcher dispatcher;
+            final long epoch;
+            synchronized (LOCK) {
+                handler = sHandler;
+                dispatcher = sTestDispatcher;
+                epoch = sEpoch;
+            }
+            if (handler == null && dispatcher == null) return false;
+
+            CountDownLatch completed = new CountDownLatch(1);
+            // Pending -> running -> done, or pending -> cancelled. Never revoke running UI work.
+            AtomicInteger state = new AtomicInteger(0);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Runnable guarded = () -> {
+                synchronized (LOCK) {
+                    if (epoch != sEpoch || (handler != null && handler != sHandler)
+                            || (dispatcher != null && dispatcher != sTestDispatcher)) {
+                        if (state.compareAndSet(0, 3)) completed.countDown();
+                        return;
+                    }
+                    if (!state.compareAndSet(0, 1)) return;
+                }
+                try {
+                    runnable.run();
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                } finally {
+                    state.set(2);
+                    completed.countDown();
+                }
+            };
+            boolean posted;
+            if (dispatcher != null) {
+                posted = dispatcher.post(guarded);
+            } else if (android.os.Looper.myLooper() == handler.getLooper()) {
+                guarded.run();
+                posted = true;
+            } else {
+                posted = handler.post(guarded);
+            }
+            if (!posted) {
+                state.compareAndSet(0, 3);
+                if (handler != null) handler.removeCallbacks(guarded);
+                return false;
+            }
+            boolean finished = completed.getCount() == 0L;
+            if (!finished) {
+                try {
+                    finished = completed.await(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (!finished) {
+                state.compareAndSet(0, 3);
+                if (handler != null) handler.removeCallbacks(guarded);
+                return false;
+            }
+            Throwable thrown = failure.get();
+            if (thrown instanceof RuntimeException) throw (RuntimeException) thrown;
+            if (thrown instanceof Error) throw (Error) thrown;
+            if (thrown != null) throw new IllegalStateException("Main-thread action failed", thrown);
+            return state.get() == 2;
         }
 
         public static void post(Runnable runnable) {

@@ -50,12 +50,30 @@ public final class InlineIconInjector {
         final View view;
         final String cardIconKey;
         private final HostScope previous;
+        private final java.util.List<?> cardContents;
+        private final java.util.List<String> cardKeys;
         private boolean cardIconInjected;
 
         HostScope(View view, String cardIconKey, HostScope previous) {
+            this(view, cardIconKey, previous, null, null);
+        }
+
+        HostScope(View view, String cardIconKey, HostScope previous,
+                  java.util.List<?> cardContents, java.util.List<String> cardKeys) {
             this.view = view;
             this.cardIconKey = cardIconKey;
             this.previous = previous;
+            this.cardContents = cardContents;
+            this.cardKeys = cardKeys;
+        }
+
+        boolean ownsCardIdentity() { return cardContents != null; }
+
+        @Nullable String messageIdOf(Object content) {
+            for (int i = 0; i < cardContents.size(); i++) {
+                if (cardContents.get(i) == content) return cardKeys.get(i);
+            }
+            return null;
         }
 
         boolean allows(String key) {
@@ -71,6 +89,7 @@ public final class InlineIconInjector {
 
         @Override
         public void close() {
+            if (view != null) InlineIconSpan.finishBinding(view);
             if (previous == null) {
                 CURRENT_HOST.remove();
             } else {
@@ -96,7 +115,18 @@ public final class InlineIconInjector {
 
     /** Always close the scope; null explicitly suspends any enclosing render host. */
     static HostScope enterHost(@Nullable View host, @Nullable String cardIconKey) {
+        if (host != null) InlineIconSpan.stopForHost(host);
         HostScope scope = new HostScope(host, cardIconKey, CURRENT_HOST.get());
+        CURRENT_HOST.set(scope);
+        return scope;
+    }
+
+    /** Embed conversion identity belongs to this captured binding, even when models share instances. */
+    static HostScope enterCardHost(@Nullable View host, @Nullable String primary,
+                                   java.util.List<?> contents, java.util.List<String> keys) {
+        if (contents.size() != keys.size()) throw new IllegalArgumentException("Invalid card binding");
+        if (host != null) InlineIconSpan.stopForHost(host);
+        HostScope scope = new HostScope(host, primary, CURRENT_HOST.get(), contents, keys);
         CURRENT_HOST.set(scope);
         return scope;
     }
@@ -142,16 +172,16 @@ public final class InlineIconInjector {
                 return rendered;
             }
             StateStore.Entry entry = StateStore.get().peek(messageId);
-            PollCardState.Card poll = HookBridge.isPollKey(messageId)
-                    ? PollCardState.forKey(messageId) : null;
-            if (HookBridge.isPollKey(messageId)
-                    && (poll == null || !messageId.equals(poll.titleKey))) return rendered;
-            if (poll == null && entry == null) {
+            CardState.Card card = HookBridge.isCardKey(messageId)
+                    ? CardState.forKey(messageId) : null;
+            if (HookBridge.isCardKey(messageId)
+                    && (card == null || !messageId.equals(card.titleKey))) return rendered;
+            if (card == null && entry == null) {
                 ProjectLog.warnOnce("icon.noState", "icon injection skipped: no translation state exists");
                 return rendered;
             }
-            StateStore.Status status = poll == null ? entry.status : poll.status();
-            boolean showingOriginal = poll == null ? entry.showingOriginal : poll.showingOriginal();
+            StateStore.Status status = card == null ? entry.status : card.status();
+            boolean showingOriginal = card == null ? entry.showingOriginal : card.showingOriginal();
             // 未翻译（IDLE）不显示图标：既符合「待翻译不显示」的要求，
             // 也使非英文消息、纯表情消息自然不出图标。
             if (status == StateStore.Status.IDLE) {
@@ -179,21 +209,21 @@ public final class InlineIconInjector {
                 return rendered;
             }
 
-            // 先放点击前置字符，再放图标占位符：两者各自占一个字符格。
-            int leadStart = ssb.length();
+            Object clickSpan = IconClickSpanFactory.create(hostCl, messageId);
+            if (clickSpan == null) {
+                ProjectLog.warnOnce("icon.clickCreation", "icon injection rejected: click span unavailable");
+                return rendered;
+            }
+            // Both spans are ready before mutating the native builder.
             ssb.append(CLICK_LEAD);
             int start = ssb.length();
             ssb.append(PLACEHOLDER);
             int end = start + PLACEHOLDER.length();
             ssb.setSpan(icon, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
 
-            Object clickSpan = IconClickSpanFactory.create(hostCl, messageId);
-            if (clickSpan != null) {
-                // start 是图标占位符下标；clickRange 再向前覆盖 CLICK_LEAD，不能传 leadStart，
-                // 否则会再多退一格，把正文最后一个字符也包进 ClickableSpan 并染成链接紫色。
-                int[] click = InlineIconGeometry.clickRange(start, end);
-                ssb.setSpan(clickSpan, click[0], click[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
+            // Include only the injected lead character, never the preceding message character.
+            int[] click = InlineIconGeometry.clickRange(start, end);
+            ssb.setSpan(clickSpan, click[0], click[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             // 启动/续接旋转动画（仅翻译中状态）。
             icon.bindHost(host);
             scope.recordInjection(messageId);

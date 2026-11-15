@@ -67,64 +67,67 @@ public final class PollHooks {
         handles.add(module.hook(method).setId("dat." + id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    if (!HookRuntime.isActive()) return chain.proceed();
-                    PollBinding binding;
-                    Object original;
-                    String key;
-                    HookBridge bridge = HookBridge.get();
-                    try {
-                        if (!RenderDispatcher.isRerendering()) {
-                            Object receiver = PollBinding.receiver(chain.getThisObject(),
-                                    chain.getArgs(), spec, answer);
-                            if (!(receiver instanceof View))
-                                throw new IllegalStateException("Configured Poll receiver unavailable");
-                            RerenderRegistry.unregister((View) receiver);
-                            bridge.unbindView((View) receiver);
-                            if (receiver instanceof TextView) ((View) receiver).setOnTouchListener(null);
-                            if (!answer) {
-                                String incoming = PollBinding.questionRow(chain.getArgs(), spec);
-                                if (HookBridge.looksLikeSnowflake(incoming)) PollCardState.invalidate(incoming);
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease == null) return chain.proceed();
+                        PollBinding binding;
+                        Object original;
+                        String key;
+                        HookBridge bridge = HookBridge.get();
+                        try {
+                            if (!RenderDispatcher.isRerendering()) {
+                                Object receiver = PollBinding.receiver(chain.getThisObject(),
+                                        chain.getArgs(), spec, answer);
+                                if (!(receiver instanceof View))
+                                    throw new IllegalStateException("Configured Poll receiver unavailable");
+                                InlineIconSpan.stopForHost((View) receiver);
+                                RerenderRegistry.unregister((View) receiver);
+                                bridge.unbindView((View) receiver);
+                                if (receiver instanceof TextView) PollIconTouch.detach((TextView) receiver);
+                                if (!answer) {
+                                    String incoming = PollBinding.questionRow(chain.getArgs(), spec);
+                                    if (HookBridge.looksLikeSnowflake(incoming)) CardState.invalidate(incoming);
+                                }
+                            }
+                            binding = answer ? PollBinding.answer(chain.getThisObject(), chain.getArgs(), spec)
+                                    : PollBinding.question(chain.getThisObject(), chain.getArgs(), spec);
+                            if (!(binding.host instanceof View) || !(binding.receiver instanceof View)) {
+                                throw new IllegalStateException("Configured Poll views unavailable");
+                            }
+                            View view = (View) binding.receiver;
+                            original = binding.text == null ? null : StructurableTextFactory.primitive(binding.text);
+                            if (binding.text != null && original == null) {
+                                throw new IllegalStateException("Poll structured input construction failed");
+                            }
+                            key = original == null || !HookBridge.looksLikeSnowflake(binding.messageId) ? null
+                                    : bridge.pollStateKey(binding.messageId, binding.slot, original);
+                            if (RenderDispatcher.isRerendering()) {
+                                // An answer's saved adapter position may now name another slot or text.
+                                // Never replay it merely because it still belongs to the same poll row.
+                                if (!CardState.canReplay(key, bridge.directMessageIdOf(view))) return null;
+                            } else {
+                                if (key != null) {
+                                    bridge.bindView(view, key);
+                                    RerenderRegistry.register(key, view, chain.getThisObject(), method,
+                                            chain.getArgs().toArray());
+                                }
+                                if (!answer) {
+                                    registerCard(binding.messageId, key, original, chain.getArgs(),
+                                            spec, config.hook("poll.answerBind"));
+                                }
+                            }
+                            if (key != null) bridge.rememberContent(key, original);
+                        } catch (Throwable failure) {
+                            ProjectLog.warnOnce("poll.bind.failed." + answer,
+                                    "poll binding failed error=" + failure.getClass().getSimpleName());
+                            // Stale positional replays must not reach the native bind with invalid args.
+                            if (RenderDispatcher.isRerendering()) return null;
+                            try (Scope blocked = new Scope(null, null, null)) {
+                                return chain.proceed();
                             }
                         }
-                        binding = answer ? PollBinding.answer(chain.getThisObject(), chain.getArgs(), spec)
-                                : PollBinding.question(chain.getThisObject(), chain.getArgs(), spec);
-                        if (!(binding.host instanceof View) || !(binding.receiver instanceof View)) {
-                            throw new IllegalStateException("Configured Poll views unavailable");
-                        }
-                        View view = (View) binding.receiver;
-                        original = binding.text == null ? null : StructurableTextFactory.primitive(binding.text);
-                        if (binding.text != null && original == null) {
-                            throw new IllegalStateException("Poll structured input construction failed");
-                        }
-                        key = original == null || !HookBridge.looksLikeSnowflake(binding.messageId) ? null
-                                : bridge.pollStateKey(binding.messageId, binding.slot, original);
-                        if (RenderDispatcher.isRerendering()) {
-                            // An answer's saved adapter position may now name another slot or text.
-                            // Never replay it merely because it still belongs to the same poll row.
-                            if (!PollCardState.canReplay(key, bridge.directMessageIdOf(view))) return null;
-                        } else {
-                            if (key != null) {
-                                bridge.bindView(view, key);
-                                RerenderRegistry.register(key, view, chain.getThisObject(), method,
-                                        chain.getArgs().toArray());
-                            }
-                            if (!answer) {
-                                registerCard(binding.messageId, key, original, chain.getArgs(),
-                                        spec, config.hook("poll.answerBind"));
-                            }
-                        }
-                        if (key != null) bridge.rememberContent(key, original);
-                    } catch (Throwable failure) {
-                        ProjectLog.warnOnce("poll.bind.failed." + answer,
-                                "poll binding failed error=" + failure.getClass().getSimpleName());
-                        // Stale positional replays must not reach the native bind with invalid args.
-                        if (RenderDispatcher.isRerendering()) return null;
-                        try (Scope blocked = new Scope(null, null, null)) {
+                        try (Scope scope = new Scope(binding, original, key)) {
                             return chain.proceed();
                         }
-                    }
-                    try (Scope scope = new Scope(binding, original, key)) {
-                        return chain.proceed();
                     }
                 }));
         installedHookIds.add(id);
@@ -149,7 +152,7 @@ public final class PollHooks {
             keys.add(key);
             originals.add(original);
         }
-        PollCardState.bind(row, titleKey, keys);
+        CardState.bind(row, titleKey, keys);
         for (int i = 0; i < keys.size(); i++) {
             bridge.rememberContent(keys.get(i), originals.get(i));
             bridge.onMessageBound(keys.get(i), originals.get(i));
@@ -165,49 +168,54 @@ public final class PollHooks {
         handles.add(module.hook(method).setId("dat." + id)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    if (!HookRuntime.isActive()) return chain.proceed();
-                    Scope scope = CURRENT.get();
-                    if (scope == null || scope.key == null || contentArgument < 0
-                            || contentArgument >= chain.getArgs().size()
-                            || !scope.binding.matches(chain.getThisObject(),
-                                    chain.getArg(contentArgument), accessibility)) {
-                        return chain.proceed();
-                    }
-                    Object[] args = chain.getArgs().toArray();
-                    CharSequence display;
-                    try {
-                        TextExtractor.Result extracted = TextExtractor.extract(scope.original);
-                        StateStore.Entry state = HookBridge.get().matchingState(scope.key, extracted);
-                        display = PollTextProjection.display(scope.binding.text, state,
-                                PollCardState.forKey(scope.key));
-                        if (!accessibility && "question".equals(scope.binding.slot)) {
-                            android.text.SpannableStringBuilder text =
-                                    new android.text.SpannableStringBuilder(display);
-                            try (InlineIconInjector.HostScope iconScope = InlineIconInjector.enterHost(
-                                    (View) scope.binding.receiver, scope.key)) {
-                                InlineIconInjector.inject(scope.original, text,
-                                        ((View) scope.binding.receiver).getContext(), cl, extracted);
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease == null) return chain.proceed();
+                        Scope scope = CURRENT.get();
+                        if (scope == null || scope.key == null || contentArgument < 0
+                                || contentArgument >= chain.getArgs().size()
+                                || !scope.binding.matches(chain.getThisObject(),
+                                        chain.getArg(contentArgument), accessibility)) {
+                            return chain.proceed();
+                        }
+                        // finishBinding must observe the text after the native setter installs it.
+                        try (InlineIconInjector.HostScope iconScope =
+                                     !accessibility && "question".equals(scope.binding.slot)
+                                             ? InlineIconInjector.enterHost(
+                                                     (View) scope.binding.receiver, scope.key) : null) {
+                            Object[] args = chain.getArgs().toArray();
+                            CharSequence display;
+                            try {
+                                TextExtractor.Result extracted = TextExtractor.extract(scope.original);
+                                StateStore.Entry state = HookBridge.get().matchingState(scope.key, extracted);
+                                display = PollTextProjection.display(scope.binding.text, state,
+                                        CardState.forKey(scope.key));
+                                if (!accessibility && "question".equals(scope.binding.slot)) {
+                                    android.text.SpannableStringBuilder text =
+                                            new android.text.SpannableStringBuilder(display);
+                                    InlineIconInjector.inject(scope.original, text,
+                                            ((View) scope.binding.receiver).getContext(), cl, extracted);
+                                    display = text;
+                                }
+                                args[contentArgument] = display;
+                            } catch (Throwable failure) {
+                                ProjectLog.warnOnce("poll.text.failed", "poll text projection failed error="
+                                        + failure.getClass().getSimpleName());
+                                return chain.proceed(); // Reject the projection before the one native write.
                             }
-                            display = text;
-                        }
-                        args[contentArgument] = display;
-                    } catch (Throwable failure) {
-                        ProjectLog.warnOnce("poll.text.failed", "poll text projection failed error="
-                                + failure.getClass().getSimpleName());
-                        return chain.proceed(); // Reject the projection before the one native write.
-                    }
-                    Object result = chain.proceed(args);
-                    if (!accessibility && "question".equals(scope.binding.slot)) {
-                        try {
-                            PollIconTouch.attach((TextView) scope.binding.receiver,
-                                    (android.text.Spanned) display);
-                        } catch (Throwable failure) {
-                            ProjectLog.warnOnce("poll.icon.touch.failed",
-                                    "poll icon touch installation failed error="
-                                            + failure.getClass().getSimpleName());
+                            Object result = chain.proceed(args);
+                            if (!accessibility && "question".equals(scope.binding.slot)) {
+                                try {
+                                    PollIconTouch.attach((TextView) scope.binding.receiver,
+                                            (android.text.Spanned) display);
+                                } catch (Throwable failure) {
+                                    ProjectLog.warnOnce("poll.icon.touch.failed",
+                                            "poll icon touch installation failed error="
+                                                    + failure.getClass().getSimpleName());
+                                }
+                            }
+                            return result;
                         }
                     }
-                    return result;
                 }));
         installedHookIds.add(id);
     }

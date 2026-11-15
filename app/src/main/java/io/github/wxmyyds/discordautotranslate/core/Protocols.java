@@ -228,7 +228,7 @@ public final class Protocols {
             } else if (Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)) {
                 text = extractResponsesText(json);
             } else {
-                text = JsonPath.extractString(json, "choices.0.message.content");
+                text = extractChatText(json);
             }
             return rejectTranslateTags(text);
         }
@@ -302,9 +302,7 @@ public final class Protocols {
             JSONObject choice = (JSONObject) first;
             String finish = optionalString(choice.opt("finish_reason"), "finish_reason");
             if (finish != null && !finish.isEmpty()) {
-                if (!"stop".equals(finish)) {
-                    throw parseError("生成被截断（finish_reason 非正常结束），译文不完整");
-                }
+                requireChatStop(finish);
             }
             JSONObject delta = optionalObject(choice.opt("delta"), "choices.0.delta");
             if (delta != null) {
@@ -341,9 +339,7 @@ public final class Protocols {
                 }
                 String reason = optionalString(delta.opt("stop_reason"), "delta.stop_reason");
                 if (reason != null && !reason.isEmpty()) {
-                    if (!"end_turn".equals(reason) && !"stop_sequence".equals(reason)) {
-                        throw parseError("生成被截断（stop_reason 非正常结束），译文不完整");
-                    }
+                    requireAnthropicStop(reason);
                 }
             }
         }
@@ -451,22 +447,67 @@ public final class Protocols {
         return text;
     }
 
+    /** JSON requires a terminal reason; SSE calls these only for a reported nonempty reason. */
+    private static void requireChatStop(String reason) throws TranslationException {
+        if (!"stop".equals(reason)) {
+            throw parseError("生成被截断（finish_reason 非正常结束），译文不完整");
+        }
+    }
+
+    private static void requireAnthropicStop(String reason) throws TranslationException {
+        if (!"end_turn".equals(reason) && !"stop_sequence".equals(reason)) {
+            throw parseError("生成被截断（stop_reason 非正常结束），译文不完整");
+        }
+    }
+
+    /** Chat/Messages JSON must not extract success-shaped text from an error wrapper. */
+    private static JSONObject requireJsonResponse(String responseBody) throws TranslationException {
+        Object root = JsonPath.parse(responseBody);
+        if (!(root instanceof JSONObject)) {
+            throw parseError("响应不是 JSON 对象");
+        }
+        JSONObject json = (JSONObject) root;
+        if (json.has("error") || "error".equals(optionalString(json.opt("type"), "type"))) {
+            throw parseError("服务返回 JSON 错误响应");
+        }
+        return json;
+    }
+
+    private static String extractChatText(String responseBody) throws TranslationException {
+        JSONObject json = requireJsonResponse(responseBody);
+        JSONArray choices = json.optJSONArray("choices");
+        if (choices == null || choices.length() == 0) {
+            throw parseError("Chat 响应缺少非空 choices 数组");
+        }
+        JSONObject choice = optionalObject(choices.opt(0), "choices.0");
+        if (choice == null) {
+            throw parseError("choices.0 不是对象");
+        }
+        requireChatStop(JsonPath.requireString(choice.opt("finish_reason"),
+                "choices.0.finish_reason"));
+        JSONObject message = optionalObject(choice.opt("message"), "choices.0.message");
+        if (message == null) {
+            throw parseError("Chat 响应缺少 message 对象");
+        }
+        for (String field : new String[]{"refusal", "tool_calls", "function_call"}) {
+            if (message.has(field) && !message.isNull(field)) {
+                throw parseError("Chat 响应包含拒绝或工具调用，无法提取译文");
+            }
+        }
+        return JsonPath.requireString(message.opt("content"), "choices.0.message.content");
+    }
+
     /**
      * Anthropic Messages 提取格式由请求模式唯一决定；响应格式不匹配时明确失败。
      *
      * <p>非流式结构：顶层 {@code content} 数组，译文在 {@code type=="text"}
      * 块的 {@code text} 字段（扩展思考模型的 thinking 块必须跳过）。
-     * {@code stop_reason=="max_tokens"} 说明输出被 max_tokens 掐断，
-     * 与流式同规则拒绝。</p>
+     * {@code stop_reason} 必须是正常结束的字符串，与流式共用结束原因校验。</p>
      */
     private static String extractAnthropicText(String responseBody)
             throws TranslationException {
-        Object root = JsonPath.parse(responseBody);
-        if (!(root instanceof JSONObject)) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "Messages 响应不是 JSON 对象");
-        }
-        JSONObject json = (JSONObject) root;
+        JSONObject json = requireJsonResponse(responseBody);
+        requireAnthropicStop(JsonPath.requireString(json.opt("stop_reason"), "stop_reason"));
         JSONArray content = json.optJSONArray("content");
         if (content == null) {
             throw new TranslationException(TranslationException.Kind.PARSE,
@@ -479,11 +520,6 @@ public final class Protocols {
                 continue;
             }
             out.append(JsonPath.requireString(block.opt("text"), "content." + i + ".text"));
-        }
-        Object stop = json.opt("stop_reason");
-        if ("max_tokens".equals(stop == null ? null : stop.toString())) {
-            throw new TranslationException(TranslationException.Kind.PARSE,
-                    "生成被截断（stop_reason=max_tokens），译文不完整");
         }
         return out.toString();
     }

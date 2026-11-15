@@ -36,12 +36,12 @@ public class OlderPollBindingTest {
         answerSpec.put("textBindingClass", PollTextAndImageAnswerViewBinding.class.getName());
         answerSpec.put("imageBindingClass", PollImageOnlyAnswerViewBinding.class.getName());
         ContentNodeTestProfile.activate(ContentNodesTest.class);
-        PollCardState.clear();
+        CardState.clear();
     }
 
     @After
     public void cleanup() {
-        PollCardState.clear();
+        CardState.clear();
         ContentNodeTestProfile.clear();
     }
 
@@ -242,10 +242,10 @@ public class OlderPollBindingTest {
         assertEquals(Arrays.asList(key(binding), key(ROW, "answer:a", "visible option"),
                 key(ROW, "answer:b", "hidden option"), key(ROW, "answer:c", "last hidden option")), keys);
         // Arrange the shared card seam from the complete root enumeration, not visible rows.
-        PollCardState.Card card = PollCardState.bind(ROW, key(binding), keys);
+        CardState.Card card = CardState.bind(ROW, key(binding), keys);
         assertEquals(4, card.keys.size());
-        assertSame(card, PollCardState.forKey(optionKey(hidden)));
-        assertTrue(PollCardState.canReplay(optionKey(last), optionKey(last)));
+        assertSame(card, CardState.forKey(optionKey(hidden)));
+        assertTrue(CardState.canReplay(optionKey(last), optionKey(last)));
         PollAnswerAdapter visibleOnly = new PollAnswerAdapter(Collections.singletonList(first));
         assertEquals(optionKey(first), key(answer(visibleOnly,
                 new AnswerHolder(new PollTextAndImageAnswerViewBinding()), 0)));
@@ -315,8 +315,8 @@ public class OlderPollBindingTest {
             AnswerHolder holder = new AnswerHolder(views);
             PollBinding binding = answer(adapter, holder, 1);
             String boundKey = key(binding);
-            PollCardState.bind(ROW, null, Collections.singletonList(boundKey));
-            assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+            CardState.bind(ROW, null, Collections.singletonList(boundKey));
+            assertTrue(CardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
             boolean image = views == imageViews;
             Sink receiver = image ? imageViews.image : textViews.label;
             assertEquals(ROW, binding.messageId);
@@ -385,40 +385,40 @@ public class OlderPollBindingTest {
         String boundKey = key(captured);
         String secondKey = optionKey(second);
         String titleKey = key(ROW, "question", "question");
-        PollCardState.bind(ROW, titleKey, Arrays.asList(titleKey, boundKey, secondKey));
-        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
+        CardState.bind(ROW, titleKey, Arrays.asList(titleKey, boundKey, secondKey));
+        assertTrue(CardState.canReplay(key(answer(adapter, holder, 0)), boundKey));
         assertNotEquals(boundKey, secondKey);
-        assertNull(PollCardState.toggle(secondKey));
+        assertNull(CardState.toggle(secondKey));
         Collections.swap(items, 0, 1);
         PollBinding replacement = answer(adapter, holder, 0);
         assertEquals(captured.text, replacement.text);
         assertSame(captured.receiver, replacement.receiver);
         assertNotEquals(captured.slot, replacement.slot);
-        assertFalse(PollCardState.canReplay(key(replacement), boundKey));
-        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        assertFalse(CardState.canReplay(key(replacement), boundKey));
+        assertTrue(CardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
         PollMedia media = (PollMedia) ((PollAnswer) first.answer).pollMedia;
         media.text = "edited label";
         String editedKey = key(answer(adapter, holder, 1));
         assertNotEquals(boundKey, editedKey);
-        assertFalse(PollCardState.canReplay(editedKey, boundKey));
-        assertFalse(PollCardState.canReplay(editedKey, editedKey));
-        assertNull(PollCardState.forKey(editedKey));
+        assertFalse(CardState.canReplay(editedKey, boundKey));
+        assertFalse(CardState.canReplay(editedKey, editedKey));
+        assertNull(CardState.forKey(editedKey));
         media.text = "same label";
         first.messageId = OTHER_ROW;
-        assertFalse(PollCardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
+        assertFalse(CardState.canReplay(key(answer(adapter, holder, 1)), boundKey));
         first.messageId = ROW;
-        PollCardState.invalidate(ROW);
-        assertFalse(PollCardState.canReplay(boundKey, boundKey));
-        assertFalse(PollCardState.canReplay(secondKey, secondKey));
-        PollCardState.bind(ROW, titleKey, Arrays.asList(titleKey, secondKey));
-        assertFalse(PollCardState.canReplay(boundKey, boundKey));
-        assertTrue(PollCardState.canReplay(secondKey, secondKey));
-        assertFalse(PollCardState.canReplay(null, secondKey));
-        assertFalse(PollCardState.canReplay(secondKey, null));
+        CardState.invalidate(ROW);
+        assertFalse(CardState.canReplay(boundKey, boundKey));
+        assertFalse(CardState.canReplay(secondKey, secondKey));
+        CardState.bind(ROW, titleKey, Arrays.asList(titleKey, secondKey));
+        assertFalse(CardState.canReplay(boundKey, boundKey));
+        assertTrue(CardState.canReplay(secondKey, secondKey));
+        assertFalse(CardState.canReplay(null, secondKey));
+        assertFalse(CardState.canReplay(secondKey, null));
         media.text = "edited label";
-        PollCardState.bind(ROW, titleKey, Arrays.asList(titleKey, editedKey));
-        assertFalse(PollCardState.canReplay(boundKey, boundKey));
-        assertTrue(PollCardState.canReplay(key(answer(adapter, holder, 1)), editedKey));
+        CardState.bind(ROW, titleKey, Arrays.asList(titleKey, editedKey));
+        assertFalse(CardState.canReplay(boundKey, boundKey));
+        assertTrue(CardState.canReplay(key(answer(adapter, holder, 1)), editedKey));
     }
 
     @Test

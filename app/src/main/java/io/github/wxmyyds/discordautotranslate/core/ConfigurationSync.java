@@ -50,6 +50,36 @@ public final class ConfigurationSync {
         }
     }
 
+    /** Detached local state, captured under the transaction monitor on a persistence worker. */
+    public static final class LocalState {
+        public final Config.Snapshot snapshot;
+        public final boolean poisoned;
+
+        private LocalState(Config.Snapshot snapshot, boolean poisoned) {
+            this.snapshot = snapshot;
+            this.poisoned = poisoned;
+        }
+    }
+
+    /** May wait for another Activity's commit; never call from the UI thread. */
+    public static LocalState loadLocal(SharedPreferences local) {
+        synchronized (PreferenceCommit.class) {
+            if (PreferenceCommit.isPoisoned(local)) {
+                return new LocalState(Config.invalidSnapshot(), true);
+            }
+            try {
+                Values values = Values.validate(local.getAll());
+                MemoryPrefs detached = new MemoryPrefs();
+                for (Map.Entry<String, Object> entry : values.raw.entrySet()) {
+                    detached.put(entry.getKey(), entry.getValue());
+                }
+                return new LocalState(Config.read(detached), false);
+            } catch (RuntimeException invalid) {
+                return new LocalState(Config.invalidSnapshot(), false);
+            }
+        }
+    }
+
     private ConfigurationSync() {}
 
     private static String[] localCommitKeys() {

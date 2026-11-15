@@ -28,14 +28,22 @@ public final class RenderDispatcher {
     }
 
     /** Delayed replay uses the owned handler, never a detached View action queue. */
-    static synchronized boolean post(Runnable action) {
-        if (handler == null) return false;
-        long scheduledEpoch = epoch;
-        return handler.post(() -> {
-            synchronized (RenderDispatcher.class) {
-                if (scheduledEpoch != epoch || handler == null) return;
+    static boolean post(Runnable action) {
+        final Handler scheduledHandler;
+        final long scheduledEpoch;
+        synchronized (RenderDispatcher.class) {
+            scheduledHandler = handler;
+            scheduledEpoch = epoch;
+        }
+        if (scheduledHandler == null) return false;
+        return scheduledHandler.post(() -> {
+            try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                if (lease == null) return;
+                synchronized (RenderDispatcher.class) {
+                    if (scheduledEpoch != epoch || scheduledHandler != handler) return;
+                }
+                action.run();
             }
-            if (HookRuntime.isActive()) action.run();
         });
     }
 
@@ -83,7 +91,7 @@ public final class RenderDispatcher {
         post(() -> {
             // A new bind replaces/removes the registry Target even when the new row
             // references the same message. Reject old queued whole-row parameters.
-            if (!HookRuntime.isActive() || !registrationCurrent.getAsBoolean()) {
+            if (!registrationCurrent.getAsBoolean()) {
                 return;
             }
             String currentBound = HookBridge.get().messageIdOf(contentView);

@@ -10,6 +10,7 @@ import io.github.wxmyyds.discordautotranslate.core.Http;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
 import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -92,12 +93,12 @@ public class JsonApiEngineTest {
                 if (Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)) {
                     body = sse ? "data: {\"choices\":[{\"delta\":{\"content\":\" 你好 \"}}]}\n\n"
                             + "data: [DONE]\n\n"
-                            : "{\"choices\":[{\"message\":{\"content\":\" 你好 \"}}]}";
+                            : chatJson(" 你好 ");
                 } else if (Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) {
                     body = sse ? "data: {\"type\":\"content_block_delta\","
                             + "\"delta\":{\"type\":\"text_delta\",\"text\":\" 你好 \"}}\n\n"
                             + "data: {\"type\":\"message_stop\"}\n\n"
-                            : "{\"content\":[{\"type\":\"text\",\"text\":\" 你好 \"}]}";
+                            : anthropicJson(" 你好 ");
                 } else {
                     body = sse ? responsesDelta(0, " 你好 ") + responsesCompleted(1, " 你好 ")
                             : responsesJson(" 你好 ");
@@ -125,6 +126,76 @@ public class JsonApiEngineTest {
                 }
             }
         }
+    }
+
+    private static String chatJson(String text) {
+        return "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                + "\"content\":" + JSONObject.quote(text) + "}}]}";
+    }
+
+    private static String anthropicJson(String text) {
+        return "{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":"
+                + JSONObject.quote(text) + "}]}";
+    }
+
+    @Test
+    public void jsonAbnormalOrMissingCompletionRejectsTextAndCleansUpWithoutRetry() throws Exception {
+        String secret = "private body https://private.invalid/?token=secret Bearer private-key";
+        for (String protocol : new String[]{Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_ANTHROPIC_MESSAGES}) {
+            boolean anthropic = Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol);
+            for (Object reason : new Object[]{null, JSONObject.NULL, 42, true, false,
+                    new JSONObject(), new JSONArray(), "", "unknown", "length",
+                    "max_tokens", "refusal", "tool_calls", "tool_use", "content_filter", secret}) {
+                JSONObject response = new JSONObject(anthropic ? anthropicJson(secret) : chatJson(secret));
+                JSONObject terminal = anthropic ? response
+                        : response.getJSONArray("choices").getJSONObject(0);
+                // org.json removes a key for Java null; JSONObject.NULL remains explicit JSON null.
+                terminal.put(anthropic ? "stop_reason" : "finish_reason", reason);
+                assertJsonFailureCleansUp(protocol, response.toString());
+            }
+        }
+    }
+
+    @Test
+    public void jsonErrorsRefusalsAndToolCallsRejectOtherwiseNormalTextAndCleanUp() throws Exception {
+        String secret = "private body https://private.invalid/?token=secret Bearer private-key";
+        for (String protocol : new String[]{Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_ANTHROPIC_MESSAGES}) {
+            String normal = Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)
+                    ? anthropicJson(secret) : chatJson(secret);
+            assertJsonFailureCleansUp(protocol, new JSONObject(normal)
+                    .put("error", new JSONObject().put("message", secret)).toString());
+            assertJsonFailureCleansUp(protocol, new JSONObject(normal).put("type", "error").toString());
+        }
+        for (String field : new String[]{"refusal", "tool_calls", "function_call"}) {
+            JSONObject response = new JSONObject(chatJson(secret));
+            response.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+                    .put(field, secret);
+            assertJsonFailureCleansUp(Config.PROTOCOL_OPENAI_COMPATIBLE, response.toString());
+        }
+    }
+
+    private static void assertJsonFailureCleansUp(String protocol, String body) throws Exception {
+        FakeConnection connection = new FakeConnection(body);
+        AtomicInteger opens = new AtomicInteger();
+        JsonApiEngine engine = new JsonApiEngine(config(protocol, false),
+                http(url -> { opens.incrementAndGet(); return connection; }));
+        try {
+            engine.translate("hello");
+            fail("JSON failure must not return text to the success/cache callback");
+        } catch (TranslationException failure) {
+            assertEquals(TranslationException.Kind.PARSE, failure.kind());
+            for (String detail : new String[]{"private body", "private.invalid", "private-key"}) {
+                assertFalse(failure.getMessage().contains(detail));
+                assertFalse(failure.toString().contains(detail));
+                assertFalse(failure.userMessage().contains(detail));
+            }
+            assertTrue(failure.getCause() == null);
+        }
+        assertEquals(1, opens.get());
+        assertTrue(connection.disconnected);
+        assertTrue(active(engine).isEmpty());
     }
 
     private static String responsesJson(String text) {
@@ -325,11 +396,11 @@ public class JsonApiEngineTest {
                 assertEquals(extras.isEmpty() ? null : "tenant-value", validated.get("X-Tenant"));
                 assertEquals(overrides ? (anthropic ? "custom-key" : "custom-auth") : null,
                         validated.get(anthropic ? "x-api-key" : "Authorization"));
-                String body = anthropic ? "{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}]}"
+                String body = anthropic ? anthropicJson("你好")
                         : Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
                         ? "{\"output\":[{\"type\":\"message\",\"content\":["
                                 + "{\"type\":\"output_text\",\"text\":\"你好\"}]}]}"
-                        : "{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}";
+                        : chatJson("你好");
                 FakeConnection connection = new FakeConnection(body);
                 AtomicInteger opens = new AtomicInteger();
                 JsonApiEngine engine = new JsonApiEngine(cfg, http(url -> {
@@ -495,7 +566,7 @@ public class JsonApiEngineTest {
 
     @Test
     public void modeMismatchAndDamagedTextHaveNoRetryOrFallback() throws Exception {
-        for (String body : new String[]{"{\"choices\":[{\"message\":{\"content\":\"你好\"}}]}",
+        for (String body : new String[]{chatJson("你好"),
                 "data: {\"choices\":[{\"delta\":{\"content\":\"<translate>你好\"}}]}\n\n"
                         + "data: [DONE]\n\n",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"XXXXXX\"}}]}\n\n"

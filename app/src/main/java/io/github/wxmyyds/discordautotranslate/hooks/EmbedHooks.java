@@ -36,10 +36,12 @@ public final class EmbedHooks {
                 .setId("dat.embedBind")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    if (!HookRuntime.isActive()) return chain.proceed();
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                    if (lease == null) return chain.proceed();
                     View view = hostView(chain.getThisObject(), spec);
                     EmbedBinding binding = null;
                     String primary = null;
+                    List<String> keys = java.util.Collections.emptyList();
                     try {
                         if (!RenderDispatcher.isRerendering() && view != null) {
                             // Clear even when the new card has no translatable text or invalid input.
@@ -49,30 +51,32 @@ public final class EmbedHooks {
                         }
                         binding = EmbedBinding.read(chain.getArgs(), spec);
                         if (binding != null && view != null) {
-                            primary = register(binding, view, chain.getThisObject(), bind,
+                            keys = HookBridge.get().embedStateKeys(binding.messageId, binding.texts);
+                            primary = register(binding, keys, view, chain.getThisObject(), bind,
                                     chain.getArgs().toArray());
                         }
                     } catch (Throwable t) {
                         ProjectLog.warnOnce("embed.bind.failed", "embed binding failed error="
                                 + t.getClass().getSimpleName());
                     }
-                    try (InlineIconInjector.HostScope scope =
-                                 InlineIconInjector.enterHost(view, primary)) {
+                    try (InlineIconInjector.HostScope scope = binding == null
+                            ? InlineIconInjector.enterHost(view, null)
+                            : InlineIconInjector.enterCardHost(view, primary, binding.texts, keys)) {
                         return chain.proceed();
+                    }
                     }
                 }));
         installedHookIds.add("embed.bind");
     }
 
     /** Register all current segments before any cache hit can enqueue a native rebind. */
-    private static String register(EmbedBinding binding, View view, Object target,
+    private static String register(EmbedBinding binding, List<String> keys, View view, Object target,
                                    Method bind, Object[] args) {
         HookBridge bridge = HookBridge.get();
-        List<String> keys = new ArrayList<>(binding.texts.size());
         String primary = null;
-        for (Object text : binding.texts) {
-            String key = bridge.embedStateKey(binding.messageId, text);
-            keys.add(key);
+        for (int i = 0; i < binding.texts.size(); i++) {
+            Object text = binding.texts.get(i);
+            String key = keys.get(i);
             if (key == null) {
                 continue;
             }
@@ -87,6 +91,11 @@ public final class EmbedHooks {
             }
         }
         if (!RenderDispatcher.isRerendering()) {
+            if (primary != null) {
+                List<String> members = new ArrayList<>();
+                for (String key : keys) if (key != null) members.add(key);
+                CardState.bind(HookBridge.cardIdentityOf(primary), primary, members);
+            }
             for (int i = 0; i < keys.size(); i++) {
                 if (keys.get(i) != null) {
                     bridge.onMessageBound(keys.get(i), binding.texts.get(i));

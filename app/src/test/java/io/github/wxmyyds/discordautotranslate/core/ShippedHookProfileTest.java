@@ -62,6 +62,35 @@ public class ShippedHookProfileTest {
     }
 
     @Test
+    public void currentMessageSelectorsRetainTheirShippedPartialConstraints() throws Exception {
+        JSONObject hooks = profile(352017).getJSONObject("hooks");
+        String[] ids = {"message.bind", "message.render", "message.textConversion"};
+        String[] names = {"f", "c", "B0"};
+        int[] counts = {7, 38, 30};
+        String[][] types = {
+                {"com.discord.chat.bridge.Message"},
+                {"com.discord.chat.presentation.message.view.MessageContentView", "m9.f0", "l8.h"},
+                {"l8.h", "android.content.Context"}
+        };
+        for (int i = 0; i < ids.length; i++) {
+            JSONObject target = hooks.getJSONObject(ids[i]).getJSONObject("target");
+            assertEquals(names[i], target.getString("name"));
+            assertEquals(counts[i], target.getInt("parameterCount"));
+            assertEquals(i != 0, target.getBoolean("static"));
+            JSONObject constraints = target.getJSONObject("parameterTypes");
+            assertEquals(types[i].length, constraints.length());
+            assertTrue(constraints.length() < counts[i]);
+            for (int j = 0; j < types[i].length; j++) {
+                assertEquals(types[i][j], constraints.getString(Integer.toString(j)));
+            }
+        }
+        assertFalse(hooks.getJSONObject("message.bind").getJSONObject("target").has("returnType"));
+        assertFalse(hooks.getJSONObject("message.render").getJSONObject("target").has("returnType"));
+        assertEquals("oj.c", hooks.getJSONObject("message.textConversion")
+                .getJSONObject("target").getString("returnType"));
+    }
+
+    @Test
     public void currentEmbedUsesExactSmaliJavaSignatureAndStructuredFields() throws Exception {
         JSONObject root = profile(352017);
         JSONObject embed = root.getJSONObject("hooks").getJSONObject("embed.bind");

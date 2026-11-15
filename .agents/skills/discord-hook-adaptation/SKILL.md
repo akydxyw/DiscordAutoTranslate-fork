@@ -66,7 +66,7 @@ poll.accessibilitySet
 
 每个 `target` 填写精确 `class`、`name`、`static`、`parameterCount`、`returnType`，并在 `parameterTypes` 对象中列全 `"0"` 到 `"N-1"`。参数索引从 0 起，不含 receiver；`long/double` 各计一个 Java 参数，不按 smali 寄存器槽位计数。数组按解析器格式填写，内部类使用真实 `$` 名。
 
-新适配禁止 `namePrefix`、`minParameterCount`、`selection`、通配符和部分参数签名。这是本 Skill 的更严格要求；现有解析器仍支持部分宽泛选择器，不能声称生产 schema 已禁止，也不能照抄旧 profile 的部分签名。
+生产 schema 要求精确 `name` 和 `parameterCount`，禁止 `namePrefix`、`minParameterCount`、`selection` 及通配符。`static`、已配置的 `returnType` 和各项 `parameterTypes` 必须同时匹配；零候选或多个候选均拒绝，不按反射枚举顺序选择。现有 352017 的部分参数类型仅作为必须满足的约束，不构成备用签名或重试路径。本 Skill 对新适配进一步要求完整参数签名及 `returnType`；不能照抄旧 profile 的部分签名。
 
 - `types` 映射语义名到真实类；`typeAliases` 反向映射真实类到已支持语义名。
 - 类型专属 getter 用 `accessors`，字段用 `fields`，已支持的公共语义 getter 用 `members`；读取策略由消费者决定，不配置竞争路径。

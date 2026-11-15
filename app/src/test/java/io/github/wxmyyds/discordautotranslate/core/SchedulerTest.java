@@ -105,6 +105,138 @@ public class SchedulerTest {
     }
 
     @Test
+    public void mainThreadAwaitRunsWithDirectDispatcherAndPropagatesFailure() {
+        AtomicInteger calls = new AtomicInteger();
+        assertTrue(Scheduler.MainThread.runAndAwait(calls::incrementAndGet, 0L));
+        assertEquals(1, calls.get());
+        RuntimeException failure = new RuntimeException("UI cleanup failed");
+        try {
+            Scheduler.MainThread.runAndAwait(() -> { throw failure; }, 1000L);
+            throw new AssertionError("UI failure was swallowed");
+        } catch (RuntimeException thrown) {
+            assertSame(failure, thrown);
+        }
+    }
+
+    @Test
+    public void mainThreadAwaitRejectsMissingOrRejectingDispatcher() {
+        AtomicInteger calls = new AtomicInteger();
+        Scheduler.MainThread.clear();
+        assertFalse(Scheduler.MainThread.runAndAwait(calls::incrementAndGet, 1000L));
+        Scheduler.MainThread.setDispatcherForTests(runnable -> false);
+        assertFalse(Scheduler.MainThread.runAndAwait(calls::incrementAndGet, 1000L));
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    public void mainThreadAwaitWaitsForQueuedActionToComplete() throws Exception {
+        BlockingQueue<Runnable> deliveries = new LinkedBlockingQueue<>();
+        installQueuedDispatcher(deliveries);
+        AtomicBoolean completed = new AtomicBoolean();
+        AtomicBoolean result = new AtomicBoolean();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch returned = new CountDownLatch(1);
+        Thread caller = new Thread(() -> {
+            try {
+                result.set(Scheduler.MainThread.runAndAwait(() -> completed.set(true), 2000L));
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            } finally {
+                returned.countDown();
+            }
+        });
+        caller.start();
+        Runnable action = take(deliveries);
+        try {
+            assertFalse(completed.get());
+            assertFalse(returned.await(50L, TimeUnit.MILLISECONDS));
+            action.run();
+            assertTrue(returned.await(5L, TimeUnit.SECONDS));
+            assertTrue(completed.get());
+            assertTrue(result.get());
+            assertNull(failure.get());
+        } finally {
+            action.run();
+            caller.join(5000L);
+        }
+        assertFalse(caller.isAlive());
+    }
+
+    @Test
+    public void mainThreadAwaitPropagatesQueuedActionFailureToCaller() throws Exception {
+        BlockingQueue<Runnable> deliveries = new LinkedBlockingQueue<>();
+        installQueuedDispatcher(deliveries);
+        Error failure = new AssertionError("queued cleanup failure");
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread caller = new Thread(() -> {
+            try {
+                Scheduler.MainThread.runAndAwait(() -> { throw failure; }, 2000L);
+            } catch (Throwable thrown) {
+                observed.set(thrown);
+            }
+        });
+        caller.start();
+        try {
+            take(deliveries).run();
+        } finally {
+            caller.join(5000L);
+        }
+        assertFalse(caller.isAlive());
+        assertSame(failure, observed.get());
+    }
+
+    @Test
+    public void mainThreadAwaitTimeoutCancelsQueuedAction() throws Exception {
+        BlockingQueue<Runnable> deliveries = new LinkedBlockingQueue<>();
+        installQueuedDispatcher(deliveries);
+        AtomicInteger calls = new AtomicInteger();
+        long start = System.nanoTime();
+        assertFalse(Scheduler.MainThread.runAndAwait(calls::incrementAndGet, 20L));
+        assertTrue("UI wait was not bounded", System.nanoTime() - start
+                < TimeUnit.SECONDS.toNanos(2L));
+        take(deliveries).run();
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    public void mainThreadAwaitRejectsQueuedActionFromClearedDispatcher() throws Exception {
+        BlockingQueue<Runnable> deliveries = new LinkedBlockingQueue<>();
+        installQueuedDispatcher(deliveries);
+        AtomicInteger calls = new AtomicInteger();
+        AtomicBoolean result = new AtomicBoolean(true);
+        Thread caller = new Thread(() -> result.set(
+                Scheduler.MainThread.runAndAwait(calls::incrementAndGet, 2000L)));
+        caller.start();
+        try {
+            Runnable action = take(deliveries);
+            Scheduler.MainThread.clear();
+            Scheduler.MainThread.setDirectDispatcherForTests();
+            action.run();
+        } finally {
+            caller.join(5000L);
+        }
+        assertFalse(caller.isAlive());
+        assertFalse(result.get());
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    public void mainThreadAwaitInterruptionCancelsQueuedActionAndPreservesInterrupt() throws Exception {
+        BlockingQueue<Runnable> deliveries = new LinkedBlockingQueue<>();
+        installQueuedDispatcher(deliveries);
+        AtomicInteger calls = new AtomicInteger();
+        Thread.currentThread().interrupt();
+        try {
+            assertFalse(Scheduler.MainThread.runAndAwait(calls::incrementAndGet, 2000L));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+        take(deliveries).run();
+        assertEquals(0, calls.get());
+    }
+
+    @Test
     public void successPathDeliversTranslation() throws Exception {
         Scheduler s = new Scheduler();
         try {

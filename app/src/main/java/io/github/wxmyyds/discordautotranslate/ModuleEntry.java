@@ -153,13 +153,11 @@ public class ModuleEntry extends XposedModule {
 
         ClassLoader recovered = restored == null ? null
                 : classLoaderFromOldHooks(oldHandles, restored);
-        int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
-        clearRuntime();
-        bootstrapInstalled = false;
-        if (failures != 0) {
-            restartRequired = true;
-            ProjectLog.info("hot reload old hook removal failed count=" + failures
-                    + "; restart Discord required");
+        try {
+            clearRuntime();
+        } catch (Throwable failure) {
+            ProjectLog.info("hot reload old runtime cleanup failed error="
+                    + failure.getClass().getSimpleName() + "; restart Discord required");
             return;
         }
         ModuleResources.attach(this);
@@ -268,17 +266,19 @@ public class ModuleEntry extends XposedModule {
             if (!config.hasAllRequiredHooks(installedHookIds)) {
                 throw new IllegalStateException("incomplete configured hook installation");
             }
+            hookConfiguration = config;
+            HookRuntime.activate();
         } catch (Throwable failure) {
-            int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
             restartRequired = true;
-            bootstrapInstalled = false;
-            clearRuntime();
-            if (failures != 0) ProjectLog.info("hook installation rollback failed count=" + failures
-                    + "; restart Discord required");
+            try {
+                clearRuntime();
+            } catch (Throwable cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+                ProjectLog.info("hook installation cleanup incomplete error="
+                        + cleanupFailure.getClass().getSimpleName() + "; restart Discord required");
+            }
             throw new IllegalStateException("configured hook installation failed", failure);
         }
-        hookConfiguration = config;
-        HookRuntime.activate();
         ProjectLog.info("installed hook profile versionCode=" + config.versionCode()
                 + " requiredHookIds=" + installedHookIds);
     }
@@ -303,42 +303,49 @@ public class ModuleEntry extends XposedModule {
         return null;
     }
 
-    /** 停止线程、解绑 Hook、清理引用。 */
+    /** Drain calls, workers and UI before removing hooks and clearing their supporting state. */
     private void release() {
-        HookRuntime.suspend();
-        // Refuse reload before removing the old hooks if owned workers are still alive.
-        if (!Scheduler.resetAndAwait(2000L)) {
-            installed = false;
-            restartRequired = true;
-            throw new IllegalStateException("Translation workers have not stopped; restart Discord required");
-        }
-        int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
-        restartRequired = failures != 0;
         clearRuntime();
-        bootstrapInstalled = false;
-        if (failures != 0) {
-            ProjectLog.info("hook teardown failed count=" + failures);
-            throw new IllegalStateException("Hook removal incomplete; restart Discord required");
-        }
         ProjectLog.attach(null);
     }
 
-    /** Installation failure and successful teardown clear the same runtime generation. */
+    /** Successful teardown and partial installation cleanup use the same ordered lifecycle. */
     private void clearRuntime() {
-        HookRuntime.suspend();
-        Scheduler.MainThread.clear();
-        RenderDispatcher.reset();
-        Scheduler.reset();
-        StateStore.get().onNewGeneration();
-        HookBridge.get().reset();
-        TranslationCache.reset();
-        RerenderRegistry.clear();
-        StructurableTextFactory.reset();
-        InlineIconSpan.resetAll();
-        ModuleResources.reset();
-        installed = false;
-        hookConfiguration = null;
-        HookConfiguration.activate(null);
+        try {
+            if (!HookRuntime.suspendAndAwait(2000L)) {
+                throw new IllegalStateException("Runtime calls have not drained; restart Discord required");
+            }
+            // No admitted caller can now recreate a scheduler after this termination check.
+            if (!Scheduler.resetAndAwait(2000L)) {
+                throw new IllegalStateException("Translation workers have not stopped; restart Discord required");
+            }
+            // Native rebind needs inactive hooks, captured registrations and the owned UI handler.
+            // A fresh generation with no spans must confirm success even before handler installation.
+            if (!InlineIconSpan.resetAll(2000L)) {
+                throw new IllegalStateException("Inline icon cleanup incomplete; restart Discord required");
+            }
+            int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
+            if (failures != 0) {
+                throw new IllegalStateException("Hook removal incomplete count=" + failures
+                        + "; restart Discord required");
+            }
+            Scheduler.MainThread.clear();
+            RenderDispatcher.reset();
+            StateStore.get().onNewGeneration();
+            HookBridge.get().reset();
+            TranslationCache.reset();
+            RerenderRegistry.clear();
+            StructurableTextFactory.reset();
+            ModuleResources.reset();
+            bootstrapInstalled = false;
+            hookConfiguration = null;
+            HookConfiguration.activate(null);
+        } catch (Throwable failure) {
+            restartRequired = true;
+            throw new IllegalStateException("Runtime cleanup incomplete; restart Discord required", failure);
+        } finally {
+            installed = false;
+        }
     }
 
     /** Read the log gate before any startup diagnostics, including unsupported versions. */

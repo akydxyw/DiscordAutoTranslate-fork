@@ -51,7 +51,7 @@ public class PollStateKeyTest {
         String first = key(ROW, "answer:a", "same label");
         String second = key(ROW, "answer:b", "same label");
         String otherRow = key(OTHER_ROW, "answer:a", "same label");
-        String embed = bridge.embedStateKey(ROW, text("same label"));
+        String embed = bridge.embedStateKeys(ROW, java.util.Collections.singletonList(text("same label"))).get(0);
         List<String> keys = Arrays.asList(ROW, question, first, second, otherRow, embed);
         assertEquals(keys.size(), new HashSet<>(keys).size());
         for (String card : Arrays.asList(question, first, second, otherRow, embed)) {
@@ -71,7 +71,7 @@ public class PollStateKeyTest {
         String question = key(ROW, "question", "same label");
         String first = key(ROW, "answer:a", "same label");
         String second = key(ROW, "answer:b", "same label");
-        String embed = bridge.embedStateKey(ROW, text("same label"));
+        String embed = bridge.embedStateKeys(ROW, java.util.Collections.singletonList(text("same label"))).get(0);
         List<String> keys = Arrays.asList(ROW, question, first, second, embed,
                 key(OTHER_ROW, "answer:a", "same label"));
         for (int i = 0; i < keys.size(); i++) {
@@ -149,7 +149,8 @@ public class PollStateKeyTest {
     @Test
     public void cardHelpersRecognizePollAndEmbedAndRecoverTheirContainingRow() {
         for (String card : Arrays.asList(key(ROW, "question", "question"),
-                key(ROW, "answer:a", "answer"), bridge.embedStateKey(ROW, text("embed")))) {
+                key(ROW, "answer:a", "answer"),
+                bridge.embedStateKeys(ROW, java.util.Collections.singletonList(text("embed"))).get(0))) {
             assertTrue(HookBridge.isCardKey(card));
             assertEquals(ROW, HookBridge.cardRowOf(card));
         }
@@ -165,9 +166,10 @@ public class PollStateKeyTest {
     public void stillBoundAllowsSameRowCardSegmentsButNotOtherRowsOrBodyViews() {
         List<String> sameRow = Arrays.asList(key(ROW, "question", "question"),
                 key(ROW, "answer:a", "answer"), key(ROW, "answer:b", "same answer label"),
-                bridge.embedStateKey(ROW, text("embed")));
+                bridge.embedStateKeys(ROW, java.util.Collections.singletonList(text("embed"))).get(0));
         List<String> otherRow = Arrays.asList(key(OTHER_ROW, "question", "question"),
-                key(OTHER_ROW, "answer:a", "answer"), bridge.embedStateKey(OTHER_ROW, text("embed")));
+                key(OTHER_ROW, "answer:a", "answer"),
+                bridge.embedStateKeys(OTHER_ROW, java.util.Collections.singletonList(text("embed"))).get(0));
         for (String expected : sameRow) {
             for (String actual : sameRow) assertTrue(RerenderRegistry.stillBound(expected, actual));
             for (String actual : otherRow) {
@@ -186,7 +188,7 @@ public class PollStateKeyTest {
         String question = key(ROW, "question", "same label");
         String answer = key(ROW, "answer:a", "same label");
         String otherAnswer = key(ROW, "answer:b", "same label");
-        String embed = bridge.embedStateKey(ROW, text("same label"));
+        String embed = bridge.embedStateKeys(ROW, java.util.Collections.singletonList(text("same label"))).get(0);
         String otherPoll = key(OTHER_ROW, "question", "same label");
         assertNull(InlineIconInjector.currentHost());
         try (InlineIconInjector.HostScope poll = InlineIconInjector.enterHost(null, question)) {

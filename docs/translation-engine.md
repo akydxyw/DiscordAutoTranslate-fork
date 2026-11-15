@@ -20,6 +20,8 @@
 
 每次请求只创建一个协议 decoder，不切换解析模式。`SseReader` 以空行提交完整事件，支持多行 data、event、注释和 CR/LF/CRLF。Compatible 必须收到 `[DONE]`，Responses 必须收到 `response.completed`，Anthropic 必须收到 `message_stop`；结束后不等待 EOF。缺结束事件、错误帧、截断、字段类型错误或包装污染均失败，不接受部分译文。
 
+非流式 Chat 必须显式返回 `finish_reason:"stop"`；Anthropic 必须返回字符串 `stop_reason:"end_turn"` 或 `"stop_sequence"`。JSON 与 SSE 共用正常结束原因校验，拒绝截断、拒绝生成、工具调用及错误包装，不能从部分正文推断成功。
+
 Responses 按 `output_index`、`content_index` 和 `item_id` 收集文本增量，校验递增事件序号，并逐段核对完成响应；按 output/content 顺序拼接全部 `message/output_text`，跳过 reasoning，拒绝 refusal、failed、incomplete 和完成文本不一致。流式和非流式共用同一个完成文本提取操作，不用 `.done` 快照重复追加或补齐缺失增量。事件格式参见 [OpenAI 流式响应文档](https://developers.openai.com/api/docs/guides/streaming-responses)。
 
 HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单位，UTF-8 严格校验，禁止跟随重定向。非 2xx 仅读取有界 body 供错误分类，不输出 body。引擎在配置校验和构造请求体前登记 `Http.Request`，取消与连接 attach 原子协调，finally 才释放；实际 worker 是否退出由生命周期另行确认。
@@ -52,7 +54,7 @@ HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单
 
 `ConfigurationSync` 是保存、重置、导入和导出的唯一策略。先持久化模块私有 SharedPreferences；本地尚未初始化时从 remote 导入，确认初始化后向 remote 导出。初始化标记随成功事务提交。`PreferenceCommit` 保存失败恢复原键快照并仍报告失败；恢复持久化也失败时本进程阻止读取/同步，直到显式重试成功，不自动更换权威来源。
 
-设置页使用后台 `commit()`，弱订阅进程级服务连接。仅未保存草稿写入实例状态，干净页面重读权威配置；异步完成不得覆盖后续编辑。Discord 不监听 remote preferences 变化，**保存并成功同步后重启 Discord 生效**。
+设置页在既有持久化 executor 上读取和提交配置；包含 poison 检查的权威快照读取也在后台完成，页面重建不会在主线程等待另一个页面的提交锁。`SettingsPersistence` 统一处理读取及停止期间的延后交付；首次读取完成前禁用配置操作。页面弱订阅进程级服务连接，仅未保存草稿写入实例状态，异步完成不得覆盖已恢复草稿或后续编辑。连接测试与翻译测试共用单次 `ApiTester.Call`，页面停止时主动断开其 HTTP 请求并取消 Future，迟到结果不更新页面。Discord 不监听 remote preferences 变化，**保存并成功同步后重启 Discord 生效**。
 
 ## 日志
 

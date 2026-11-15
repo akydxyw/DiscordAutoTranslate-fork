@@ -150,6 +150,86 @@ public class LinkedTextMarkerTest {
         reject(tree, "参阅<x1></x1>", ContentNodes.RejectionReason.STYLE_EMPTY);
     }
 
+    @Test public void unexpectedNestedStyleTagsCannotLeakIntoLinkedText() {
+        ContentTree tree = tree(text("See "), link(new Object(), text("guide")), text(" now"));
+        String source = "See <x1>guide</x1> now";
+        assertEquals(source, extract(tree));
+        for (String response : new String[]{
+                "参阅 <x1>本<x2>指南</x2></x1> 现在",
+                "参阅 <x1>本<x2>指南</x1> 现在",
+                "参阅 <x1>本</x2>指南</x1> 现在",
+                "参阅 <x1>本<x1>指南</x1></x1> 现在",
+                "参阅 <x1>本<x9/>指南</x1> 现在",
+                "参阅 <x1>本<x指南</x1> 现在"
+        }) {
+            assertNull(response, ContentNodes.replacePlanned(tree, response));
+            assertEquals(source, extract(tree));
+        }
+        List<Object> out = ContentNodes.replaceChecked(tree, "参阅 <x1>本指南</x1> 现在");
+        assertEquals("本指南", label(out.get(1)));
+        assertEquals("参阅 <x1>本指南</x1> 现在", extract(ContentTree.compile(out)));
+    }
+
+    @Test public void completeStyleSequenceRejectsMissingDuplicateExtraReorderedAndMalformedTags() {
+        ContentTree tree = tree(text("See "), link(new Object(), text("first")), text(" and "),
+                new StrongContentNode(list(text("second"))), text(" now"));
+        String source = "See <x1>first</x1> and <x2>second</x2> now";
+        assertEquals(source, extract(tree));
+        String[] invalid = {
+                "参阅 第一 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一</x1> 和 第二 现在",
+                "参阅 <x1>第一</x1><x1>重复</x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一</x1></x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一</x1> 和 <x2>第二</x2><x3>额外</x3> 现在",
+                "参阅 <x9>额外</x9><x1>第一</x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一</x1> 和 <x9>额外</x9><x2>第二</x2> 现在",
+                "参阅 <x2>第二</x2> 和 <x1>第一</x1> 现在",
+                "参阅 <x1><x2>第二</x2>第一</x1> 现在",
+                "参阅 <x1>第一<x2>第二</x1></x2> 现在",
+                "参阅 <x01>第一</x01> 和 <x2>第二</x2> 现在",
+                "参阅 <x0>第一</x0> 和 <x2>第二</x2> 现在",
+                "参阅 <X1>第一</X1> 和 <x2>第二</x2> 现在",
+                "参阅 < x1>第一</ x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1 >第一</x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1/>第一</x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1 attr='bad'>第一</x1> 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一</x1 > 和 <x2>第二</x2> 现在",
+                "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在<x3",
+                "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在</x",
+                "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在<x3/>"
+        };
+        for (String response : invalid) {
+            assertNull(response, ContentNodes.replacePlanned(tree, response));
+            assertEquals(source, extract(tree));
+        }
+        String valid = "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在";
+        List<Object> out = ContentNodes.replaceChecked(tree, valid);
+        assertEquals(valid, extract(ContentTree.compile(out)));
+        assertEquals("第一", label(out.get(1)));
+        assertEquals("第二", content(((StrongContentNode) out.get(3)).getContent().get(0)));
+    }
+
+    @Test public void unexpectedStyleTagsAreRejectedWhenThePlanHasNoStyledSlots() {
+        ContentTree tree = tree(text("Plain text"));
+        assertEquals("Plain text", extract(tree));
+        for (String response : new String[]{
+                "普通<x1>文本</x1>", "普通<x2>文本</x2>", "普通</x1>文本",
+                "普通<x1/>", "普通<x1", "普通</x", "普通<X1>文本</X1>",
+                "普通< x1>文本</ x1>", "普通<x0>文本</x0>", "普通<x01>文本</x01>"
+        }) {
+            assertNull(response, ContentNodes.replacePlanned(tree, response));
+            assertEquals("Plain text", extract(tree));
+        }
+        assertEquals("普通文本", content(ContentNodes.replaceChecked(tree, "普通文本").get(0)));
+    }
+
+    @Test public void ordinaryXmlTagNamesAreNotReservedStyleMarkers() {
+        ContentTree tree = tree(text("Use <xml> tags and <xylophone> names"));
+        String translated = "使用 <xml> 标签和 <xylophone> 名称";
+        assertEquals(translated, content(ContentNodes.replaceChecked(tree, translated).get(0)));
+    }
+
     @Test public void headingBoundaryPrecedesLabelMarkerWithoutNativeNewlineInsertion() {
         HeadingContentNode heading = new HeadingContentNode(list(text("Title")), 2);
         Object context = new Object();

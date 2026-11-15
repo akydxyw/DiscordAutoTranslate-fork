@@ -126,11 +126,13 @@ public final class IconClickSpanFactory {
                             if (!callbackMethod.equals(method.getName())) {
                                 return objectMethod(proxy, method, args);
                             }
-                            if (!HookRuntime.isActive()) return null;
-                            ProjectLog.infoOnce("icon.click.callback-reached",
-                                    "icon click callback reached configured host span handler");
-                            HookBridge.get().onIconClicked(messageId);
-                            return null;
+                            try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                                if (lease == null) return null;
+                                ProjectLog.infoOnce("icon.click.callback-reached",
+                                        "icon click callback reached configured host span handler");
+                                HookBridge.get().onIconClicked(messageId);
+                                return null;
+                            }
                         });
             default: return INVALID_ARGUMENT;
         }

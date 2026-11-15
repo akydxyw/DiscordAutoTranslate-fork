@@ -74,52 +74,54 @@ public final class MessageHooks {
                 .setId("dat.bind")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    if (!HookRuntime.isActive()) return chain.proceed();
-                    // Invalidate old reply consumers before native binding can re-use the row.
-                    View oldPreview = replyPreviewTextView(asView(chain.getThisObject()), spec);
-                    RerenderRegistry.unregister(oldPreview);
-                    HookBridge.get().unbindView(oldPreview);
-                    try {
-                        bindPre(chain, spec);
-                    } catch (Throwable t) {
-                        ProjectLog.warnOnce("message.bind.exception", "message.bind processing failed with "
-                                + t.getClass().getName());
-                    }
-                    Object[] bindArgs = chain.getArgs().toArray();
-                    ReplyBinding previousReply = REPLY_CONVERSION.get();
-                    try {
-                        Object model = safeArg(chain, spec.optInt("modelArgument", -1));
-                        ReplyBinding referenced = model == null ? null
-                                : ReplyBinding.read(model, spec.optJSONObject("referencedMessage"));
-                        if (referenced == null) {
-                            REPLY_CONVERSION.remove();
-                        } else {
-                            REPLY_CONVERSION.set(referenced);
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease == null) return chain.proceed();
+                        // Invalidate old reply consumers before native binding can re-use the row.
+                        View oldPreview = replyPreviewTextView(asView(chain.getThisObject()), spec);
+                        RerenderRegistry.unregister(oldPreview);
+                        HookBridge.get().unbindView(oldPreview);
+                        try {
+                            bindPre(chain, spec);
+                        } catch (Throwable t) {
+                            ProjectLog.warnOnce("message.bind.exception", "message.bind processing failed with "
+                                    + t.getClass().getName());
                         }
-                    } catch (Throwable t) {
-                        REPLY_CONVERSION.remove();
-                        ProjectLog.warnOnce("message.bind.replyScope",
-                                "reply conversion scope unavailable errorClass="
-                                        + t.getClass().getSimpleName());
-                    }
-                    Object result;
-                    try {
-                        result = chain.proceed();
-                    } finally {
-                        if (previousReply == null) {
+                        Object[] bindArgs = chain.getArgs().toArray();
+                        ReplyBinding previousReply = REPLY_CONVERSION.get();
+                        try {
+                            Object model = safeArg(chain, spec.optInt("modelArgument", -1));
+                            ReplyBinding referenced = model == null ? null
+                                    : ReplyBinding.read(model, spec.optJSONObject("referencedMessage"));
+                            if (referenced == null) {
+                                REPLY_CONVERSION.remove();
+                            } else {
+                                REPLY_CONVERSION.set(referenced);
+                            }
+                        } catch (Throwable t) {
                             REPLY_CONVERSION.remove();
-                        } else {
-                            REPLY_CONVERSION.set(previousReply);
+                            ProjectLog.warnOnce("message.bind.replyScope",
+                                    "reply conversion scope unavailable errorClass="
+                                            + t.getClass().getSimpleName());
                         }
+                        Object result;
+                        try {
+                            result = chain.proceed();
+                        } finally {
+                            if (previousReply == null) {
+                                REPLY_CONVERSION.remove();
+                            } else {
+                                REPLY_CONVERSION.set(previousReply);
+                            }
+                        }
+                        try {
+                            bindPost(chain, bind, spec, bindArgs);
+                        } catch (Throwable t) {
+                            ProjectLog.warnOnce("message.bind.postException",
+                                    "message.bind post-processing failed with "
+                                            + t.getClass().getName());
+                        }
+                        return result;
                     }
-                    try {
-                        bindPost(chain, bind, spec, bindArgs);
-                    } catch (Throwable t) {
-                        ProjectLog.warnOnce("message.bind.postException",
-                                "message.bind post-processing failed with "
-                                        + t.getClass().getName());
-                    }
-                    return result;
                 }));
         installedHookIds.add("message.bind");
     }
@@ -265,42 +267,44 @@ public final class MessageHooks {
                 .setId("dat.messageRender")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    if (!HookRuntime.isActive()) return chain.proceed();
-                    Object viewObject = viewArgument >= 0
-                            ? safeArg(chain, viewArgument) : chain.getThisObject();
-                    View view = asView(viewObject);
-                    Object content = safeArg(chain, contentArgument);
-                    InlineIconInjector.HostScope hostScope = InlineIconInjector.enterHost(view, null);
-                    try {
-                        if (!RenderDispatcher.isRerendering() && view != null) {
-                            Object[] renderArgs = chain.getArgs().toArray();
-                            Object configuredId = safeArg(chain, messageIdArgument);
-                            String messageId = configuredId instanceof String
-                                    && HookBridge.looksLikeSnowflake((String) configuredId)
-                                    ? (String) configuredId : null;
-                            ProjectLog.infoOnce("message.render", "message.render invoked host="
-                                    + (view != null) + " idResolved=" + (messageId != null)
-                                    + " idSource=" + identitySource
-                                    + " contentClass="
-                                    + (content == null ? "null" : content.getClass().getName()));
-                            if (messageId != null) {
-                                HookBridge.get().bindView(view, messageId);
-                                RerenderRegistry.register(messageId, view,
-                                        isStatic ? null : chain.getThisObject(), render, renderArgs);
-                                if (content != null) {
-                                    HookBridge.get().rememberContent(messageId, content);
-                                    HookBridge.get().onMessageBound(messageId, content);
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease == null) return chain.proceed();
+                        Object viewObject = viewArgument >= 0
+                                ? safeArg(chain, viewArgument) : chain.getThisObject();
+                        View view = asView(viewObject);
+                        Object content = safeArg(chain, contentArgument);
+                        InlineIconInjector.HostScope hostScope = InlineIconInjector.enterHost(view, null);
+                        try {
+                            if (!RenderDispatcher.isRerendering() && view != null) {
+                                Object[] renderArgs = chain.getArgs().toArray();
+                                Object configuredId = safeArg(chain, messageIdArgument);
+                                String messageId = configuredId instanceof String
+                                        && HookBridge.looksLikeSnowflake((String) configuredId)
+                                        ? (String) configuredId : null;
+                                ProjectLog.infoOnce("message.render", "message.render invoked host="
+                                        + (view != null) + " idResolved=" + (messageId != null)
+                                        + " idSource=" + identitySource
+                                        + " contentClass="
+                                        + (content == null ? "null" : content.getClass().getName()));
+                                if (messageId != null) {
+                                    HookBridge.get().bindView(view, messageId);
+                                    RerenderRegistry.register(messageId, view,
+                                            isStatic ? null : chain.getThisObject(), render, renderArgs);
+                                    if (content != null) {
+                                        HookBridge.get().rememberContent(messageId, content);
+                                        HookBridge.get().onMessageBound(messageId, content);
+                                    }
                                 }
                             }
+                        } catch (Throwable t) {
+                            ProjectLog.warnOnce("message.render.exception", "message.render processing failed with "
+                                    + t.getClass().getName());
                         }
-                    } catch (Throwable t) {
-                        ProjectLog.warnOnce("message.render.exception", "message.render processing failed with "
-                                + t.getClass().getName());
-                    }
-                    try {
-                        return chain.proceed();
-                    } finally {
-                        hostScope.close();
+                        try {
+                            return chain.proceed();
+                        } finally {
+                            hostScope.close();
+                        }
                     }
                 }));
         installedHookIds.add("message.render");
@@ -334,82 +338,84 @@ public final class MessageHooks {
                 .setId("dat.textConversion")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    if (!HookRuntime.isActive()) return chain.proceed();
-                    Object source = safeArg(chain, contentArgument);
-                    Object[] renderArgs = chain.getArgs().toArray();
-                    ReplyBinding reply = REPLY_CONVERSION.get();
-                    Object configuredId = safeArg(chain, messageIdArgument);
-                    boolean replyConversion = reply != null && reply.ownsSource(source);
-                    boolean replyBody = reply != null && reply.translatesConversion(source, configuredId);
-                    String resolvedMessageId = replyConversion
-                            ? reply.matchesConversion(source, configuredId) ? reply.messageId : null
-                            : HookBridge.get().resolveMessageId(source);
-                    ProjectLog.infoOnce("message.textConversion.idResolved." + (resolvedMessageId != null),
-                            "message.textConversion identity resolved=" + (resolvedMessageId != null)
-                                    + " sourceClass="
-                                    + (source == null ? "null" : source.getClass().getName()));
-                    ProjectLog.infoOnce("message.textConversion.callers",
-                            "message.textConversion Discord callers="
-                                    + discordCallers());
-                    boolean replyTranslationApplied = false;
-                    TextExtractor.Result extracted = null;
-                    try {
-                        String messageId = resolvedMessageId;
-                        if (messageId != null) {
-                            // 内容身份映射由显式绑定/渲染入口建立；此处只读取并应用已有状态。
-                            HookBridge.get().rememberContent(messageId, source);
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease == null) return chain.proceed();
+                        Object source = safeArg(chain, contentArgument);
+                        Object[] renderArgs = chain.getArgs().toArray();
+                        ReplyBinding reply = REPLY_CONVERSION.get();
+                        Object configuredId = safeArg(chain, messageIdArgument);
+                        boolean replyConversion = reply != null && reply.ownsSource(source);
+                        boolean replyBody = reply != null && reply.translatesConversion(source, configuredId);
+                        String resolvedMessageId = replyConversion
+                                ? reply.matchesConversion(source, configuredId) ? reply.messageId : null
+                                : HookBridge.get().resolveMessageId(source);
+                        ProjectLog.infoOnce("message.textConversion.idResolved." + (resolvedMessageId != null),
+                                "message.textConversion identity resolved=" + (resolvedMessageId != null)
+                                        + " sourceClass="
+                                        + (source == null ? "null" : source.getClass().getName()));
+                        ProjectLog.infoOnce("message.textConversion.callers",
+                                "message.textConversion Discord callers="
+                                        + discordCallers());
+                        boolean replyTranslationApplied = false;
+                        TextExtractor.Result extracted = null;
+                        try {
+                            String messageId = resolvedMessageId;
+                            if (messageId != null) {
+                                // 内容身份映射由显式绑定/渲染入口建立；此处只读取并应用已有状态。
+                                HookBridge.get().rememberContent(messageId, source);
 
-                            HookBridge.ReferencedTranslation reused = replyConversion
-                                    ? (replyBody ? HookBridge.get().referencedTranslation(messageId, reply.editedTimestamp) : null)
-                                    : HookBridge.get().currentTranslation(messageId, source);
-                            StateStore.Entry e = reused == null ? null : reused.state;
-                            Object original = reused == null ? source : reused.originalContent;
-                            extracted = reused == null ? null : reused.extracted;
-                            String translated = (e != null
-                                    && e.status == StateStore.Status.TRANSLATED
-                                    && !e.showingOriginal) ? e.translatedText : null;
-                            if (translated != null) {
-                                Object replacement = StructurableTextFactory.forPlannedTranslation(
-                                        original, translated, extracted);
-                                if (replacement != null) {
-                                    ProjectLog.info("message translation replacement applied"
-                                            + " route=" + (replyConversion ? "reply-canonical" : "body")
-                                            + " sourceClass=" + original.getClass().getName()
-                                            + " replacementClass=" + replacement.getClass().getName());
-                                    renderArgs[contentArgument] = replacement;
-                                    replyTranslationApplied = replyConversion;
-                                } else {
-                                    ProjectLog.info("message translation replacement rejected"
-                                            + " sourceClass=" + source.getClass().getName());
-                                    HookBridge.get().onTranslationRenderRejected(
-                                            messageId, translated);
+                                HookBridge.ReferencedTranslation reused = replyConversion
+                                        ? (replyBody ? HookBridge.get().referencedTranslation(messageId, reply.editedTimestamp) : null)
+                                        : HookBridge.get().currentTranslation(messageId, source);
+                                StateStore.Entry e = reused == null ? null : reused.state;
+                                Object original = reused == null ? source : reused.originalContent;
+                                extracted = reused == null ? null : reused.extracted;
+                                String translated = (e != null
+                                        && e.status == StateStore.Status.TRANSLATED
+                                        && !HookBridge.get().showingOriginal(messageId, e)) ? e.translatedText : null;
+                                if (translated != null) {
+                                    Object replacement = StructurableTextFactory.forPlannedTranslation(
+                                            original, translated, extracted);
+                                    if (replacement != null) {
+                                        ProjectLog.info("message translation replacement applied"
+                                                + " route=" + (replyConversion ? "reply-canonical" : "body")
+                                                + " sourceClass=" + original.getClass().getName()
+                                                + " replacementClass=" + replacement.getClass().getName());
+                                        renderArgs[contentArgument] = replacement;
+                                        replyTranslationApplied = replyConversion;
+                                    } else {
+                                        ProjectLog.info("message translation replacement rejected"
+                                                + " sourceClass=" + source.getClass().getName());
+                                        HookBridge.get().onTranslationRenderRejected(
+                                                messageId, translated);
+                                    }
                                 }
                             }
+                        } catch (Throwable t) {
+                            ProjectLog.warnOnce("message.textConversion.exception",
+                                    "message.textConversion processing failed with "
+                                            + t.getClass().getName());
+                            renderArgs[contentArgument] = source;
+                            replyTranslationApplied = false;
                         }
-                    } catch (Throwable t) {
-                        ProjectLog.warnOnce("message.textConversion.exception",
-                                "message.textConversion processing failed with "
-                                        + t.getClass().getName());
-                        renderArgs[contentArgument] = source;
-                        replyTranslationApplied = false;
-                    }
 
-                    // 宿主渲染只执行一次；图标注入失败时保留原始渲染结果。
-                    Object rendered = chain.proceed(renderArgs);
-                    if (replyTranslationApplied) {
-                        // Native singleLine mode does not remove embedded LF or NewLine
-                        // nodes. Project only after canonical alignment and rendering,
-                        // before the host adds LeadingMarginSpan(width, 0) and attaches it.
-                        // Keep the native builder and its Drawee registries intact.
-                        Editable preview = (Editable) rendered;
-                        ReplyTextProjection.flattenLineBreaks(preview,
-                                index -> preview.replace(index, index + 1, " "));
+                        // 宿主渲染只执行一次；图标注入失败时保留原始渲染结果。
+                        Object rendered = chain.proceed(renderArgs);
+                        if (replyTranslationApplied) {
+                            // Native singleLine mode does not remove embedded LF or NewLine
+                            // nodes. Project only after canonical alignment and rendering,
+                            // before the host adds LeadingMarginSpan(width, 0) and attaches it.
+                            // Keep the native builder and its Drawee registries intact.
+                            Editable preview = (Editable) rendered;
+                            ReplyTextProjection.flattenLineBreaks(preview,
+                                    index -> preview.replace(index, index + 1, " "));
+                        }
+                        // A reference is a consumer only, including native system content.
+                        // Never inherit an enclosing body/card icon host for this conversion.
+                        if (replyConversion) return rendered;
+                        return InlineIconInjector.inject(source, rendered,
+                                safeArg(chain, contextArgument), cl, extracted);
                     }
-                    // A reference is a consumer only, including native system content.
-                    // Never inherit an enclosing body/card icon host for this conversion.
-                    if (replyConversion) return rendered;
-                    return InlineIconInjector.inject(source, rendered,
-                            safeArg(chain, contextArgument), cl, extracted);
                 }));
         installedHookIds.add("message.textConversion");
     }

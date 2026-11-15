@@ -9,8 +9,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
-/** One display choice per Poll row; segment entries hold translation results, not UI choices. */
-final class PollCardState {
+/** One display choice and current membership per Poll or Embed card; entries own translations. */
+final class CardState {
     private static final Map<String, Card> CARDS = new LinkedHashMap<String, Card>(16, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Card> eldest) {
             return size() > 512;
@@ -46,7 +46,7 @@ final class PollCardState {
         }
     }
 
-    private PollCardState() {}
+    private CardState() {}
 
     static synchronized Card bind(String row, String titleKey, List<String> keys) {
         Card previous = CARDS.get(row);
@@ -56,8 +56,8 @@ final class PollCardState {
     }
 
     static synchronized Card forKey(String key) {
-        if (!HookBridge.isPollKey(key)) return null;
-        Card card = CARDS.get(HookBridge.cardRowOf(key));
+        if (!HookBridge.isCardKey(key)) return null;
+        Card card = CARDS.get(HookBridge.cardIdentityOf(key));
         return card != null && card.active && card.keys.contains(key) ? card : null;
     }
 
@@ -72,7 +72,7 @@ final class PollCardState {
         if (card != null) card.active = false;
     }
 
-    /** Only the current title controls the card. Answer keys are never independent switches. */
+    /** Only the current control segment can switch the card. */
     static synchronized Card toggle(String titleKey) {
         Card card = forKey(titleKey);
         if (card == null || !titleKey.equals(card.titleKey)) return null;

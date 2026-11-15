@@ -41,6 +41,7 @@ public final class RerenderRegistry {
         private final Method method;
         /** 原始实参快照；重渲染即用同一组实参再跑一次。 */
         private final Object[] args;
+        private final long registration = REGISTRATION_SEQUENCE.incrementAndGet();
 
         Target(View contentView, Object invocationTarget, Method method, Object[] args) {
             this.contentView = new WeakReference<>(contentView);
@@ -52,6 +53,8 @@ public final class RerenderRegistry {
 
     /** messageId -> 承载它的视图集合。 */
     private static final Map<String, List<Target>> TARGETS = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong REGISTRATION_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
 
     /** 登记上限，避免快速滚动时无限增长。 */
     private static final int MAX_MESSAGES = 1024;
@@ -106,6 +109,38 @@ public final class RerenderRegistry {
                 if (list.isEmpty()) {
                     TARGETS.remove(entry.getKey(), list);
                 }
+            }
+        }
+    }
+
+    /** Restore only icon-owning hosts through their latest recorded native binding, on the UI thread. */
+    static void restoreNativeHosts(java.util.Set<View> hosts) {
+        if (HookRuntime.isActive()) throw new IllegalStateException("Runtime must be suspended");
+        for (View host : hosts) {
+            Target latest = null;
+            String latestKey = null;
+            for (Map.Entry<String, List<Target>> entry : TARGETS.entrySet()) {
+                synchronized (entry.getValue()) {
+                    for (Target target : entry.getValue()) {
+                        if (target.contentView.get() == host
+                                && (latest == null || target.registration > latest.registration)) {
+                            latest = target;
+                            latestKey = entry.getKey();
+                        }
+                    }
+                }
+            }
+            if (latest == null || !stillBound(latestKey, HookBridge.get().messageIdOf(host))) {
+                throw new IllegalStateException("Current native icon host binding unavailable");
+            }
+            Object receiver = latest.invocationTarget.get();
+            if (!java.lang.reflect.Modifier.isStatic(latest.method.getModifiers()) && receiver == null) {
+                throw new IllegalStateException("Native icon host receiver unavailable");
+            }
+            try {
+                latest.method.invoke(receiver, latest.args);
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException("Native icon host restoration failed", failure);
             }
         }
     }
