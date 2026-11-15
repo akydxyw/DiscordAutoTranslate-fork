@@ -97,6 +97,13 @@
 - 保留前缀被源文本使用、标记丢失/复制/乱序/改名/残片、额外标记或样式内残留均拒绝；不猜测、不修复、不补换行。共享代码实例按 occurrence 分别编号；OPAQUE/CODE_BLOCK 仍保留原行为，未因行内代码证据扩大修改。
 - 协议在用户提示词后统一追加强制保留说明；引擎与回填共用语法，自然语言字母和长度比例排除标记字符。日志仍仅固定原因码/结构计数，没有代码正文或凭据。此变更的 CI 与实机效果另行核实。
 
+## 链接显示文字范围与行数拒绝
+
+- `bd0377e` Actions 实际 607 项测试、0 失败/跳过；最新进程 13:02:29 response 成功后 LINE_COUNT expected=2 actual=1，缺失败区间信息，不能断言模型漏了哪一行。13:02:37 是另一成功 response 后 ROOT槽12→LinkContentNode槽13 的 SOURCE_BOUNDARY_AMBIGUOUS，两侧单行且无间隔；代码锚点在左槽前，不证明左槽与链接标签之间边界。此日志没有消息身份，不混同两条请求。
+- 非 URL 显示的 LinkContentNode 是可翻译容器；现统一 isMarkedTextContainer 包含链接，沿现有 `<xN>` 样式范围链按 occurrence/text chunk 标记其显示文字。直接相邻 ROOT 文本/链接标签分配有精确边界，不凭译文换行猜测。不增加链接专用解析路径，不改 URL-only 链接锚点及 metadata 构造策略。
+- LINE_COUNT 在原五参数对齐拒绝点记录 failing block 的源槽范围，经 alignInterval 映射全计划，附捕获的首尾类型/路径、LF/heading/list信息。只补诊断，不放宽数量或把缺行塞入一个节点。协议统一补充原样保留行段规则，自定义提示词也适用。
+- 删除旧 isInlineStyleContainer 名称，Event.styled 注释明确为格式/链接标记，并非宿主字体样式。增加非URL链接/混合keep/样式/URL/共享实例回归与内容无关行数诊断；构建及实机结果另行验证。
+
 ## 已确认的架构教训（改代码前先读）
 
 1. **文本转换目标按 profile 变化**：`340013` 使用 `TextUtilsKt.toSpannable`，

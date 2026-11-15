@@ -59,7 +59,10 @@ public final class Protocols {
             + "<keep1/> exactly once in its original position and order; it represents native "
             + "code not included in the input. Never translate, rename, remove, duplicate, "
             + "or move these markers inside styled <xN>...</xN> spans. Preserve every styled "
-            + "marker and translate only natural-language text around the markers.";
+            + "marker and translate only natural-language text around the markers. "
+            + "The <xN>...</xN> spans also mark link display text; preserve their boundaries "
+            + "and translate the text inside. Preserve source paragraphs and line breaks "
+            + "exactly, including repeated lines; never merge, split, add, or drop lines.";
 
     private static final String SUFFIX_CHAT_COMPLETIONS = "/chat/completions";
     private static final String SUFFIX_RESPONSES = "/responses";

@@ -62,6 +62,9 @@ public final class ContentNodes {
         final int actual;
         /** Interval-local right-slot ordinal; not a message identity or text offset. */
         int boundary = -1;
+        /** Interval-local failing connected line run, source slot ordinals only. */
+        int blockStart = -1;
+        int blockEnd = -1;
         String structure = "";
 
         Rejection(RejectionReason reason, int expected, int actual) {
@@ -507,6 +510,17 @@ public final class ContentNodes {
                             + " sameContainerPath=" + leftContext.samePath(rightContext)
                             + " sameTextOccurrence=" + (leftContext.event.node == rightContext.event.node);
                 }
+            } else if (rejection.reason == RejectionReason.LINE_COUNT
+                    && rejection.blockStart >= 0 && rejection.blockEnd > rejection.blockStart) {
+                int first = start + rejection.blockStart;
+                int last = start + rejection.blockEnd - 1;
+                if (first >= start && last < end) {
+                    rejection.structure = " intervalSlots=" + (end - start)
+                            + " runSlots=" + (last - first + 1)
+                            + " firstSlot=" + first + " lastSlot=" + last
+                            + plan.boundaries.get(first).describe("first")
+                            + plan.boundaries.get(last).describe("last");
+                }
             }
             throw rejection;
         }
@@ -563,7 +577,10 @@ public final class ContentNodes {
                 int expectedLines = 0;
                 for (int i = segment; i < end; i++) expectedLines += sourceLineCounts.get(i);
                 if (lines.length != expectedLines) {
-                    throw new Rejection(RejectionReason.LINE_COUNT, expectedLines, lines.length);
+                    Rejection rejection = new Rejection(RejectionReason.LINE_COUNT, expectedLines, lines.length);
+                    rejection.blockStart = segment;
+                    rejection.blockEnd = end;
+                    throw rejection;
                 }
                 for (String line : lines) {
                     if (line.trim().isEmpty()) throw reject(RejectionReason.LINE_EMPTY);

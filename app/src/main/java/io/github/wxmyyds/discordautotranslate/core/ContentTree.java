@@ -68,6 +68,7 @@ public final class ContentTree {
     public static final class Event {
         public final EventKind kind;
         public final Node node;
+        /** Text needs an exact format/link span marker, not necessarily a native font style. */
         public final boolean styled;
         /** Captured semantic container occurrences, root to leaf; no rereading host members. */
         public final List<Node> containers;
@@ -196,7 +197,7 @@ public final class ContentTree {
             if (node.kind == Kind.SEQUENCE) {
                 for (Node child : node.children) emit(child, styled, containers);
             } else if (node.kind == Kind.CONTAINER) {
-                boolean nextStyle = styled || TextExtractor.isInlineStyleContainer(node.semantic);
+                boolean nextStyle = styled || TextExtractor.isMarkedTextContainer(node.semantic);
                 containers.add(node);
                 for (Node child : node.children) emit(child, nextStyle, containers);
                 containers.remove(containers.size() - 1);

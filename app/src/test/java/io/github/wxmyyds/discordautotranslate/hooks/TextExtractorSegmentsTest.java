@@ -330,14 +330,20 @@ public class TextExtractorSegmentsTest {
 
     @Test
     public void nonUrlLinkTextTranslatesLikeOtherText() {
-        // 掩码链接的显示文本是自然语言，照常作为片段翻译。
+        // 掩码链接的自然语言显示文本仍占片段，并用范围标记与普通文本精确区分。
         TextExtractor.Result r = TextExtractor.extract(new AnnotatedStructurableText(list(
-                new LinkContentNode(list(new TextContentNode("this guide"))),
-                new TextContentNode(" is good"))));
+                new TextContentNode("see "),
+                new LinkContentNode(list(new TextContentNode("this guide"))))));
 
         assertNotNull(r);
-        assertEquals("this guide is good", r.text);
+        assertEquals("see <x1>this guide</x1>", r.text);
         assertEquals(2, r.segmentCount);
+        TextExtractor.Result after = TextExtractor.extract(new AnnotatedStructurableText(list(
+                new LinkContentNode(list(new TextContentNode("this guide"))),
+                new TextContentNode(" is good"))));
+        assertNotNull(after);
+        assertEquals("<x1>this guide</x1> is good", after.text);
+        assertEquals(2, after.segmentCount);
     }
 
     @Test

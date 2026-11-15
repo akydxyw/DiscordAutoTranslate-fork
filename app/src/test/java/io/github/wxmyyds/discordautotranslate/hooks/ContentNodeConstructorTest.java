@@ -251,7 +251,7 @@ public class ContentNodeConstructorTest {
         List<Object> nodes = list(original);
         c1.calls = 0;
 
-        List<Object> output = ContentPlanTestSupport.replace(nodes, "阅读文档");
+        List<Object> output = ContentPlanTestSupport.replace(nodes, "<x1>阅读文档</x1>");
 
         assertNotNull(output);
         c1 rebuilt = (c1) output.get(0);
@@ -267,8 +267,13 @@ public class ContentNodeConstructorTest {
         assertNull(rebuilt.i);
         assertEquals('#', rebuilt.j);
         assertEquals("阅读文档", ((e5) rebuilt.a.get(0)).t());
-        assertOriginal(nodes, original, children, text, "Read documentation");
-        assertEquals("阅读文档", extracted(output));
+        assertSame(original, nodes.get(0));
+        assertSame(children, io.github.wxmyyds.discordautotranslate.core.Reflect
+                .callMember(original, "getContent"));
+        assertSame(text, children.get(0));
+        assertEquals("Read documentation", text.t());
+        assertEquals("<x1>Read documentation</x1>", extracted(nodes));
+        assertEquals("<x1>阅读文档</x1>", extracted(output));
         assertEquals(context.destination, original.d.destination);
     }
 

@@ -197,14 +197,14 @@ public final class TextExtractor {
     }
 
     /**
-     * 行内样式容器：其内的可翻译片段在请求里包样式标记
+     * 必须保留范围的格式/链接容器：其内的可翻译片段在请求里包标记
      * {@code <xN>…</xN>}（模型按提示词原样保留，回填按标记把译文
      * 精确落回样式节点，实测斜体/加粗不再丢失）。块级容器（段落/
      * 标题/引用）不在此列；其文本按捕获的源换行与段落边界对齐。
      * 已确认标题 occurrence 切换由 ContentTree 归一化为逻辑块分隔；
      * 其他容器名称本身不证明相邻文本之间存在换行。
      */
-    public static boolean isInlineStyleContainer(@Nullable String simpleName) {
+    public static boolean isMarkedTextContainer(@Nullable String simpleName) {
         if (simpleName == null) {
             return false;
         }
@@ -214,6 +214,7 @@ public final class TextExtractor {
             case "UnderlineContentNode":
             case "StrikethroughContentNode":
             case "SpoilerContentNode":
+            case "LinkContentNode":
                 return true;
             default:
                 return false;

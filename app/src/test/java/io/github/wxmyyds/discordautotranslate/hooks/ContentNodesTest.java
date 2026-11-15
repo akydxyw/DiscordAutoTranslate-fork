@@ -587,10 +587,17 @@ public class ContentNodesTest {
     public void preservesLinkContextData() {
         Object ctx = new Object(); // 代表 LinkContextData
         List<Object> nodes = list(new LinkContentNode(list(new TextContentNode("text")), ctx));
-        List<Object> out = ContentPlanTestSupport.replace(nodes, "链接");
+        TextExtractor.Result request = TextExtractor.extract(new AnnotatedStructurableText(nodes));
+        assertNotNull(request);
+        assertEquals("<x1>text</x1>", request.text);
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "<x1>链接</x1>");
         assertNotNull(out);
         LinkContentNode l = (LinkContentNode) out.get(0);
+        assertEquals("链接", ((TextContentNode) l.getContent().get(0)).getContent());
         assertSame("LinkContextData 必须保留原引用", ctx, l.component2());
+        TextExtractor.Result rebuilt = TextExtractor.extract(new AnnotatedStructurableText(out));
+        assertNotNull(rebuilt);
+        assertEquals("<x1>链接</x1>", rebuilt.text);
     }
 
     @Test
@@ -623,12 +630,26 @@ public class ContentNodesTest {
 
     @Test
     public void nonUrlLinkTextWithoutBoundaryIsRejected() {
-        // 掩码链接的显示文本是自然语言，仍正常翻译（模型按行返回时逐行落位）。
+        // 自然语言链接文本必须保留精确范围标记，不能按模型自行添加的换行猜测边界。
+        Object ctx = new Object();
         List<Object> nodes = list(
                 new TextContentNode("see "),
-                new LinkContentNode(list(new TextContentNode("this guide")), new Object()));
+                new LinkContentNode(list(new TextContentNode("this guide")), ctx));
+        TextExtractor.Result request = TextExtractor.extract(new AnnotatedStructurableText(nodes));
+        assertNotNull(request);
+        assertEquals("see <x1>this guide</x1>", request.text);
         assertNull("普通文本与链接文本没有边界标记时不猜测分配",
                 ContentPlanTestSupport.replace(nodes, "见\n本指南"));
+
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "见 <x1>本指南</x1>");
+        assertNotNull(out);
+        assertEquals("见 ", ((TextContentNode) out.get(0)).getContent());
+        LinkContentNode link = (LinkContentNode) out.get(1);
+        assertEquals("本指南", ((TextContentNode) link.getContent().get(0)).getContent());
+        assertSame(ctx, link.component2());
+        TextExtractor.Result rebuilt = TextExtractor.extract(new AnnotatedStructurableText(out));
+        assertNotNull(rebuilt);
+        assertEquals("见 <x1>本指南</x1>", rebuilt.text);
     }
 
     @Test

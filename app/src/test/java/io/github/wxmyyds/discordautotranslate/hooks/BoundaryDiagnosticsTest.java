@@ -184,6 +184,49 @@ public class BoundaryDiagnosticsTest {
         assertEquals("二", ((TextContentNode) output.get(2)).getContent());
     }
 
+    @Test public void lineCountDiagnosticNamesCapturedHeadingBoundaryWithoutText() {
+        ContentTree tree = ContentTree.compile(Arrays.asList(
+                new ContentNodesTest.HeadingContentNode(Arrays.asList(new TextContentNode("private-title")), 1),
+                new TextContentNode("private-body")));
+        ContentNodes.Rejection rejection = assertThrows(ContentNodes.Rejection.class,
+                () -> ContentNodes.replaceChecked(tree, "私密译文"));
+        assertEquals(ContentNodes.RejectionReason.LINE_COUNT, rejection.reason);
+        assertEquals(2, rejection.expected);
+        assertEquals(1, rejection.actual);
+        assertTrue(rejection.structure.contains("runSlots=2 firstSlot=0 lastSlot=1"));
+        assertTrue(rejection.structure.contains("firstPath=HeadingContentNode"));
+        assertTrue(rejection.structure.contains("lastGapHeadingBreaks=1"));
+        assertFalse(rejection.structure.contains("private-"));
+        assertFalse(rejection.structure.contains("私密译文"));
+        assertNull(ContentNodes.replacePlanned(tree, "私密译文"));
+    }
+
+    @Test public void lineCountLocalRunMapsToGlobalSlotsAfterInlineCodeAnchor() {
+        ContentTree tree = ContentTree.compile(Arrays.asList(new TextContentNode("Prefix"),
+                new ContentNodesTest.InlineCodeContentNode("secret-code"), new TextContentNode("First"),
+                new TextContentNode("\n"), new TextContentNode("Second")));
+        ContentNodes.Rejection rejection = assertThrows(ContentNodes.Rejection.class,
+                () -> ContentNodes.replaceChecked(tree, "之前<keep1/>合并"));
+        assertEquals(ContentNodes.RejectionReason.LINE_COUNT, rejection.reason);
+        assertTrue(rejection.structure.contains("intervalSlots=2 runSlots=2 firstSlot=1 lastSlot=2"));
+        assertTrue(rejection.structure.contains("lastSourceLfBefore=1"));
+        assertTrue(rejection.structure.contains("lastGapHeadingBreaks=0"));
+        assertFalse(rejection.structure.contains("secret-code"));
+    }
+
+    @Test public void lineCountRunMapsAfterStyleIntervalAndEarlierParagraph() {
+        ContentTree tree = ContentTree.compile(Arrays.asList(
+                new StrongContentNode(Arrays.asList(new TextContentNode("Styled"))),
+                new TextContentNode("First"), new TextContentNode("\n\n"), new TextContentNode("Second"),
+                new TextContentNode("\n"), new TextContentNode("Third")));
+        ContentNodes.Rejection rejection = assertThrows(ContentNodes.Rejection.class,
+                () -> ContentNodes.replaceChecked(tree, "<x1>样式</x1>第一\n\n合并"));
+        assertEquals(ContentNodes.RejectionReason.LINE_COUNT, rejection.reason);
+        assertTrue(rejection.structure.contains("intervalSlots=3 runSlots=2 firstSlot=2 lastSlot=3"));
+        assertTrue(rejection.structure.contains("firstSourceLfBefore=2"));
+        assertTrue(rejection.structure.contains("lastSourceLfBefore=1"));
+    }
+
     public static final class UnknownOne { }
     public static final class UnknownTwo { }
     public static final class UnknownThree { }
