@@ -219,6 +219,29 @@ public class RetainedLeafMarkerTest {
         assertEquals(ContentNodes.RejectionReason.UNASSIGNED_TEXT, failure.reason);
     }
 
+    @Test public void listPrefixAllowsCapturedLfBeforeFirstRetainedAnchor() {
+        for (Object newline : list(text("\n"), new NewLineContentNode(), new LineBreakContentNode())) {
+            for (boolean styled : new boolean[]{false, true}) {
+                h5 retained = new h5();
+                Object body = styled ? new StrongContentNode(list(text("Body"))) : text("Body");
+                BulletListContentNode list = new BulletListContentNode(null, false,
+                        Arrays.asList(list(text("Earlier")), list(newline, retained, body)));
+                ContentTree tree = tree(list);
+                String bodySource = styled ? "<x1>Body</x1>" : "Body";
+                assertEquals("\n• Earlier\n• \n<keep1/>" + bodySource, extract(tree));
+                List<Object> out = ContentNodes.replaceChecked(tree,
+                        "• 前项\n• \n<keep1/>" + (styled ? "<x1>正文</x1>" : "正文"));
+                BulletListContentNode rebuilt = (BulletListContentNode) out.get(0);
+                assertEquals("前项", content(rebuilt.getItems().get(0).get(0)));
+                assertSame(newline, rebuilt.getItems().get(1).get(0));
+                assertSame(retained, rebuilt.getItems().get(1).get(1));
+                assertEquals("正文", content(styled
+                        ? ((StrongContentNode) rebuilt.getItems().get(1).get(2)).getContent().get(0)
+                        : rebuilt.getItems().get(1).get(2)));
+            }
+        }
+    }
+
     @Test public void generalizedInputHashCannotReuseOldWhitespaceOnlyPlan() {
         ContentTree tree = tree(text("hello"), new h5(), text("world"));
         assertNotEquals(Scheduler.contentHash("hello world", "config"),

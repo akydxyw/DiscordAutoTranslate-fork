@@ -497,10 +497,14 @@ public final class ContentNodes {
     /** A list item can begin with a retained leaf; consume its native item prefix, never body text. */
     private static String anchorPrefix(String prefix, PlanToken token) {
         if (!token.listPrefix) return prefix;
-        int lineStart = prefix.lastIndexOf('\n') + 1;
-        // Only the item marker immediately before its first anchor can be consumed here.
-        return LIST_MARKER.matcher(prefix.substring(lineStart)).matches()
-                ? prefix.substring(0, lineStart) : prefix;
+        int tail = prefix.length();
+        while (tail > 0 && Character.isWhitespace(prefix.charAt(tail - 1))) tail--;
+        int lineStart = prefix.lastIndexOf('\n', tail - 1) + 1;
+        // Native source LF/BREAK may lie between ITEM_START and its first anchor.
+        // Only a marker followed entirely by whitespace can be consumed, never item body text.
+        if (!LIST_MARKER.matcher(prefix.substring(lineStart)).matches()) return prefix;
+        int lineEnd = prefix.indexOf('\n', lineStart);
+        return prefix.substring(0, lineStart) + (lineEnd < 0 ? "" : prefix.substring(lineEnd));
     }
 
     /** One interval operation; decoration consumes captured structure only, never the response. */
