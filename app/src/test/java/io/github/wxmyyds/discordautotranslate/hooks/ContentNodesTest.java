@@ -1002,7 +1002,7 @@ public class ContentNodesTest {
     @Test
     public void splitSinglePartIsUnchanged() {
         assertEquals(Arrays.asList("αβγ"),
-                ContentNodes.alignSpanToParts("αβγ", groups(0), null, null));
+                ContentPlanTestSupport.align("αβγ", groups(0), null, null));
     }
 
     private static List<Integer> groups(int... ids) {
@@ -1016,7 +1016,7 @@ public class ContentNodesTest {
     @Test
     public void alignSpanByLinesWhenLineCountMatches() {
         // 相邻单行片段、模型用单换行分段：非空行数与片段数一致 → 按行 1:1。
-        List<String> parts = ContentNodes.alignSpanToParts("第一行\n第二行",
+        List<String> parts = ContentPlanTestSupport.align("第一行\n第二行",
                 groups(0, 0), null, Arrays.asList(false, true));
         assertEquals(2, parts.size());
         assertEquals("第一行", parts.get(0));
@@ -1026,37 +1026,37 @@ public class ContentNodesTest {
     @Test
     public void alignSpanRejectsExtraLinesWhenStructureMismatches() {
         // 行数多于片段数且段落也对不上：必须拒绝，保留原文。
-        assertNull(ContentNodes.alignSpanToParts("a\nb\nc\nd", groups(0, 1), null, null));
+        assertNull(ContentPlanTestSupport.align("a\nb\nc\nd", groups(0, 1), null, null));
     }
 
     @Test
     public void alignSpanRejectsMergedTextForRepeatedGroup() {
         // 同段有多个译文片段但没有边界标记时，不把整段猜测性地塞进首片段。
-        assertNull(ContentNodes.alignSpanToParts("只有一行", groups(0, 0, 0), null, null));
+        assertNull(ContentPlanTestSupport.align("只有一行", groups(0, 0, 0), null, null));
     }
 
     @Test
     public void alignSpanRejectsMergedTextAcrossRepeatedGroup() {
         // 同一段落组有多个片段时，缺少标记不能按段落将译文塞到第一个片段。
-        assertNull(ContentNodes.alignSpanToParts("译一\n\n译二", groups(0, 0, 1), null, null));
+        assertNull(ContentPlanTestSupport.align("译一\n\n译二", groups(0, 0, 1), null, null));
     }
 
     @Test
     public void alignSpanRejectsAmbiguousTextForRepeatedGroup() {
         // 夹有未知可见结构的同段片段没有精确边界时拒绝回填。
-        assertNull(ContentNodes.alignSpanToParts("整段一块", groups(0, 0), null, null));
+        assertNull(ContentPlanTestSupport.align("整段一块", groups(0, 0), null, null));
     }
 
     @Test
     public void alignSpanRejectsBlankLineWhenLineCountMatches() {
         // 三个独立片段只回两块：跨段落合并 = 内容丢失，必须拒绝。
-        assertNull(ContentNodes.alignSpanToParts("甲\n\n乙", groups(0, 1, 2), null, null));
+        assertNull(ContentPlanTestSupport.align("甲\n\n乙", groups(0, 1, 2), null, null));
     }
 
     @Test
     public void alignSpanByParagraphBlocksWhenCountsMatch() {
         // 段落块数与片段数一致：每块整体落到一个片段（块内单换行保留）。
-        List<String> parts = ContentNodes.alignSpanToParts(
+        List<String> parts = ContentPlanTestSupport.align(
                 "第一块\n第二行\n\n第二块", groups(0, 1), null, null);
         assertEquals(2, parts.size());
         assertEquals("第一块\n第二行", parts.get(0));
@@ -1067,7 +1067,7 @@ public class ContentNodesTest {
     public void alignSpanRejectsWhenMoreParagraphBlocksThanTargets() {
         // 译文段落块多于片段数 = 模型新增/复读内容：拒绝回填（null），
         // 不得把多出的块堆进最后一个节点。
-        assertNull(ContentNodes.alignSpanToParts("A\n\nB\n\nC", groups(0, 1), null, null));
+        assertNull(ContentPlanTestSupport.align("A\n\nB\n\nC", groups(0, 1), null, null));
     }
 
     @Test

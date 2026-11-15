@@ -98,30 +98,31 @@ public final class StructurableTextFactory {
     static Object forPlannedTranslation(@Nullable Object original, String translated,
                                        @Nullable TextExtractor.Result extracted) {
         if (original == null || translated == null || extracted == null) {
-            return null;
+            return rejectFactory("INVALID_INPUT");
         }
 
         // 1) 原始是 Annotated：尝试保留 Markdown 结构。
         if (ContentNodes.isAnnotated(original)) {
-            if (extracted.tree == null) return null;
+            if (extracted.tree == null) return rejectFactory("MISSING_TREE");
             List<Object> replaced = ContentNodes.replacePlanned(extracted.tree, translated);
-            if (replaced != null) {
-                Object out = annotated(replaced);
-                if (out != null) {
-                    return out;
-                }
-            }
-            // 不接受部分重建，也不退化为纯文本（会丢失 emoji/提及/代码）。
-            // 返回 null，让所有调用路径继续使用未修改的原始结构。
-            return null;
+            if (replaced == null) return null; // Already classified at the content replacement boundary.
+            Object out = annotated(replaced);
+            return out == null ? rejectFactory("ANNOTATED_CONSTRUCTOR") : out;
         }
 
         // 2) 原始是 Primitive：直接给纯文本。
         if (ContentNodes.isPrimitive(original)) {
-            return primitive(translated);
+            Object out = primitive(translated);
+            return out == null ? rejectFactory("PRIMITIVE_CONSTRUCTOR") : out;
         }
 
         // 3) 未知类型：交给渲染器会抛异常，因此坚持不替换。
+        return rejectFactory("UNSUPPORTED_TYPE");
+    }
+
+    @Nullable
+    private static Object rejectFactory(String reason) {
+        HookDiagnostics.info("structurable replacement rejected reason=" + reason);
         return null;
     }
 }

@@ -46,27 +46,62 @@ public final class ContentNodes {
 
     // ---------------------------------------------------------------- 变换
 
+    /** Fixed classifications only; never carries source text, translation, anchors or identity. */
+    enum RejectionReason {
+        INVALID_INPUT, NO_TRANSLATABLE_SEGMENTS, SEGMENT_MARKER, EMPTY_TRANSLATION,
+        URL_COUNT, EMOJI_COUNT, ANCHOR_ORDER, STYLE_OPEN, STYLE_CLOSE, STYLE_EMPTY,
+        UNASSIGNED_TEXT, PARAGRAPH_MISSING, PARAGRAPH_EXTRA, SOURCE_BOUNDARY_AMBIGUOUS,
+        LINE_COUNT, LINE_EMPTY, LIST_ITEM_EMPTY, PART_COUNT,
+        RETAINED_STRUCTURE_CHANGED, TEXT_CONSTRUCTOR, CONTAINER_CONSTRUCTOR, CONSUMPTION_COUNT
+    }
+
+    static final class Rejection extends RuntimeException {
+        final RejectionReason reason;
+        final int expected;
+        final int actual;
+
+        Rejection(RejectionReason reason, int expected, int actual) {
+            super(reason.name());
+            this.reason = reason;
+            this.expected = expected;
+            this.actual = actual;
+        }
+    }
+
+    private static Rejection reject(RejectionReason reason) {
+        return new Rejection(reason, -1, -1);
+    }
+
     /** Rebuild only from the caller's captured, identity-verified occurrence plan. */
     @Nullable
     public static List<Object> replacePlanned(ContentTree tree, String translated) {
-        if (tree == null || translated == null || translated.trim().isEmpty()) return null;
+        try {
+            return replaceChecked(tree, translated);
+        } catch (Rejection rejection) {
+            HookDiagnostics.info("content replacement rejected reason=" + rejection.reason.name()
+                    + " expected=" + rejection.expected + " actual=" + rejection.actual);
+            return null;
+        }
+    }
+
+    /** The same operation before its null-return boundary, also inspected by JVM tests. */
+    static List<Object> replaceChecked(ContentTree tree, String translated) {
+        if (tree == null || translated == null) throw reject(RejectionReason.INVALID_INPUT);
+        if (translated.trim().isEmpty()) throw reject(RejectionReason.EMPTY_TRANSLATION);
         int targetCount = tree.segmentCount;
         if (targetCount == 0) {
-            return null;
+            throw reject(RejectionReason.NO_TRANSLATABLE_SEGMENTS);
         }
         // 锚点必须按原数量及顺序出现；各间隔只执行所属结构的唯一切分规则。
         if (Segments.hasSegmentMarkers(translated)) {
-            return null;
+            throw reject(RejectionReason.SEGMENT_MARKER);
         }
         String plain = normalize(translated);
-        if (plain.isEmpty()) {
-            // 剔除后什么都不剩：不能清空消息，保留原文。
-            return null;
-        }
+        if (plain.isEmpty()) throw reject(RejectionReason.EMPTY_TRANSLATION);
         AlignmentPlan plan = buildPlan(tree);
         List<String> parts = alignTranslation(plain, plan);
-        if (parts == null || parts.size() != targetCount) {
-            return null;
+        if (parts.size() != targetCount) {
+            throw new Rejection(RejectionReason.PART_COUNT, targetCount, parts.size());
         }
         // 按节点出现的位置分配片段，不能以实例身份为键：共享节点的后一次
         // 空片段会覆盖前一次译文，造成文字全部消失但 emoji 仍保留。
@@ -77,8 +112,8 @@ public final class ContentNodes {
         }
         // 容器复制失败可能丢弃已重建的子节点；不得把其他已清空的文本节点
         // 作为部分成功的结果交给宿主，必须整棵树替换成功。
-        if (replacement.failed || replacement.next != targetCount) {
-            return null;
+        if (replacement.next != targetCount) {
+            throw new Rejection(RejectionReason.CONSUMPTION_COUNT, targetCount, replacement.next);
         }
         return result;
     }
@@ -94,7 +129,6 @@ public final class ContentNodes {
     private static final class Replacement {
         final List<String> parts;
         int next;
-        boolean failed;
 
         Replacement(List<String> parts) {
             this.parts = parts;
@@ -118,7 +152,8 @@ public final class ContentNodes {
                 }
                 rebuiltChildren.add(rebuiltChild);
             }
-            if (!localChanged && !ContentTree.retainedStructureMatches(occurrence)) replacement.failed = true;
+            if (!localChanged && !ContentTree.retainedStructureMatches(occurrence))
+                throw reject(RejectionReason.RETAINED_STRUCTURE_CHANGED);
             return localChanged ? rebuiltChildren : node;
         }
 
@@ -136,8 +171,8 @@ public final class ContentNodes {
                 return node;
             }
             if (replacement.next + needed > replacement.parts.size()) {
-                replacement.failed = true;
-                return node;
+                throw new Rejection(RejectionReason.CONSUMPTION_COUNT,
+                        replacement.parts.size(), replacement.next + needed);
             }
             // 保留首尾空白，并按原空行位置拼回译文片段：
             // 段落分隔由原节点提供，不依赖模型是否保留。
@@ -160,12 +195,12 @@ public final class ContentNodes {
             if (created != null) {
                 return created;
             }
-            replacement.failed = true;
-            return node;
+            throw reject(RejectionReason.TEXT_CONSTRUCTOR);
         }
 
         if (kind != ContentTree.Kind.CONTAINER && kind != ContentTree.Kind.LIST) {
-            if (!ContentTree.retainedStructureMatches(occurrence)) replacement.failed = true;
+            if (!ContentTree.retainedStructureMatches(occurrence))
+                throw reject(RejectionReason.RETAINED_STRUCTURE_CHANGED);
             return node;
         }
         List<ContentTree.Node> children = occurrence.children;
@@ -180,14 +215,12 @@ public final class ContentNodes {
             newChildren.add(nc);
         }
         if (!localChanged) {
-            if (!ContentTree.retainedStructureMatches(occurrence)) replacement.failed = true;
+            if (!ContentTree.retainedStructureMatches(occurrence))
+                throw reject(RejectionReason.RETAINED_STRUCTURE_CHANGED);
             return node;
         }
         Object rebuilt = copyWith(node, newChildren);
-        if (rebuilt == null) {
-            replacement.failed = true;
-            return node;
-        }
+        if (rebuilt == null) throw reject(RejectionReason.CONTAINER_CONSTRUCTOR);
         return rebuilt;
     }
 
@@ -264,11 +297,8 @@ public final class ContentNodes {
             }
             constructor.setAccessible(true);
             return constructor.newInstance(arguments);
-        } catch (Throwable t) {
-            HookDiagnostics.warnOnce("content.constructor.failed." + cls.getName(),
-                    "configured node constructor failed type=" + cls.getName()
-                            + " errorClass=" + t.getClass().getSimpleName());
-            return null;
+        } catch (Throwable failure) {
+            return null; // Classified at the one replacement boundary, never reports arguments.
         }
     }
 
@@ -320,12 +350,10 @@ public final class ContentNodes {
 
     // ---------------------------------------------------------------- 译文切分
 
-    @Nullable
     static List<String> alignTranslation(String plain, AlignmentPlan plan) {
-        if (plan.groupIds.isEmpty() || !urlsMatch(plain, plan)
-                || !emojiAnchorsMatch(plain, plan)) {
-            return null;
-        }
+        if (plan.groupIds.isEmpty()) throw reject(RejectionReason.NO_TRANSLATABLE_SEGMENTS);
+        requireAnchorCounts(plain, plan.urls, RejectionReason.URL_COUNT);
+        requireAnchorCounts(plain, plan.emojiAnchors, RejectionReason.EMOJI_COUNT);
         if (plan.hasStyleMarkers()) {
             return alignByStyleMarkers(plain, plan);
         }
@@ -337,7 +365,6 @@ public final class ContentNodes {
      * {@code <xN>…</xN>} 之间，其余文本按标记间隔分配给相邻的普通片段。
      * 任何标记缺失、错位或空内容都会拒绝整条回填。
      */
-    @Nullable
     private static List<String> alignByStyleMarkers(String plain, AlignmentPlan plan) {
         List<String> parts = new ArrayList<>(
                 java.util.Collections.nCopies(plan.groupIds.size(), ""));
@@ -346,33 +373,24 @@ public final class ContentNodes {
         for (PlanToken t : plan.tokens) {
             if (t.url != null) {
                 int at = plain.indexOf(t.url, cursor);
-                if (at < 0 || !assignRun(plain.substring(cursor, at), pending, parts, plan)) {
-                    return null;
-                }
+                if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
+                assignRun(plain.substring(cursor, at), pending, parts, plan);
                 pending.clear();
                 cursor = at + t.url.length();
             } else if (t.styleId > 0) {
                 String open = "<x" + t.styleId + ">";
                 int at = plain.indexOf(open, cursor);
-                if (at < 0 || !assignRun(plain.substring(cursor, at), pending, parts, plan)) {
-                    return null;
-                }
+                if (at < 0) throw reject(RejectionReason.STYLE_OPEN);
+                assignRun(plain.substring(cursor, at), pending, parts, plan);
                 pending.clear();
                 String close = "</x" + t.styleId + ">";
                 int end = plain.indexOf(close, at + open.length());
-                if (end < 0) {
-                    return null;
-                }
+                if (end < 0) throw reject(RejectionReason.STYLE_CLOSE);
                 String styled = plain.substring(at + open.length(), end).trim();
-                if (styled.isEmpty()) {
-                    return null;
-                }
+                if (styled.isEmpty()) throw reject(RejectionReason.STYLE_EMPTY);
                 if (t.segIndex < plan.listFlags.size()
                         && Boolean.TRUE.equals(plan.listFlags.get(t.segIndex))) {
                     styled = stripListMarker(styled);
-                    if (styled == null) {
-                        return null;
-                    }
                 }
                 parts.set(t.segIndex, styled);
                 cursor = end + close.length();
@@ -380,17 +398,16 @@ public final class ContentNodes {
                 pending.add(t.segIndex);
             }
         }
-        if (!assignRun(plain.substring(cursor), pending, parts, plan)) {
-            return null;
-        }
+        assignRun(plain.substring(cursor), pending, parts, plan);
         return parts;
     }
 
     /** 把一段结构对应的译文分配给待填片段；结构不符时拒绝整条回填。 */
-    private static boolean assignRun(String run, List<Integer> pending,
-                                     List<String> parts, AlignmentPlan plan) {
+    private static void assignRun(String run, List<Integer> pending,
+                                  List<String> parts, AlignmentPlan plan) {
         if (pending.isEmpty()) {
-            return run.trim().isEmpty();
+            if (!run.trim().isEmpty()) throw reject(RejectionReason.UNASSIGNED_TEXT);
+            return;
         }
         int first = pending.get(0);
         int last = pending.get(pending.size() - 1);
@@ -398,16 +415,12 @@ public final class ContentNodes {
                 plan.groupIds.subList(first, last + 1),
                 plan.listFlagsIn(first, last + 1),
                 plan.lineBreakFlagsIn(first, last + 1));
-        if (runParts == null) {
-            return false;
-        }
         for (int i = 0; i < runParts.size(); i++) {
             String p = runParts.get(i);
             if (p != null && !p.trim().isEmpty()) {
                 parts.set(pending.get(i), p);
             }
         }
-        return true;
     }
 
     /**
@@ -422,32 +435,15 @@ public final class ContentNodes {
         }
     }
 
-    /** URL 锚点必须按原数量出现；模型改写或丢失时不回填错位译文。 */
-    private static boolean urlsMatch(String plain, AlignmentPlan plan) {
-        java.util.Map<String, Integer> expected = new java.util.HashMap<>();
-        for (String anchor : plan.urls) {
-            expected.merge(anchor, 1, Integer::sum);
+    /** Verify multiplicity without ever emitting the anchor itself. */
+    private static void requireAnchorCounts(String plain, List<String> anchors,
+                                             RejectionReason reason) {
+        java.util.Map<String, Integer> expected = new java.util.LinkedHashMap<>();
+        for (String anchor : anchors) expected.merge(anchor, 1, Integer::sum);
+        for (java.util.Map.Entry<String, Integer> entry : expected.entrySet()) {
+            int actual = countOccurrences(plain, entry.getKey());
+            if (actual != entry.getValue()) throw new Rejection(reason, entry.getValue(), actual);
         }
-        for (java.util.Map.Entry<String, Integer> e : expected.entrySet()) {
-            if (countOccurrences(plain, e.getKey()) != e.getValue()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** emoji 锚点必须按原数量出现，否则拒绝对齐。 */
-    private static boolean emojiAnchorsMatch(String plain, AlignmentPlan plan) {
-        java.util.Map<String, Integer> expected = new java.util.HashMap<>();
-        for (String anchor : plan.emojiAnchors) {
-            expected.merge(anchor, 1, Integer::sum);
-        }
-        for (java.util.Map.Entry<String, Integer> e : expected.entrySet()) {
-            if (countOccurrences(plain, e.getKey()) != e.getValue()) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
@@ -456,7 +452,6 @@ public final class ContentNodes {
      * <p>定位标记（URL / emoji）不消费译文片段。按树序依次定位标记，
      * 标记之间的文本交给 {@link #alignSpanToParts} 按结构类型唯一切分。</p>
      */
-    @Nullable
     private static List<String> alignTokens(String plain, AlignmentPlan plan) {
         boolean hasAnchors = !plan.urls.isEmpty() || !plan.emojiAnchors.isEmpty();
         if (!hasAnchors) {
@@ -476,9 +471,7 @@ public final class ContentNodes {
             }
             String anchor = t.url;
             int at = plain.indexOf(anchor, from);
-            if (at < 0) {
-                return null; // 数量校验后仍未找到，表示锚点顺序改变
-            }
+            if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
             int segEnd = t.emoji
                     ? plan.emojiSegIndex.get(emojiIndex++)
                     : plan.urlSegIndex.get(urlIndex++);
@@ -486,9 +479,6 @@ public final class ContentNodes {
                     plan.groupIds.subList(segStart, segEnd),
                     plan.listFlagsIn(segStart, segEnd),
                     plan.lineBreakFlagsIn(segStart, segEnd));
-            if (spanParts == null) {
-                return null;
-            }
             copySpan(spanParts, parts, segStart);
             from = at + anchor.length();
             segStart = segEnd;
@@ -497,9 +487,6 @@ public final class ContentNodes {
                 plan.groupIds.subList(segStart, plan.groupIds.size()),
                 plan.listFlagsIn(segStart, plan.groupIds.size()),
                 plan.lineBreakFlagsIn(segStart, plan.groupIds.size()));
-        if (tailParts == null) {
-            return null;
-        }
         copySpan(tailParts, parts, segStart);
         return parts;
     }
@@ -518,13 +505,13 @@ public final class ContentNodes {
      * 按结构类型执行唯一切分：列表项逐行、显式换行逐行，其余按段落块逐片段对应。
      * 任一数量或结构不匹配都拒绝整条回填。
      */
-    @Nullable
     static List<String> alignSpanToParts(String span, List<Integer> groups,
                                          @Nullable List<Boolean> listFlags,
                                          @Nullable List<Boolean> lineBreakBefore) {
         int segments = groups.size();
         if (segments == 0) {
-            return span.trim().isEmpty() ? new ArrayList<>() : null;
+            if (!span.trim().isEmpty()) throw reject(RejectionReason.UNASSIGNED_TEXT);
+            return new ArrayList<>();
         }
         List<String> chunks = translatableChunks(span);
         List<String> parts = new ArrayList<>(
@@ -533,14 +520,14 @@ public final class ContentNodes {
         int chunk = 0;
         while (segment < segments) {
             if (chunk >= chunks.size()) {
-                return null;
+                throw new Rejection(RejectionReason.PARAGRAPH_MISSING, chunk + 1, chunks.size());
             }
             int end = segment + 1;
             while (end < segments) {
                 if (isLineBreakBefore(lineBreakBefore, end)) {
                     end++;
                 } else if (groups.get(end).equals(groups.get(end - 1))) {
-                    return null;
+                    throw reject(RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
                 } else {
                     break;
                 }
@@ -550,34 +537,25 @@ public final class ContentNodes {
             if (end - segment > 1) {
                 String[] lines = block.split("\n", -1);
                 if (lines.length != end - segment) {
-                    return null;
+                    throw new Rejection(RejectionReason.LINE_COUNT, end - segment, lines.length);
                 }
                 for (int i = segment; i < end; i++) {
                     String line = lines[i - segment];
-                    if (line.trim().isEmpty()) {
-                        return null;
-                    }
-                    if (isListSegment(listFlags, i)) {
-                        line = stripListMarker(line);
-                        if (line == null) {
-                            return null;
-                        }
-                    }
+                    if (line.trim().isEmpty()) throw reject(RejectionReason.LINE_EMPTY);
+                    if (isListSegment(listFlags, i)) line = stripListMarker(line);
                     parts.set(i, line);
                 }
             } else {
                 String value = block;
-                if (isListSegment(listFlags, segment)) {
-                    value = stripListMarker(value);
-                    if (value == null) {
-                        return null;
-                    }
-                }
+                if (isListSegment(listFlags, segment)) value = stripListMarker(value);
                 parts.set(segment, value);
             }
             segment = end;
         }
-        return chunk == chunks.size() ? parts : null;
+        if (chunk != chunks.size()) {
+            throw new Rejection(RejectionReason.PARAGRAPH_EXTRA, chunk, chunks.size());
+        }
+        return parts;
     }
 
     private static boolean isListSegment(@Nullable List<Boolean> listFlags, int index) {
@@ -602,7 +580,8 @@ public final class ContentNodes {
             return line;
         }
         String stripped = LIST_MARKER.matcher(line).replaceFirst("");
-        return stripped.trim().isEmpty() ? null : stripped;
+        if (stripped.trim().isEmpty()) throw reject(RejectionReason.LIST_ITEM_EMPTY);
+        return stripped;
     }
 
     /**
