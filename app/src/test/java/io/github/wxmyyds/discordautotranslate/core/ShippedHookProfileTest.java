@@ -188,19 +188,34 @@ public class ShippedHookProfileTest {
     }
 
     @Test
-    public void olderProfileRetainsRichEmbedButNotUnverifiedClickOrReply() throws Exception {
+    public void olderProfileUsesVerifiedAccessoryIdentityAndRichEmbedMetadata() throws Exception {
         JSONObject root = profile(340013);
-        assertEquals("boundView", root.getJSONObject("hooks").getJSONObject("message.render").getString("identitySource"));
-        JSONObject embed = root.getJSONObject("hooks").getJSONObject("embed.bind");
+        JSONObject hooks = root.getJSONObject("hooks");
+        JSONObject bind = hooks.getJSONObject("message.bind");
+        assertEquals(0, bind.getInt("modelArgument"));
+        assertEquals("getMessageId", bind.getString("messageIdGetter"));
+        assertEquals("getMessageContent", bind.getString("contentGetter"));
+        assertEquals("messageContentView", bind.getString("contentViewField"));
+        assertFalse(bind.has("referencedMessage"));
+        assertFalse(bind.has("replyPreviewField"));
+        assertFalse(root.has("nodeConstructors"));
+        JSONObject render = hooks.getJSONObject("message.render");
+        assertEquals("boundView", render.getString("identitySource"));
+        assertEquals(1, render.getInt("contentArgument"));
+        assertFalse(render.has("messageIdArgument"));
+        JSONObject embed = hooks.getJSONObject("embed.bind");
+        assertTrue(embed.getBoolean("enabled"));
         JSONObject target = embed.getJSONObject("target");
         assertEquals("com.discord.chat.presentation.message.viewholder.EmbedViewHolder",
                 target.getString("class"));
         assertEquals("bind", target.getString("name"));
         assertFalse(target.getBoolean("static"));
         assertEquals(9, target.getInt("parameterCount"));
-        assertEquals(1, target.getJSONObject("parameterTypes").length());
+        assertEquals(9, target.getJSONObject("parameterTypes").length());
         assertEquals("com.discord.chat.presentation.message.messagepart.EmbedMessageAccessory",
                 target.getJSONObject("parameterTypes").getString("1"));
+        assertEquals("void", target.getString("returnType"));
+        assertEquals(6, target.length());
         assertEquals("accessory", embed.getString("inputSource"));
         assertEquals(1, embed.getInt("accessoryArgument"));
         assertFalse(embed.has("modelArgument"));
@@ -209,20 +224,141 @@ public class ShippedHookProfileTest {
         assertEquals("field", host.getString("source"));
         assertEquals("itemView", host.getString("field"));
         assertEquals(2, host.length());
-        assertEquals(3, root.getJSONArray("requiredHooks").length());
-        for (int i = 0; i < root.getJSONArray("requiredHooks").length(); i++) {
-            assertNotEquals("embed.bind", root.getJSONArray("requiredHooks").getString(i));
-        }
+        assertEquals("[\"message.bind\",\"message.render\",\"message.textConversion\",\"embed.bind\"]",
+                root.getJSONArray("requiredHooks").toString());
         JSONObject members = root.getJSONObject("members");
-        for (String getter : new String[]{"getMessageId", "getEmbed", "getDescription",
-                "getTitle", "getFields", "getName", "getValue"}) {
+        assertFalse(members.has("getMessageId"));
+        for (String getter : new String[]{"getEmbed", "getDescription", "getTitle",
+                "getFields", "getName", "getValue"}) {
             assertEquals(getter, members.getString(getter));
         }
         JSONObject types = root.getJSONObject("types");
-        assertFalse(types.has("EmbedMessageAccessory"));
-        assertFalse(types.has("Embed"));
-        assertFalse(types.has("EmbedField"));
-        assertFalse(root.getJSONObject("iconClick").getBoolean("enabled"));
-        assertFalse(root.getJSONObject("hooks").getJSONObject("message.bind").has("referencedMessage"));
+        JSONObject accessors = root.getJSONObject("accessors");
+        for (String accessory : new String[]{"MessageContentAccessory", "EmbedMessageAccessory"}) {
+            assertEquals("com.discord.chat.presentation.message.messagepart." + accessory,
+                    types.getString(accessory));
+            assertEquals("getMessageId-3Eiw7ao",
+                    accessors.getJSONObject(accessory).getString("getMessageId"));
+        }
+        assertEquals("com.discord.chat.bridge.embed.Embed", types.getString("Embed"));
+        assertEquals("com.discord.chat.bridge.embed.EmbedField", types.getString("EmbedField"));
+        assertEquals("com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
+                types.getString("MessageContentViewHolder"));
+    }
+
+    @Test
+    public void olderProfileRetainsCompleteConfiguredMessageSelectors() throws Exception {
+        JSONObject hooks = profile(340013).getJSONObject("hooks");
+        JSONObject bind = hooks.getJSONObject("message.bind").getJSONObject("target");
+        assertEquals("com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
+                bind.getString("class"));
+        assertEquals("bind", bind.getString("name"));
+        assertFalse(bind.getBoolean("static"));
+        assertEquals(17, bind.getInt("parameterCount"));
+        assertEquals(17, bind.getJSONObject("parameterTypes").length());
+        assertEquals("com.discord.chat.presentation.message.messagepart.MessageContentAccessory",
+                bind.getJSONObject("parameterTypes").getString("0"));
+        assertEquals("void", bind.getString("returnType"));
+        assertEquals(6, bind.length());
+
+        JSONObject render = hooks.getJSONObject("message.render").getJSONObject("target");
+        assertEquals("com.discord.chat.presentation.message.view.MessageContentView",
+                render.getString("class"));
+        assertEquals("setMessageContent-hYrISQc", render.getString("name"));
+        assertFalse(render.getBoolean("static"));
+        assertEquals(34, render.getInt("parameterCount"));
+        assertFalse(render.has("minParameterCount"));
+        assertFalse(render.has("selection"));
+        assertEquals(34, render.getJSONObject("parameterTypes").length());
+        assertEquals("com.discord.chat.presentation.message.messagepart.MessageMargins",
+                render.getJSONObject("parameterTypes").getString("0"));
+        assertEquals("com.discord.chat.bridge.structurabletext.StructurableText",
+                render.getJSONObject("parameterTypes").getString("1"));
+        assertEquals("void", render.getString("returnType"));
+        assertEquals(6, render.length());
+
+        JSONObject conversion = hooks.getJSONObject("message.textConversion");
+        JSONObject target = conversion.getJSONObject("target");
+        assertEquals("com.discord.chat.presentation.textutils.TextUtilsKt", target.getString("class"));
+        assertEquals("toSpannable", target.getString("name"));
+        assertTrue(target.getBoolean("static"));
+        assertEquals(29, target.getInt("parameterCount"));
+        assertEquals(29, target.getJSONObject("parameterTypes").length());
+        assertEquals("com.discord.chat.bridge.structurabletext.StructurableText",
+                target.getJSONObject("parameterTypes").getString("0"));
+        assertEquals("com.facebook.drawee.span.DraweeSpanStringBuilder", target.getString("returnType"));
+        assertEquals(6, target.length());
+        assertEquals(0, conversion.getInt("contentArgument"));
+        assertEquals(1, conversion.getInt("contextArgument"));
+    }
+
+    @Test
+    public void olderProfileRefreshUsesVerifiedHolderCacheAndObservableMembers() throws Exception {
+        JSONObject root = profile(340013);
+        JSONObject fields = root.getJSONObject("fields");
+        assertEquals("d", fields.getJSONObject("RecyclerViewLayoutParams").getString("viewHolder"));
+        assertEquals("lastMessageContent",
+                fields.getJSONObject("MessageContentViewHolder").getString("bindCache"));
+        assertEquals("mObservable", fields.getJSONObject("RecyclerViewAdapter").getString("observable"));
+        JSONObject holder = fields.getJSONObject("RecyclerViewViewHolder");
+        assertEquals("itemView", holder.getString("itemView"));
+        assertEquals("mBindingAdapter", holder.getString("bindingAdapter"));
+        assertEquals("mOwnerRecyclerView", holder.getString("recyclerView"));
+        JSONObject accessors = root.getJSONObject("accessors");
+        assertEquals("d", accessors.getJSONObject("RecyclerViewAdapterObservable")
+                .getString("notifyItemChanged"));
+        assertEquals("getBindingAdapterPosition", accessors.getJSONObject("RecyclerViewViewHolder")
+                .getString("getBindingAdapterPosition"));
+        assertEquals("getAbsoluteAdapterPosition", accessors.getJSONObject("RecyclerViewViewHolder")
+                .getString("getAbsoluteAdapterPosition"));
+    }
+
+    @Test
+    public void olderProfileClickUsesExactNativeSyntheticConstructorAndDefaultMask() throws Exception {
+        JSONObject click = profile(340013).getJSONObject("iconClick");
+        assertTrue(click.getBoolean("enabled"));
+        assertFalse(click.has("reason"));
+        assertEquals("constructorProxy", click.getString("protocol"));
+        assertEquals("com.discord.span.utilities.spannable.ClickableSpan", click.getString("spanClass"));
+        assertEquals("android.text.style.ClickableSpan", click.getString("requiredSuperclass"));
+        assertEquals(1, click.getJSONArray("interfaces").length());
+        assertEquals("com.discord.react_gesture_handler.nested_touch.NestedClickableSpan",
+                click.getJSONArray("interfaces").getString(0));
+        JSONObject constructor = click.getJSONObject("constructor");
+        assertEquals(2, constructor.length());
+        String[] expectedTypes = {
+                "com.discord.react_gesture_handler.nested_touch.NestedClickableSpan$TouchPriority",
+                "java.lang.Integer", "java.lang.Integer", "java.lang.Integer", "float",
+                "java.lang.Boolean", "kotlin.jvm.functions.Function1", "kotlin.jvm.functions.Function1",
+                "int", "kotlin.jvm.internal.DefaultConstructorMarker"
+        };
+        org.json.JSONArray parameterTypes = constructor.getJSONArray("parameterTypes");
+        org.json.JSONArray arguments = constructor.getJSONArray("arguments");
+        assertEquals(10, parameterTypes.length());
+        assertEquals(10, arguments.length());
+        for (int i = 0; i < expectedTypes.length; i++) {
+            assertEquals("native constructor parameter " + i, expectedTypes[i], parameterTypes.getString(i));
+        }
+        for (int i : new int[]{0, 1, 2, 3, 5, 6, 9}) {
+            assertEquals("null", arguments.getJSONObject(i).getString("kind"));
+            assertEquals(1, arguments.getJSONObject(i).length());
+        }
+        JSONObject floatArgument = arguments.getJSONObject(4);
+        assertEquals("float", floatArgument.getString("kind"));
+        assertEquals(0.0, floatArgument.getDouble("value"), 0.0);
+        assertEquals(2, floatArgument.length());
+        JSONObject callback = arguments.getJSONObject(7);
+        assertEquals("callback", callback.getString("kind"));
+        assertEquals("kotlin.jvm.functions.Function1", callback.getString("interface"));
+        assertEquals("invoke", callback.getString("method"));
+        assertEquals("toggleTranslation", callback.getString("action"));
+        assertEquals(4, callback.length());
+        JSONObject mask = arguments.getJSONObject(8);
+        assertEquals("integer", mask.getString("kind"));
+        // Default the first seven parameters (including DEFAULT/150f/false/long press),
+        // but never default away the on-click callback at bit 7.
+        assertEquals(127, mask.getInt("value"));
+        assertEquals(0, mask.getInt("value") & 128);
+        assertEquals(2, mask.length());
     }
 }

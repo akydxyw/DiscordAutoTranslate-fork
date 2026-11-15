@@ -49,7 +49,7 @@ public final class IconClickSpanFactory {
     }
 
     @Nullable
-    private static Object createByConstructor(ClassLoader hostCl, String messageId,
+    static Object createByConstructor(ClassLoader hostCl, String messageId,
                                                JSONObject spec) throws Exception {
         Class<?> spanClass = configuredClass(hostCl, spec.optString("spanClass", ""));
         Class<?> expectedSuperclass = configuredClass(
@@ -104,7 +104,12 @@ public final class IconClickSpanFactory {
         }
         switch (argument.optString("kind", "")) {
             case "null": return null;
-            case "integer": return argument.optInt("value");
+            case "integer": return argument.getInt("value");
+            case "float":
+                double value = argument.getDouble("value");
+                float floating = (float) value;
+                return Double.isFinite(value) && Float.isFinite(floating)
+                        ? floating : INVALID_ARGUMENT;
             case "callback":
                 Class<?> callbackInterface = configuredClass(
                         hostCl, argument.optString("interface", ""));

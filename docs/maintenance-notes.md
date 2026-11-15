@@ -18,7 +18,7 @@
 
 - 352017 的 `smali/q9/q.smali:764` 为 `b` 的完整描述符；按 Java 参数计数为 34（`J`/`D` 各一个参数），返回 `void`。目标中的 0–33 每个参数类型都必须精确配置，不能只按数量或部分签名匹配。
 - `inputSource=arguments`、`modelArgument=1`、`messageIdArgument=3`、`host.source=this` 与该实例方法对应。描述 `n7.c.j`、标题 `n7.c.f`、字段 `n7.c.g`；结构化字段名/值为 `n7.o.c/d`，不是原始字符串 `a/b`。
-- 340013 保留原目标和 accessory 参数 1；`inputSource=accessory`、宿主字段 `itemView`、语义 getter `getMessageId/getEmbed/getDescription/getTitle/getFields/getName/getValue` 由 profile 明确声明。旧模型源码未找到，不猜测 `Embed` 或 `EmbedField` 全限定名。
+- 340013 已按用户提供的该版 smali 核实9参数入口及 accessory 参数1、宿主字段 itemView；真实 Embed/EmbedField 类型已映射。ID getter 必须通过两个 accessory 独立类型访问器映射 getMessageId-3Eiw7ao，不能继续使用未修饰的全局 getMessageId；其他结构化getter与smali吻合。
 - 专用全局 `embedHolderViewField` 与 `embed*Getter` 已移除，两版复用同一个配置选择的绑定入口。当前 `4493cee` 已获用户整体功能正常确认；多卡片、全部字段、编辑及回收复用边界未逐项记录，不声称穷尽验证。
 
 ## 投票配置核实
@@ -111,6 +111,15 @@
 - 现将既有 `<keepN/>` 机制统一用于 INLINE_CODE/OPAQUE/CODE_BLOCK，事件字段 retainedMarker、公共语法 RetainedNodeMarkers、拒绝 RETAINED_MARKER。移除 InlineCodeMarkers/inlineCodeMarker/INLINE_CODE_MARKER 旧接口及空格占位路径；没有新旧标记协议同时运行。计数、源hash、请求/回填共用同次 occurrence，内部模型不读取/序列化。null 不产生标记，URL/实际emoji仍保留锚点规则，代码过滤不变。
 - 列表项以保留叶开头时，ITEM_START 记录首锚点项目符号归属，唯一token只消费紧邻首锚点且独占该行前缀的项目符号，不在无文字槽的间隔报UNASSIGNED_TEXT，也不吞掉前一项正文。源LF/标题逻辑边界仍沿当前计划，不补换行。
 - 回归覆盖时间戳样未知节点、共享/空/组合保留叶、代码/mention/URL/style/list混排、无getter读取、模型标记损坏和旧空格hash失效；原来缺标记拒绝保留，成功fixture显式回带标记，测试helper不偷偷补标记。CI和设备结果分别验证，不把测试成功当消息成功。
+
+## 340013 退化定位与恢复
+
+- b12de30 已安装到设备（APK SHA核对一致），Discord当前versionCode340013。14:10/14:11多次新进程都成功安装正文三Hook及Embed，但bind idValid=false/contentClass=null，后续identity=false而跳过图标；Embed读取报IllegalStateException。不是LSPosed未启用/目标未命中。
+- 错误ID/content getter自初版profile遗留；7748df8公共反射改精确匹配却未更新340013 Kotlin修饰名，是明确退化。正文现在只读getMessageContent，两个Accessory ID采用完整类型映射，删除旧全局getMessageId。
+- 四个入口按smali完整签名17/34/29/9参数配置，移除340013 namePrefix/minParameterCount/mostParameters，Embed列入必需Hook。Primitive/Annotated及公开copy策略核对有效，不新增构造兜底。
+- fb8b499明确关闭旧版点击；现在复用唯一constructorProxy，选原生10参数synthetic构造器/mask127及float占位，原生默认priority/宽度/underline/长按，参数7保留统一切换回调。352017七参数协议不变。
+- 刷新metadata从mViewHolder/notifyItemRangeChanged修正为LayoutParams.d/Observable.d，并映射holder.lastMessageContent清绑定缓存，所有操作仍在RowRefresher。
+- 新增实际构造/运行屏障/点击状态切换及类型访问器/绑定缓存/adapter通知回归，模拟类型仅替换不可在Java声明的Kotlin修饰名，不冒充实机证据。新版Actions/设备结果另记，回复/Poll不在本轮扩展范围。
 
 ## 冗余与规则审计后的统一清理
 
