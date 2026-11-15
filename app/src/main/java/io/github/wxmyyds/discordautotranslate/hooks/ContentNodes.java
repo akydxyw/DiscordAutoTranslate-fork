@@ -680,6 +680,7 @@ public final class ContentNodes {
     private static final class BoundaryContext {
         final ContentTree.Event event;
         final int sourceLf;
+        final int headingBreaks;
         final int sourceLines;
         final int listDepth;
         final int[] gapKinds;
@@ -692,7 +693,8 @@ public final class ContentNodes {
 
         BoundaryContext(ContentTree.Event event, PlanWalk walk, int sourceLines) {
             this.event = event;
-            this.sourceLf = walk.separatorNewlines;
+            this.sourceLf = walk.separatorNewlines - walk.headingBreaks;
+            this.headingBreaks = walk.headingBreaks;
             this.sourceLines = sourceLines;
             this.listDepth = walk.listLevel;
             this.gapKinds = walk.gapKinds.clone();
@@ -719,6 +721,7 @@ public final class ContentNodes {
                     + " " + side + "ListDepth=" + listDepth
                     + " " + side + "SourceLines=" + sourceLines
                     + " " + side + "SourceLfBefore=" + sourceLf
+                    + " " + side + "GapHeadingBreaks=" + headingBreaks
                     + " " + side + "GapWhitespaceNodes=" + whitespaceNodes
                     + " " + side + "GapInlineCode=" + gapKinds[ContentTree.Kind.INLINE_CODE.ordinal()]
                     + " " + side + "GapOpaque=" + gapKinds[ContentTree.Kind.OPAQUE.ordinal()]
@@ -760,6 +763,10 @@ public final class ContentNodes {
         PlanWalk w = new PlanWalk();
         java.util.ArrayDeque<Integer> listStarts = new java.util.ArrayDeque<>();
         for (ContentTree.Event event : tree.events) {
+            if (event.headingBreakBefore) {
+                w.separatorNewlines++;
+                w.headingBreaks++;
+            }
             switch (event.kind) {
                 case LIST_START:
                     w.listStarts++;
@@ -840,6 +847,7 @@ public final class ContentNodes {
         final AlignmentPlan plan = new AlignmentPlan();
         int group;
         int separatorNewlines;
+        int headingBreaks;
         int listLevel;
         boolean forceNewGroup;
         final int[] gapKinds = new int[ContentTree.Kind.values().length];
@@ -900,6 +908,7 @@ public final class ContentNodes {
         w.plan.lineBreakBefore.add(lineBoundary);
         w.plan.sourceLineCounts.add(sourceLines);
         w.separatorNewlines = 0;
+        w.headingBreaks = 0;
         java.util.Arrays.fill(w.gapKinds, 0);
         w.whitespaceNodes = 0;
         w.itemStarts = 0;

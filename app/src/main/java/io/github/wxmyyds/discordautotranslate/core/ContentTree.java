@@ -71,9 +71,13 @@ public final class ContentTree {
         public final boolean styled;
         /** Captured semantic container occurrences, root to leaf; no rereading host members. */
         public final List<Node> containers;
-        private Event(EventKind kind, Node node, boolean styled, List<Node> containers) {
+        /** Exact heading occurrence transition not already separated by captured source LF. */
+        public final boolean headingBreakBefore;
+        private Event(EventKind kind, Node node, boolean styled, List<Node> containers,
+                      boolean headingBreakBefore) {
             this.kind = kind; this.node = node; this.styled = styled;
             this.containers = Collections.unmodifiableList(new ArrayList<>(containers));
+            this.headingBreakBefore = headingBreakBefore;
         }
     }
 
@@ -82,9 +86,9 @@ public final class ContentTree {
     public final int segmentCount;
     private ContentTree(Node root) {
         this.root = root;
-        List<Event> output = new ArrayList<>();
-        emit(root, false, new ArrayList<>(), output);
-        events = Collections.unmodifiableList(output);
+        Emitter emitter = new Emitter();
+        emitter.emit(root, false, new ArrayList<>());
+        events = Collections.unmodifiableList(emitter.output);
         int count = 0;
         for (Event event : events) if (event.kind == EventKind.NODE) count += event.node.segmentCount;
         segmentCount = count;
@@ -177,26 +181,64 @@ public final class ContentTree {
             for (Node child : node.children) appendText(child, out);
     }
 
-    private static void emit(Node node, boolean styled, List<Node> containers, List<Event> out) {
-        if (node.kind == Kind.SEQUENCE) {
-            for (Node child : node.children) emit(child, styled, containers, out);
-        } else if (node.kind == Kind.CONTAINER) {
-            boolean nextStyle = styled || TextExtractor.isInlineStyleContainer(node.semantic);
-            containers.add(node);
-            for (Node child : node.children) emit(child, nextStyle, containers, out);
-            containers.remove(containers.size() - 1);
-        } else if (node.kind == Kind.LIST) {
-            out.add(new Event(EventKind.LIST_START, node, styled, containers));
-            containers.add(node);
-            for (Node item : node.children) {
-                out.add(new Event(EventKind.ITEM_START, item, styled, containers));
-                emit(item, styled, containers, out);
-                out.add(new Event(EventKind.ITEM_END, item, styled, containers));
+    /** Normalize heading block separation once, inside the existing captured-node emit traversal. */
+    private static final class Emitter {
+        final List<Event> output = new ArrayList<>();
+        Node previousHeading;
+        boolean hasContent;
+        boolean separated;
+
+        void emit(Node node, boolean styled, List<Node> containers) {
+            if (node.kind == Kind.SEQUENCE) {
+                for (Node child : node.children) emit(child, styled, containers);
+            } else if (node.kind == Kind.CONTAINER) {
+                boolean nextStyle = styled || TextExtractor.isInlineStyleContainer(node.semantic);
+                containers.add(node);
+                for (Node child : node.children) emit(child, nextStyle, containers);
+                containers.remove(containers.size() - 1);
+            } else if (node.kind == Kind.LIST) {
+                add(EventKind.LIST_START, node, styled, containers);
+                containers.add(node);
+                for (Node item : node.children) {
+                    add(EventKind.ITEM_START, item, styled, containers);
+                    emit(item, styled, containers);
+                    add(EventKind.ITEM_END, item, styled, containers);
+                }
+                containers.remove(containers.size() - 1);
+                add(EventKind.LIST_END, node, styled, containers);
+            } else if (node.original != null) {
+                add(EventKind.NODE, node, styled, containers);
             }
-            containers.remove(containers.size() - 1);
-            out.add(new Event(EventKind.LIST_END, node, styled, containers));
-        } else if (node.original != null) {
-            out.add(new Event(EventKind.NODE, node, styled, containers));
+        }
+
+        void add(EventKind kind, Node node, boolean styled, List<Node> containers) {
+            boolean headingBreak = false;
+            if (kind == EventKind.ITEM_START || (kind == EventKind.NODE && node.kind == Kind.BREAK)) {
+                separated = true;
+            } else if (kind == EventKind.NODE) {
+                if (node.kind == Kind.TEXT && (node.text == null || BlankLines.isBlank(node.text))) {
+                    if (node.text != null) separated |= hasLf(node.text, 0, node.text.length());
+                } else {
+                    Node heading = null;
+                    for (Node container : containers) {
+                        if ("HeadingContentNode".equals(container.semantic)) heading = container;
+                    }
+                    boolean leadingLf = node.kind == Kind.TEXT
+                            && hasLf(node.text, 0, node.leadingEnd);
+                    headingBreak = hasContent && heading != previousHeading
+                            && (heading != null || previousHeading != null) && !separated && !leadingLf;
+                    hasContent = true;
+                    previousHeading = heading;
+                    separated = node.kind == Kind.TEXT
+                            && hasLf(node.text, node.trailingStart, node.text.length());
+                }
+            }
+            output.add(new Event(kind, node, styled, containers, headingBreak));
+        }
+
+        private static boolean hasLf(String text, int start, int end) {
+            for (int i = start; i < end; i++) if (text.charAt(i) == '\n') return true;
+            return false;
         }
     }
 }

@@ -5,7 +5,6 @@ import static org.junit.Assert.*;
 import io.github.wxmyyds.discordautotranslate.core.ContentTree;
 import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.TextContentNode;
-import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.HeadingContentNode;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.ParagraphContentNode;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.StrongContentNode;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.LinkContentNode;
@@ -53,11 +52,17 @@ public class BoundaryDiagnosticsTest {
     }
 
     @Test public void siblingContainersAndSharedContainerOccurrencesRemainDistinct() {
-        String between = ambiguous(Arrays.asList(new HeadingContentNode(
-                Arrays.asList(new TextContentNode("secret")), 1), new TextContentNode(" "),
-                new ParagraphContentNode(Arrays.asList(new TextContentNode("hidden")))), "译文").structure;
-        assertTrue(between.contains("leftPath=HeadingContentNode"));
-        assertTrue(between.contains("rightPath=ParagraphContentNode"));
+        // Nonheading, nonstyled siblings retain ambiguity in one interval; nesting distinguishes paths.
+        String between = ambiguous(Arrays.asList(new ParagraphContentNode(
+                Arrays.asList(new TextContentNode("secret"))), new TextContentNode(" "),
+                new ParagraphContentNode(Arrays.asList(new ParagraphContentNode(
+                        Arrays.asList(new TextContentNode("hidden")))))), "译文").structure;
+        assertTrue(between.contains("leftPath=ParagraphContentNode "));
+        assertTrue(between.contains("rightPath=ParagraphContentNode/ParagraphContentNode"));
+        assertTrue(between.contains("leftStyled=false"));
+        assertTrue(between.contains("rightStyled=false"));
+        assertTrue(between.contains("rightSourceLfBefore=0"));
+        assertTrue(between.contains("rightGapHeadingBreaks=0"));
         assertTrue(between.contains("sameContainerPath=false"));
         ParagraphContentNode shared = new ParagraphContentNode(Arrays.asList(new TextContentNode("same")));
         String repeated = ambiguous(Arrays.asList(shared, shared), "译文").structure;

@@ -90,8 +90,9 @@ public class ContentRejectionTest {
     }
 
     @Test public void ambiguousSourceBoundaryIsNotClaimedAsAModelCountError() {
-        List<?> source = Arrays.asList(new ContentNodesTest.HeadingContentNode(
-                Arrays.asList(new TextContentNode("Title")), 1), new TextContentNode(" "),
+        // Paragraphs do not normalize heading block LFs, so this remains a true same-line boundary.
+        List<?> source = Arrays.asList(new ContentNodesTest.ParagraphContentNode(
+                Arrays.asList(new TextContentNode("Title"))), new TextContentNode(" "),
                 new TextContentNode("5M+ FREE TOKENS"));
         rejected(source, "标题 500万以上免费令牌", SOURCE_BOUNDARY_AMBIGUOUS);
     }

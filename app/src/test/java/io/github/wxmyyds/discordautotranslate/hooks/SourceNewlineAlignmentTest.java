@@ -1,6 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
@@ -31,7 +32,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/** Captured source LF boundaries, not extraction's synthetic separators, prove slot alignment. */
+/** Captured source LF and normalized heading block boundaries prove slot alignment. */
 public class SourceNewlineAlignmentTest {
     private static final String URL = "https://discord.gg/IJYuv3wZ";
     private static final String EMOJI = "\uD83D\uDCE2";
@@ -67,12 +68,45 @@ public class SourceNewlineAlignmentTest {
     }
 
     @Test
-    public void sameLineHeadingAndPlainNodesCannotBeInventedIntoSeparateLines() {
-        List<Object> nodes = list(new HeadingContentNode(list(text("Heading")), 1),
-                text(" "), text("Body"));
-        rejected(compiled(nodes), "标题\n正文", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
-        rejected(compiled(nodes), "标题\n\n正文", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
-        assertEquals("Heading Body", extracted(compiled(nodes)));
+    public void headingBlockBeforePlainTextKeepsInterveningSpaceAndAlignsAsTwoLines() {
+        // Exact heading occurrence transitions now supply a shared block LF, not same-line ambiguity.
+        HeadingContentNode heading = new HeadingContentNode(list(text("Heading")), 1);
+        TextContentNode space = text(" ");
+        TextContentNode body = text("Body");
+        ContentTree tree = compiled(list(heading, space, body));
+        assertEquals("Heading \nBody", extracted(tree));
+        assertEquals(2, tree.segmentCount);
+        assertFalse(tree.events.get(0).headingBreakBefore);
+        assertFalse(tree.events.get(1).headingBreakBefore);
+        assertTrue(tree.events.get(2).headingBreakBefore);
+
+        List<Object> out = replaced(tree, "标题\n正文");
+        assertEquals(3, out.size());
+        HeadingContentNode rebuilt = (HeadingContentNode) out.get(0);
+        assertEquals(1, rebuilt.component2());
+        assertEquals("标题", content(rebuilt.getContent().get(0)));
+        assertSame(space, out.get(1));
+        assertEquals(" ", content(out.get(1)));
+        assertEquals("正文", content(out.get(2)));
+        assertEquals("标题 \n正文", extracted(compiled(out)));
+        assertEquals("Heading", content(heading.getContent().get(0)));
+        assertEquals("Body", body.getContent());
+        assertEquals("Heading \nBody", extracted(tree));
+
+        ContentNodes.Rejection merged = rejected(tree, "标题 正文", ContentNodes.RejectionReason.LINE_COUNT);
+        assertEquals(2, merged.expected);
+        assertEquals(1, merged.actual);
+        ContentNodes.Rejection split = rejected(tree, "标题\n\n正文", ContentNodes.RejectionReason.LINE_COUNT);
+        assertEquals(2, split.expected);
+        assertEquals(1, split.actual);
+        ContentNodes.Rejection extraLine = rejected(tree, "标题\n正文\n多余",
+                ContentNodes.RejectionReason.LINE_COUNT);
+        assertEquals(2, extraLine.expected);
+        assertEquals(3, extraLine.actual);
+        ContentNodes.Rejection extraParagraph = rejected(tree, "标题\n正文\n\n多余",
+                ContentNodes.RejectionReason.PARAGRAPH_EXTRA);
+        assertEquals(1, extraParagraph.expected);
+        assertEquals(2, extraParagraph.actual);
     }
 
     @Test
