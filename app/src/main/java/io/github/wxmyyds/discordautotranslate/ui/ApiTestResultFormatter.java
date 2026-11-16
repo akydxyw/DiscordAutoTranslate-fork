@@ -43,6 +43,9 @@ final class ApiTestResultFormatter {
         if (!failure.exceptionType.isEmpty()) {
             message.append(strings.get(R.string.result_failure_exception, failure.exceptionType));
         }
+        if (failure.upstreamErrorBody != null && !failure.upstreamErrorBody.isEmpty()) {
+            message.append(strings.get(R.string.result_upstream_error, failure.upstreamErrorBody));
+        }
         // A failed result must never expose even an accidentally supplied partial translation.
         return message.toString();
     }

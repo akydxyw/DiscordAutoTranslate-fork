@@ -2,6 +2,7 @@ package io.github.wxmyyds.discordautotranslate.ui;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -149,6 +150,20 @@ public class ApiTestResultFormatterTest {
     }
 
     @Test
+    public void upstreamErrorBodyIsPassedThroughUnmodified() throws Exception {
+        String body = "{\"error\":{\"message\":\"model not found\"}}\nraw detail";
+        ApiTester.Failure failure = failure(TranslationException.Kind.HTTP,
+                TranslationException.Reason.HTTP_ERROR, 404, "UpstreamHttpException", body);
+        RecordingStrings strings = new RecordingStrings();
+        String output = ApiTestResultFormatter.format(
+                result(ApiTester.TestKind.CONNECTION, null, 8L, failure), strings);
+        Call upstream = strings.calls.get(strings.calls.size() - 1);
+        assertEquals(R.string.result_upstream_error, upstream.resource);
+        assertEquals(Arrays.asList(body), upstream.args);
+        assertTrue(output.contains(body));
+    }
+
+    @Test
     public void absentHttpStatusAndExceptionTypeDoNotProduceInventedDetails() throws Exception {
         RecordingStrings strings = new RecordingStrings();
         ApiTestResultFormatter.format(result(ApiTester.TestKind.TRANSLATION, null, 0L,
@@ -189,11 +204,16 @@ public class ApiTestResultFormatterTest {
 
     private static ApiTester.Failure failure(TranslationException.Kind kind,
             TranslationException.Reason reason, int status, String type) throws Exception {
+        return failure(kind, reason, status, type, null);
+    }
+
+    private static ApiTester.Failure failure(TranslationException.Kind kind,
+            TranslationException.Reason reason, int status, String type, String upstreamBody) throws Exception {
         Constructor<ApiTester.Failure> constructor = ApiTester.Failure.class.getDeclaredConstructor(
                 TranslationException.Kind.class, TranslationException.Reason.class,
-                int.class, String.class);
+                int.class, String.class, String.class);
         constructor.setAccessible(true);
-        return constructor.newInstance(kind, reason, status, type);
+        return constructor.newInstance(kind, reason, status, type, upstreamBody);
     }
 
     private static ApiTester.Result result(ApiTester.TestKind kind, String translated, long elapsed,

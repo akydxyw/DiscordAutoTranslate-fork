@@ -12,36 +12,40 @@ import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 public final class ApiTester {
     public enum TestKind { CONFIGURATION, CONNECTION, TRANSLATION }
 
-    /** Content-free failure metadata; never retains a response or an exception message/cause. */
+    /** Failure metadata plus the unmodified HTTP error body for settings-test display only. */
     public static final class Failure {
         public final TranslationException.Kind kind;
         public final TranslationException.Reason reason;
         public final int httpStatus;
         public final String exceptionType;
+        @Nullable public final String upstreamErrorBody;
 
         private Failure(TranslationException.Kind kind, TranslationException.Reason reason,
-                        int httpStatus, String exceptionType) {
+                        int httpStatus, String exceptionType, @Nullable String upstreamErrorBody) {
             this.kind = kind;
             this.reason = reason;
             this.httpStatus = httpStatus;
             this.exceptionType = exceptionType;
+            this.upstreamErrorBody = upstreamErrorBody;
         }
 
         private static Failure from(Throwable failure) {
             if (failure instanceof TranslationException) {
                 TranslationException error = (TranslationException) failure;
                 Throwable cause = error.getCause();
+                String body = error instanceof JsonApiEngine.UpstreamHttpException
+                        ? ((JsonApiEngine.UpstreamHttpException) error).responseBody : null;
                 return new Failure(error.kind(), error.reason(), error.httpStatus(),
-                        (cause == null ? error : cause).getClass().getSimpleName());
+                        (cause == null ? error : cause).getClass().getSimpleName(), body);
             }
             return new Failure(TranslationException.Kind.UNKNOWN,
                     TranslationException.Reason.UNKNOWN_FAILURE, 0,
-                    failure.getClass().getSimpleName());
+                    failure.getClass().getSimpleName(), null);
         }
 
         private static Failure cancelled(int httpStatus) {
             return new Failure(TranslationException.Kind.CANCELLED,
-                    TranslationException.Reason.CANCELLED, httpStatus, "TranslationException");
+                    TranslationException.Reason.CANCELLED, httpStatus, "TranslationException", null);
         }
     }
 

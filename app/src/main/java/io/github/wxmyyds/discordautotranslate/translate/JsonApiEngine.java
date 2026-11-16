@@ -5,6 +5,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import io.github.wxmyyds.discordautotranslate.core.Config;
 import io.github.wxmyyds.discordautotranslate.core.Http;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
 import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 import io.github.wxmyyds.discordautotranslate.core.Segments;
 import io.github.wxmyyds.discordautotranslate.core.TranslationException;
@@ -38,6 +39,17 @@ public final class JsonApiEngine implements Scheduler.Engine {
     JsonApiEngine(Config.Snapshot cfg, Http http) {
         this.cfg = cfg;
         this.http = http;
+    }
+
+    /** HTTP failures retain the exact provider body for the settings-test result only. */
+    static final class UpstreamHttpException extends TranslationException {
+        final String responseBody;
+
+        UpstreamHttpException(Kind kind, Reason reason, String message, int httpStatus,
+                              String responseBody) {
+            super(kind, reason, message, httpStatus, null);
+            this.responseBody = responseBody;
+        }
     }
 
     /** Decoded exchange metadata stays with the single request owner, including late cancellation. */
@@ -198,22 +210,20 @@ public final class JsonApiEngine implements Scheduler.Engine {
         }
     }
 
-    /** 把 HTTP 错误映射为用户可读、且不暴露服务端响应正文的异常。 */
+    /** Maps HTTP status for internal classification and preserves its exact body for UI diagnostics. */
     private TranslationException classifyHttpError(Http.Response resp) {
         int status = resp.status;
-        if (status == 429) {
-            return new TranslationException(TranslationException.Kind.RATE_LIMIT,
-                    "限流", status, null);
+        if (resp.body != null && !resp.body.isEmpty()) {
+            ProjectLog.warn("api.upstream.error httpStatus=" + status + " body=" + resp.body);
         }
-        if (status == 401 || status == 403) {
-            return new TranslationException(TranslationException.Kind.HTTP,
-                    "认证失败（请检查 API 密钥）", status, null);
-        }
-        if (status >= 500) {
-            return new TranslationException(TranslationException.Kind.HTTP,
-                    "服务端错误", status, null);
-        }
-        return new TranslationException(TranslationException.Kind.HTTP,
-                "请求失败", status, null);
+        TranslationException.Kind kind = status == 429
+                ? TranslationException.Kind.RATE_LIMIT : TranslationException.Kind.HTTP;
+        TranslationException.Reason reason = status == 429
+                ? TranslationException.Reason.RATE_LIMITED : TranslationException.Reason.HTTP_ERROR;
+        String message = status == 429 ? "限流"
+                : status == 401 || status == 403 ? "认证失败（请检查 API 密钥）"
+                : status >= 500 ? "服务端错误" : "请求失败";
+        return new UpstreamHttpException(kind, reason, message, status,
+                resp.body == null ? "" : resp.body);
     }
 }

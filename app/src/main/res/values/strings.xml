@@ -64,6 +64,7 @@
     <string name="result_failure_reason">\nReason code: %1$s</string>
     <string name="result_failure_http">\nHTTP status: %1$d</string>
     <string name="result_failure_exception">\nException type: %1$s</string>
+    <string name="result_upstream_error">\nUpstream error:\n%1$s</string>
     <string name="result_category_config">Configuration</string>
     <string name="result_category_network">Network</string>
     <string name="result_category_timeout">Timeout</string>

@@ -64,6 +64,7 @@
     <string name="result_failure_reason">\n原因码：%1$s</string>
     <string name="result_failure_http">\nHTTP 状态：%1$d</string>
     <string name="result_failure_exception">\n异常类型：%1$s</string>
+    <string name="result_upstream_error">\n上游错误:\n%1$s</string>
     <string name="result_category_config">配置</string>
     <string name="result_category_network">网络</string>
     <string name="result_category_timeout">超时</string>

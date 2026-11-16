@@ -138,7 +138,7 @@ public class ApiTestDiagnosticsTest {
     }
 
     @Test
-    public void allHttpErrorsKeepActualStatusAndNeverDecodeOrExposeRawErrorBody() throws Exception {
+    public void allHttpErrorsKeepActualStatusAndPreserveRawErrorBody() throws Exception {
         for (String protocol : PROTOCOLS) {
             for (boolean streaming : new boolean[]{false, true}) {
                 for (int status : new int[]{400, 401, 403, 404, 429, 500}) {
@@ -147,12 +147,14 @@ public class ApiTestDiagnosticsTest {
                         connection.status = status;
                         Harness harness = new Harness(config(protocol, streaming, false),
                                 url -> connection);
-                        assertFailure(harness.call(kind, PRIVATE_INPUT), kind,
+                        ApiTester.Result result = harness.call(kind, PRIVATE_INPUT);
+                        assertFailure(result, kind,
                                 status == 429 ? TranslationException.Kind.RATE_LIMIT
                                         : TranslationException.Kind.HTTP,
                                 status == 429 ? TranslationException.Reason.RATE_LIMITED
                                         : TranslationException.Reason.HTTP_ERROR,
-                                status, "TranslationException");
+                                status, "UpstreamHttpException");
+                        assertEquals(PRIVATE_BODY, result.failure.upstreamErrorBody);
                         harness.assertReleased(1);
                         assertTrue(connection.disconnected);
                     }
@@ -417,7 +419,7 @@ public class ApiTestDiagnosticsTest {
     }
 
     @Test
-    public void capturedFailureLogsContainOnlyFixedKindReasonStatusAndCauseTypeMetadata()
+    public void capturedFailureLogsIncludeExactUpstreamBodyWhenEnabled()
             throws Exception {
         for (boolean enabled : new boolean[]{false, true}) {
             Config.Snapshot cfg = config(CHAT, false, enabled);
@@ -452,9 +454,16 @@ public class ApiTestDiagnosticsTest {
                             status == 200 ? TranslationException.Reason.RESPONSE_INVALID
                                     : status == 429 ? TranslationException.Reason.RATE_LIMITED
                                     : TranslationException.Reason.HTTP_ERROR,
-                            status, "TranslationException");
-                    assertEntries(enabled, start(kind, CHAT, false),
-                            "api.http.response httpStatus=" + status, completion(result));
+                            status, status == 200 ? "TranslationException" : "UpstreamHttpException");
+                    if (status == 200) {
+                        assertEntries(enabled, start(kind, CHAT, false),
+                                "api.http.response httpStatus=200", completion(result));
+                    } else {
+                        assertEntries(enabled, start(kind, CHAT, false),
+                                "api.http.response httpStatus=" + status,
+                                "api.upstream.error httpStatus=" + status + " body=" + PRIVATE_BODY,
+                                completion(result));
+                    }
                     http.assertReleased(1);
                 }
             }
@@ -685,10 +694,16 @@ public class ApiTestDiagnosticsTest {
             Object value = field.get(result.failure);
             assertFalse(value instanceof Throwable);
             assertTrue(value instanceof Enum<?> || value instanceof Integer || value instanceof String);
-            if (value instanceof String) assertEquals(exceptionType, value);
+            if ("exceptionType".equals(field.getName())) assertEquals(exceptionType, value);
+            if ("upstreamErrorBody".equals(field.getName())) {
+                String expectedBody = status > 0 && (kind == TranslationException.Kind.HTTP
+                        || kind == TranslationException.Kind.RATE_LIMIT) ? PRIVATE_BODY : null;
+                assertEquals(expectedBody, value);
+            }
             fields.add(field.getName());
         }
-        assertEquals(new HashSet<>(Arrays.asList("kind", "reason", "httpStatus", "exceptionType")), fields);
+        assertEquals(new HashSet<>(Arrays.asList("kind", "reason", "httpStatus", "exceptionType",
+                "upstreamErrorBody")), fields);
     }
 
     private static void assertResponseFailure(String protocol, boolean streaming, String response,
@@ -814,8 +829,10 @@ public class ApiTestDiagnosticsTest {
             Entry entry = entries.get(i);
             assertEquals("DiscordAutoTranslate", entry.tag);
             assertEquals(messages[i], entry.message);
-            assertEquals(messages[i].contains("outcome=FAILURE") ? Log.WARN : Log.INFO, entry.priority);
-            for (String secret : new String[]{PRIVATE_INPUT, PRIVATE_BODY, PRIVATE_URL, PRIVATE_KEY,
+            boolean upstreamBodyLine = entry.message.startsWith("api.upstream.error httpStatus=");
+            assertEquals(messages[i].contains("outcome=FAILURE") || upstreamBodyLine
+                    ? Log.WARN : Log.INFO, entry.priority);
+            if (!upstreamBodyLine) for (String secret : new String[]{PRIVATE_INPUT, PRIVATE_BODY, PRIVATE_URL, PRIVATE_KEY,
                     PRIVATE_HEADERS, "private-header-value", PRIVATE_MESSAGE, "private DM",
                     "private response", "private.invalid", ApiTester.DEFAULT_TEST_TEXT}) {
                 assertFalse(entry.message.contains(secret));
