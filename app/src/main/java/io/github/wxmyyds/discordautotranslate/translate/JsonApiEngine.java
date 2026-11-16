@@ -41,7 +41,7 @@ public final class JsonApiEngine implements Scheduler.Engine {
         this.http = http;
     }
 
-    /** HTTP failures retain the exact provider body for the settings-test result only. */
+    /** Non-2xx HTTP failures retain the exact provider body for settings-test display. */
     static final class UpstreamHttpException extends TranslationException {
         final String responseBody;
 
@@ -210,7 +210,7 @@ public final class JsonApiEngine implements Scheduler.Engine {
         }
     }
 
-    /** Maps HTTP status for internal classification and preserves its exact body for UI diagnostics. */
+    /** Classifies HTTP status, logs its exact error body under the saved gate, and retains it for UI. */
     private TranslationException classifyHttpError(Http.Response resp) {
         int status = resp.status;
         if (resp.body != null && !resp.body.isEmpty()) {

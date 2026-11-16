@@ -7,7 +7,9 @@ import androidx.annotation.Nullable;
 import java.util.HashSet;
 import java.util.Set;
 
-/** Sole project log output. Only content-free, fixed diagnostic data may be supplied. */
+/**
+ * Sole project log output. Fixed diagnostics; raw non-2xx upstream error bodies are the sole content exception.
+ */
 public final class ProjectLog {
     private static final String TAG = "DiscordAutoTranslate";
     private static final Set<String> REPORTED = new HashSet<>();

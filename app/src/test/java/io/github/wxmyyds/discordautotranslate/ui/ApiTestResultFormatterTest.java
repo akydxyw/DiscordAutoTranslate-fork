@@ -72,10 +72,10 @@ public class ApiTestResultFormatterTest {
 
     @Test
     public void knownHttpStatusesHaveActionSpecificResourcesAndKeepTheActualStatus() throws Exception {
-        int[] statuses = {400, 401, 403, 404, 429, 500, 503, 599, 418, 302};
+        int[] statuses = {400, 401, 403, 404, 500, 503, 599, 418, 302};
         int[] resources = {R.string.result_reason_http_parameters,
                 R.string.result_reason_http_authentication, R.string.result_reason_http_permission,
-                R.string.result_reason_http_not_found, R.string.result_reason_rate_limited,
+                R.string.result_reason_http_not_found,
                 R.string.result_reason_http_server, R.string.result_reason_http_server,
                 R.string.result_reason_http_server, R.string.result_reason_http_error,
                 R.string.result_reason_http_error};
@@ -88,6 +88,15 @@ public class ApiTestResultFormatterTest {
                     R.string.result_category_http, TranslationException.Kind.HTTP,
                     TranslationException.Reason.HTTP_ERROR, statuses[index], "TranslationException");
         }
+        // The production engine classifies HTTP 429 as RATE_LIMIT / RATE_LIMITED.
+        RecordingStrings rateLimit = new RecordingStrings();
+        ApiTestResultFormatter.format(result(ApiTester.TestKind.CONNECTION, null, 7L,
+                failure(TranslationException.Kind.RATE_LIMIT, TranslationException.Reason.RATE_LIMITED,
+                        429, "UpstreamHttpException")), rateLimit);
+        assertFailure(rateLimit, R.string.result_kind_connection, 7L,
+                R.string.result_reason_rate_limited, R.string.result_category_rate_limit,
+                TranslationException.Kind.RATE_LIMIT, TranslationException.Reason.RATE_LIMITED,
+                429, "UpstreamHttpException");
     }
 
     @Test
@@ -131,7 +140,7 @@ public class ApiTestResultFormatterTest {
     }
 
     @Test
-    public void realFailureConversionKeepsCauseTypeButNeverMessageOrBody() throws Exception {
+    public void nonUpstreamFailureConversionKeepsCauseTypeWithoutExceptionContent() throws Exception {
         TranslationException error = new TranslationException(TranslationException.Kind.HTTP,
                 TranslationException.Reason.HTTP_ERROR, PRIVATE_TEXT, 403,
                 new SecurityException(PRIVATE_TEXT));

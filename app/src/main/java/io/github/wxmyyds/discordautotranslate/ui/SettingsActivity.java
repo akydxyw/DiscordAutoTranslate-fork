@@ -1041,7 +1041,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     /**
      * 真实请求测试，使用本页面独立的单任务 executor。
      *
-     * @param connectionTest true=使用固定测试文本，false=使用测试文本输入框
+     * @param connectionTest true=由 ApiTester 选择固定探针，false=翻译测试文本输入框
      */
     private void runTestTranslation(boolean connectionTest) {
         if (!started || destroyed || !configurationLoaded || persistence.isLoading()
@@ -1050,8 +1050,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             return;
         }
         Config.Snapshot snapshot = snapshotFromUi();
-        final String text = connectionTest
-                ? ApiTester.DEFAULT_TEST_TEXT : testTextInput.getText().toString();
+        final String text = testTextInput.getText().toString();
         if (!connectionTest && text.trim().isEmpty()) {
             resultText.setText(R.string.status_enter_test_text);
             return;

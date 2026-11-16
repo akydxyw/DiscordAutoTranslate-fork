@@ -12,7 +12,7 @@ import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 public final class ApiTester {
     public enum TestKind { CONFIGURATION, CONNECTION, TRANSLATION }
 
-    /** Failure metadata plus the unmodified HTTP error body for settings-test display only. */
+    /** Failure metadata plus the unmodified non-2xx HTTP error body for settings-test display. */
     public static final class Failure {
         public final TranslationException.Kind kind;
         public final TranslationException.Reason reason;

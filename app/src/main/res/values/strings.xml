@@ -23,7 +23,7 @@
     <string name="toast_saved">Settings saved.</string>
     <string name="label_enabled">Enable auto-translation</string>
     <string name="label_logging_enabled">Enable project logs</string>
-    <string name="hint_logging_enabled">Save to enable settings-page logcat logs. Sync and restart to enable Discord logs. No message text, credentials, or raw responses are logged.</string>
+    <string name="hint_logging_enabled">Save to enable settings-page logcat logs; sync and restart for Discord logs. Raw upstream HTTP errors are logged and may contain sensitive information. Check before sharing.</string>
     <string name="label_protocol">Provider protocol</string>
     <string name="hint_protocol">Enter the API base URL ending in /v1. The protocol endpoint is added automatically.</string>
     <string name="label_streaming">Use streaming</string>

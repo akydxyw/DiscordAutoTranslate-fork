@@ -23,7 +23,7 @@
     <string name="toast_saved">设置已保存。</string>
     <string name="label_enabled">启用自动翻译</string>
     <string name="label_logging_enabled">启用项目日志</string>
-    <string name="hint_logging_enabled">保存后启用设置页 logcat 日志；同步并重启后启用 Discord 日志。不记录正文、凭据或原始响应。</string>
+    <string name="hint_logging_enabled">保存后启用设置页 logcat 日志；同步并重启后启用 Discord 日志。上游 HTTP 错误原文会记入日志，可能含敏感信息，分享前请检查。</string>
     <string name="label_protocol">服务协议</string>
     <string name="hint_protocol">API URL 填写到 /v1，系统会自动追加协议端点。</string>
     <string name="label_streaming">流式请求</string>

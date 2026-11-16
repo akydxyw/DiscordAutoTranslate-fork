@@ -4,7 +4,8 @@ package io.github.wxmyyds.discordautotranslate.core;
  * 翻译流程中的可分类异常。
  *
  * <p>需求 §5.5 / §8：配置错误、网络错误、超时、限流和无效响应都必须有明确反馈。
- * 因此所有失败路径都归一到 {@link Kind}，由 {@link #userMessage()} 给出可读提示。</p>
+ * 因此所有失败路径都归一到 {@link Kind} 和 {@link Reason}；宿主失败提示使用
+ * {@link #userMessage()}，设置页按结构化结果解析本地化资源。</p>
  */
 public class TranslationException extends Exception {
 
@@ -101,7 +102,7 @@ public class TranslationException extends Exception {
         return httpStatus;
     }
 
-    /** 面向用户的可读提示（设置页与诊断日志共用）。 */
+    /** 宿主翻译失败的可读提示；设置页和项目日志使用结构化诊断字段。 */
     public String userMessage() {
         switch (kind) {
             case CONFIG:

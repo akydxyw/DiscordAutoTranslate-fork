@@ -6,7 +6,7 @@ import io.github.wxmyyds.discordautotranslate.R;
 import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 import io.github.wxmyyds.discordautotranslate.translate.ApiTester;
 
-/** Sole localized settings-test presentation; accepts only the content-free failure contract. */
+/** Sole localized settings-test presentation, including unmodified upstream HTTP error bodies. */
 final class ApiTestResultFormatter {
     @FunctionalInterface
     interface Strings {
@@ -85,7 +85,6 @@ final class ApiTestResultFormatter {
                     case 401: return R.string.result_reason_http_authentication;
                     case 403: return R.string.result_reason_http_permission;
                     case 404: return R.string.result_reason_http_not_found;
-                    case 429: return R.string.result_reason_rate_limited;
                     default:
                         return failure.httpStatus >= 500
                                 ? R.string.result_reason_http_server

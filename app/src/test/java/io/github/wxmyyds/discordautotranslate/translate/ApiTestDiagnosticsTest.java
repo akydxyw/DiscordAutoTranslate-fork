@@ -236,14 +236,15 @@ public class ApiTestDiagnosticsTest {
                     connections.add(connection);
                     return connection;
                 });
+                // ApiTester owns the probe: private, empty or absent UI input cannot change the request.
                 // Same engine and repeated content: every Call must still open a fresh request.
-                for (String input : new String[]{PRIVATE_INPUT, null, " \n\t"}) {
+                for (String input : new String[]{PRIVATE_INPUT, "", null, " \n\t"}) {
                     assertSuccess(harness.call(ApiTester.TestKind.CONNECTION, input),
                             ApiTester.TestKind.CONNECTION, null);
                 }
                 assertSuccess(harness.call(ApiTester.TestKind.TRANSLATION, ApiTester.DEFAULT_TEST_TEXT),
                         ApiTester.TestKind.TRANSLATION, "你好");
-                harness.assertReleased(4);
+                harness.assertReleased(5);
                 JSONObject expected = new JSONObject(connections.get(0).output.toString("UTF-8"));
                 assertRequest(expected, cfg, ApiTester.DEFAULT_TEST_TEXT);
                 for (FakeConnection connection : connections) {
@@ -685,7 +686,7 @@ public class ApiTestDiagnosticsTest {
         assertEquals(reason, result.failure.reason);
         assertEquals(status, result.failure.httpStatus);
         assertEquals(exceptionType, result.failure.exceptionType);
-        // Inspect retained state, not toString(): no hidden body/message/cause/Throwable fields.
+        // Inspect retained state: only upstreamErrorBody may carry content; no exception message/cause.
         Set<String> fields = new HashSet<>();
         for (Field field : ApiTester.Failure.class.getDeclaredFields()) {
             if (Modifier.isStatic(field.getModifiers())) continue;
