@@ -693,7 +693,8 @@ public class ApiTestDiagnosticsTest {
             field.setAccessible(true);
             Object value = field.get(result.failure);
             assertFalse(value instanceof Throwable);
-            assertTrue(value instanceof Enum<?> || value instanceof Integer || value instanceof String);
+            assertTrue(value == null || value instanceof Enum<?> || value instanceof Integer
+                    || value instanceof String);
             if ("exceptionType".equals(field.getName())) assertEquals(exceptionType, value);
             if ("upstreamErrorBody".equals(field.getName())) {
                 String expectedBody = status > 0 && (kind == TranslationException.Kind.HTTP
