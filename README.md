@@ -2,7 +2,7 @@
 
 Discord Android 的 LSPosed 自动翻译模块，基于 LibXposed API 102。消息发送到用户配置的翻译服务，默认目标语言为简体中文。
 
-[下载最新版](https://github.com/wxmyyds/DiscordAutoTranslate/releases/latest) · [GitHub Actions](https://github.com/wxmyyds/DiscordAutoTranslate/actions)
+[下载最新版](https://github.com/wxmyyds/DiscordAutoTranslate/releases/latest) · [LSPosed 模块仓库](https://github.com/Xposed-Modules-Repo/io.github.wxmyyds.discordautotranslate) · [GitHub Actions](https://github.com/wxmyyds/DiscordAutoTranslate/actions)
 
 ## 功能与支持版本
 
@@ -26,8 +26,8 @@ Discord Android 的 LSPosed 自动翻译模块，基于 LibXposed API 102。消�
 
 1. 安装模块 APK，在 LSPosed 中启用模块，作用域勾选 `com.discord`。
 2. 打开模块设置，填写 API 基础地址、密钥和模型，选择协议及目标语言。
-3. 保存设置，强制停止并重启 Discord。模块尚未启用时也可先保存，服务连接后同步。
-4. 使用“配置检查”检查格式，“测试连接”或“测试翻译”验证实际请求。
+3. 保存并确认同步成功，强制停止并重启 Discord。模块尚未启用时也可先保存，服务连接后同步。
+4. 使用“配置检查”检查格式。“测试连接”验证请求、协议和非空结果，不检查译文防损坏；“测试翻译”和实际翻译仍保留完整译文校验。失败时显示具体原因；非 2xx HTTP 错误展示上游原文。
 
 API 基础地址示例：`https://api.openai.com/v1`，协议端点由模块追加。支持 OpenAI Compatible、OpenAI Responses、Anthropic Messages，均可选择流式或非流式请求。
 
@@ -37,7 +37,7 @@ API 基础地址示例：`https://api.openai.com/v1`，协议端点由模块追�
 
 打开“翻译范围”，选择默认翻译（黑名单模式）或默认不翻译（白名单模式），分别添加服务器、频道的翻译/不翻译规则。频道规则覆盖服务器规则；删除规则即恢复继承。私信按频道规则及默认策略处理。编辑后先“应用到草稿”，再保存、同步并重启 Discord。API 测试不受范围规则限制。
 
-在 Discord 开发者模式中复制服务器或频道 ID 后手动添加。模块不采集最近目录或真实名称；消息位置仅在运行时用于规则判定，识别失败时不会请求翻译。
+在 Discord 开发者模式中复制服务器或频道 ID 后手动添加。服务器和频道各最多 256 条规则，备注仅用于显示和搜索；修改备注或规则顺序不会清空译文。模块不采集最近目录或真实名称；消息位置仅在运行时用于规则判定，识别失败时不会请求或显示译文。
 
 ## 隐私与排障
 
