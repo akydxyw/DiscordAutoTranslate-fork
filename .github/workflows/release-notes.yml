@@ -1,0 +1,60 @@
+name: Check release notes
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/releases/Update-Log.md'
+      - '.github/scripts/release_notes.py'
+      - '.github/scripts/test_release_notes.py'
+      - '.github/workflows/release-notes.yml'
+      - '.github/workflows/release.yml'
+  push:
+    branches-ignore: [main]
+    paths:
+      - 'docs/releases/Update-Log.md'
+      - '.github/scripts/release_notes.py'
+      - '.github/scripts/test_release_notes.py'
+      - '.github/workflows/release-notes.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  release-notes:
+    name: Validate and preview (no publishing)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test shared release notes renderer
+        run: python3 -m unittest discover -s .github/scripts -p 'test_release_notes.py' -v
+
+      - name: Check update log
+        run: python3 .github/scripts/release_notes.py --check
+
+      # These versions/codes are format examples, not proposed releases or allocated versionCodes.
+      - name: Preview both release modes
+        run: |
+          set -euo pipefail
+          SOURCE_SHA=$(git rev-parse HEAD)
+          echo "## 发布说明格式预览（示例版本，不创建发布）" >> "$GITHUB_STEP_SUMMARY"
+          for MODE in stable prerelease; do
+            if [[ "$MODE" == "stable" ]]; then VERSION="0.0.0"; else VERSION="0.0.0-rc.1"; fi
+            python3 .github/scripts/release_notes.py \
+              --mode "$MODE" --version "$VERSION" --version-code 1 \
+              --source-ref "$GITHUB_REF" --source-sha "$SOURCE_SHA" \
+              --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+              --output "$RUNNER_TEMP/release-notes-$MODE.md"
+            cat "$RUNNER_TEMP/release-notes-$MODE.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/release-notes-*.md
+          if-no-files-found: error
