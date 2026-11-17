@@ -15,7 +15,7 @@ import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.CheckBox;
+import android.widget.Switch;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -125,9 +125,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private EditText systemPromptInput;
     private EditText timeoutInput;
     private EditText concurrencyInput;
-    private CheckBox enabledInput;
-    private CheckBox loggingInput;
-    private CheckBox streamingInput;
+    private Switch enabledInput;
+    private Switch loggingInput;
+    private Switch streamingInput;
+    private TextView enabledHint;
+    private TextView loggingHint;
+    private TextView streamingHint;
     private TextView statusText;
     private TextView resultText;
     private EditText testTextInput;
@@ -390,9 +393,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         statusText.setTextSize(12f);
         root.addView(statusText, matchWrap());
 
-        enabledInput = new CheckBox(this);
-        enabledInput.setText(R.string.label_enabled);
-        root.addView(enabledInput, matchWrap());
+        enabledInput = new Switch(this);
+        enabledHint = addToggle(root, enabledInput, SettingsToggleText.Setting.TRANSLATION);
 
         scopeButton = new Button(this);
         scopeButton.setText(R.string.scope_title);
@@ -403,13 +405,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         root.addView(scopeSummary, matchWrap());
         updateScopeSummary();
 
-        loggingInput = new CheckBox(this);
-        loggingInput.setText(R.string.label_logging_enabled);
-        root.addView(loggingInput, matchWrap());
-        TextView loggingHint = new TextView(this);
-        loggingHint.setTextSize(12f);
-        loggingHint.setText(R.string.hint_logging_enabled);
-        root.addView(loggingHint, matchWrap());
+        loggingInput = new Switch(this);
+        loggingHint = addToggle(root, loggingInput, SettingsToggleText.Setting.LOGGING);
+        TextView loggingPrivacy = new TextView(this);
+        loggingPrivacy.setTextSize(12f);
+        loggingPrivacy.setText(R.string.hint_logging_privacy);
+        root.addView(loggingPrivacy, matchWrap());
 
         // 供应商协议：请求体与译文解析按所选协议内置实现，
         // 不再让用户手写 JSON 请求模板与译文提取路径。
@@ -442,9 +443,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         protocolHint.setText(R.string.hint_protocol);
         root.addView(protocolHint, matchWrap());
 
-        streamingInput = new CheckBox(this);
-        streamingInput.setText(R.string.label_streaming);
-        root.addView(streamingInput, matchWrap());
+        streamingInput = new Switch(this);
+        streamingHint = addToggle(root, streamingInput, SettingsToggleText.Setting.STREAMING);
+        TextView toggleDraftHint = new TextView(this);
+        toggleDraftHint.setTextSize(12f);
+        toggleDraftHint.setText(R.string.hint_switch_draft);
+        root.addView(toggleDraftHint, matchWrap());
 
         // 注意：TYPE_TEXT_VARIATION_* 必须与 TYPE_CLASS_TEXT 组合使用。
         urlInput = addField(root, getString(R.string.label_api_url),
@@ -559,6 +563,30 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         return scroll;
     }
 
+    private TextView addToggle(LinearLayout parent, Switch input, SettingsToggleText.Setting setting) {
+        input.setShowText(false);
+        input.setTextSize(16f);
+        input.setMinimumHeight(dp(48));
+        parent.addView(input, matchWrap());
+        TextView hint = new TextView(this);
+        hint.setTextSize(12f);
+        parent.addView(hint, matchWrap());
+        input.setOnCheckedChangeListener((button, checked) -> {
+            updateToggleText(input, hint, setting);
+            markDirty();
+        });
+        updateToggleText(input, hint, setting);
+        return hint;
+    }
+
+    private void updateToggleText(Switch input, TextView hint, SettingsToggleText.Setting setting) {
+        SettingsToggleText copy = SettingsToggleText.select(setting, input.isChecked(),
+                configurationLoaded, persistedConfigInvalid, protocolSpinner == null ? null
+                        : protocolAt(protocolSpinner.getSelectedItemPosition()));
+        input.setText(getString(R.string.switch_title_state, getString(setting.title), getString(copy.state)));
+        hint.setText(copy.description);
+    }
+
     private void updateScopeSummary() {
         scopeSummary.setText(getString(R.string.scope_summary,
                 getString(scopeDraft.defaultTranslate ? R.string.scope_default_translate
@@ -662,9 +690,6 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         timeoutInput.addTextChangedListener(watcher);
         concurrencyInput.addTextChangedListener(watcher);
         testTextInput.addTextChangedListener(watcher);
-        enabledInput.setOnCheckedChangeListener((button, checked) -> markDirty());
-        loggingInput.setOnCheckedChangeListener((button, checked) -> markDirty());
-        streamingInput.setOnCheckedChangeListener((button, checked) -> markDirty());
     }
 
     private void markDirty() {
@@ -697,6 +722,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             boolean hasSelection = position >= 0 && position < 3;
             streamingInput.setEnabled(configurationLoaded && !persistedConfigInvalid && hasSelection
                     && Protocols.supportsStreaming(protocolAt(position)));
+            updateToggleText(streamingInput, streamingHint, SettingsToggleText.Setting.STREAMING);
         }
     }
 
@@ -1033,6 +1059,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         scopeButton.setEnabled(canOpenScopeEditor());
         scopeSummary.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         loggingInput.setEnabled(formAvailable);
+        updateToggleText(enabledInput, enabledHint, SettingsToggleText.Setting.TRANSLATION);
+        updateToggleText(loggingInput, loggingHint, SettingsToggleText.Setting.LOGGING);
         protocolSpinner.setEnabled(formAvailable);
         protocolSpinner.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         targetLanguageSpinner.setEnabled(formAvailable);
