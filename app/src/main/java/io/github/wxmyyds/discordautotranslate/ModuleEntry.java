@@ -24,6 +24,7 @@ import io.github.wxmyyds.discordautotranslate.hooks.InlineIconSpan;
 import io.github.wxmyyds.discordautotranslate.hooks.RerenderRegistry;
 import io.github.wxmyyds.discordautotranslate.hooks.StructurableTextFactory;
 import io.github.wxmyyds.discordautotranslate.hooks.MessageHooks;
+import io.github.wxmyyds.discordautotranslate.hooks.LocationReporter;
 import io.github.wxmyyds.discordautotranslate.hooks.PollHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.RenderDispatcher;
 import io.github.wxmyyds.discordautotranslate.hooks.HookRuntime;
@@ -314,6 +315,9 @@ public class ModuleEntry extends XposedModule {
         try {
             if (!HookRuntime.suspendAndAwait(2000L)) {
                 throw new IllegalStateException("Runtime calls have not drained; restart Discord required");
+            }
+            if (!LocationReporter.detachAndAwait(2000L)) {
+                throw new IllegalStateException("Location reporter has not stopped; restart Discord required");
             }
             // No admitted caller can now recreate a scheduler after this termination check.
             if (!Scheduler.resetAndAwait(2000L)) {

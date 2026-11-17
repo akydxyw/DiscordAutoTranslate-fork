@@ -187,8 +187,9 @@ public final class PollHooks {
                             try {
                                 TextExtractor.Result extracted = TextExtractor.extract(scope.original);
                                 StateStore.Entry state = HookBridge.get().matchingState(scope.key, extracted);
-                                display = PollTextProjection.display(scope.binding.text, state,
-                                        CardState.forKey(scope.key));
+                                display = HookBridge.get().scopeAllowsDisplay(scope.key)
+                                        ? PollTextProjection.display(scope.binding.text, state, CardState.forKey(scope.key))
+                                        : scope.binding.text;
                                 if (!accessibility && "question".equals(scope.binding.slot)) {
                                     android.text.SpannableStringBuilder text =
                                             new android.text.SpannableStringBuilder(display);

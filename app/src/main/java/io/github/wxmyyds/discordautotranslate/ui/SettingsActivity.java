@@ -2,6 +2,7 @@ package io.github.wxmyyds.discordautotranslate.ui;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,6 +28,8 @@ import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.R;
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.TranslationScope;
+import io.github.wxmyyds.discordautotranslate.core.RecentLocations;
 import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
@@ -134,6 +137,14 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private Button configCheckButton;
     private Button testConnectionButton;
     private Button testTranslationButton;
+    private Button scopeButton;
+    private TextView scopeSummary;
+    private TranslationScope scopeDraft = TranslationScope.ALL;
+    private Dialog scopeDialog;
+    private boolean scopeLoading;
+    private long scopeLoadGeneration;
+    private Bundle pendingScopeEditor;
+    private static final String STATE_SCOPE_EDITOR = "scope_editor";
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -144,6 +155,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         prefs = getSharedPreferences(LOCAL_PREFS_NAME, MODE_PRIVATE);
         installDirtyTracking();
         restoreDraft(savedInstanceState);
+        pendingScopeEditor = savedInstanceState == null ? null : savedInstanceState.getBundle(STATE_SCOPE_EDITOR);
         loadIntoUi();
         updateSaveButtonState();
         if (!persistedConfigInvalid) {
@@ -165,6 +177,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         XposedServiceConnectionHolder.bind(this);
         persistence.start();
+        if (pendingScopeEditor != null && configurationLoaded && !persistence.isLoading()) openScopeEditor();
         updateSaveButtonState();
     }
 
@@ -172,6 +185,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     protected void onStop() {
         started = false;
         persistence.stop();
+        scopeLoadGeneration++;
+        scopeLoading = false;
+        if (scopeDialog != null) {
+            pendingScopeEditor = TranslationScopeEditor.saveState(scopeDialog);
+            scopeDialog.dismiss(); scopeDialog = null;
+        }
         XposedServiceConnectionHolder.unbind(this);
         cancelPendingTest();
         updateSaveButtonState();
@@ -192,6 +211,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     @Override
     protected void onSaveInstanceState(@NonNull Bundle outState) {
         super.onSaveInstanceState(outState);
+        if (scopeDialog != null) outState.putBundle(STATE_SCOPE_EDITOR, TranslationScopeEditor.saveState(scopeDialog));
+        else if (pendingScopeEditor != null) outState.putBundle(STATE_SCOPE_EDITOR, pendingScopeEditor);
         if (persistedConfigInvalid || !hasUnsavedChanges) {
             return;
         }
@@ -201,6 +222,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             draft.putString("field_" + i, fields[i].getText().toString());
         }
         draft.putBoolean("enabled", enabledInput.isChecked());
+        draft.putString("scope", scopeDraft.toJson());
         draft.putBoolean("logging", loggingInput.isChecked());
         draft.putBoolean("streaming", streamingInput.isChecked());
         draft.putInt("protocol", protocolSpinner.getSelectedItemPosition());
@@ -223,6 +245,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 fields[i].setText(draft.getString("field_" + i));
             }
             enabledInput.setChecked(draft.getBoolean("enabled"));
+            scopeDraft = TranslationScope.parse(draft.getString("scope"));
+            updateScopeSummary();
             loggingInput.setChecked(draft.getBoolean("logging", Config.DEF_LOGGING_ENABLED));
             protocolSpinner.setSelection(draft.getInt("protocol"));
             streamingInput.setChecked(draft.getBoolean("streaming"));
@@ -267,7 +291,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private void startServiceSync() {
         if (!started || destroyed || service == null || remotePrefs == null
                 || !configurationLoaded || persistence.isLoading()
-                || saveInProgress || syncInProgress
+                || saveInProgress || syncInProgress || scopeLoading || scopeDialog != null || pendingScopeEditor != null
                 || syncAttemptGeneration == serviceGeneration) {
             return;
         }
@@ -374,6 +398,15 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         enabledInput = new CheckBox(this);
         enabledInput.setText(R.string.label_enabled);
         root.addView(enabledInput, matchWrap());
+
+        scopeButton = new Button(this);
+        scopeButton.setText(R.string.scope_title);
+        scopeButton.setOnClickListener(view -> openScopeEditor());
+        root.addView(scopeButton, matchWrap());
+        scopeSummary = new TextView(this);
+        scopeSummary.setTextSize(12f);
+        root.addView(scopeSummary, matchWrap());
+        updateScopeSummary();
 
         loggingInput = new CheckBox(this);
         loggingInput.setText(R.string.label_logging_enabled);
@@ -531,6 +564,58 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         return scroll;
     }
 
+    private void updateScopeSummary() {
+        scopeSummary.setText(getString(R.string.scope_summary,
+                getString(scopeDraft.defaultTranslate ? R.string.scope_default_translate
+                        : R.string.scope_default_do_not_translate),
+                scopeDraft.servers.size(), scopeDraft.channels.size()));
+    }
+
+    private void openScopeEditor() {
+        if (!started || destroyed || !configurationLoaded || persistedConfigInvalid
+                || persistence.isLoading() || scopeLoading || saveInProgress || syncInProgress) return;
+        scopeLoading = true;
+        final long generation = ++scopeLoadGeneration;
+        updateSaveButtonState();
+        saveExecutor.execute(() -> {
+            final List<TranslationScopeEditor.SeenChannel> recent = new ArrayList<>();
+            RuntimeException error = null;
+            try {
+                SharedPreferences directory = getSharedPreferences(RecentLocations.PREFS, MODE_PRIVATE);
+                for (RecentLocations.Entry entry : RecentLocations.parse(directory.getString(RecentLocations.KEY, "[]"))) {
+                    recent.add(new TranslationScopeEditor.SeenChannel(entry.guildId, entry.channelId));
+                }
+            } catch (RuntimeException failure) {
+                error = failure;
+            }
+            final RuntimeException failure = error;
+            persistence.post(() -> {
+                if (generation != scopeLoadGeneration) return;
+                scopeLoading = false;
+                updateSaveButtonState();
+                if (!started || destroyed || persistedConfigInvalid || syncInProgress || saveInProgress) return;
+                if (failure != null) {
+                    ProjectLog.warn("scope directory load failed exception=" + failure.getClass().getSimpleName());
+                    updateStatus(getString(R.string.scope_directory_failed));
+                    return;
+                }
+                Bundle restore = pendingScopeEditor;
+                pendingScopeEditor = null;
+                TranslationScope initial = restore == null ? scopeDraft : TranslationScope.parse(restore.getString("scope"));
+                scopeDialog = TranslationScopeEditor.show(this, initial, updated -> {
+                    scopeDraft = updated;
+                    updateScopeSummary();
+                    markDirty();
+                }, recent);
+                if (restore != null) TranslationScopeEditor.restoreState(scopeDialog, restore);
+                scopeDialog.setOnDismissListener(dialog -> {
+                    scopeDialog = null;
+                    if (started && !destroyed && pendingScopeEditor == null) startServiceSync();
+                });
+            });
+        });
+    }
+
     private EditText addField(LinearLayout parent, String label, String hint, int inputType) {
         TextView tv = new TextView(this);
         tv.setText(label);
@@ -685,6 +770,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             cancelPendingTest();
             ProjectLog.configure(Config.invalidSnapshot());
             enabledInput.setChecked(false);
+            scopeDraft = TranslationScope.ALL;
+            scopeSummary.setText("");
             loggingInput.setChecked(false);
             streamingInput.setChecked(false);
             protocolSpinner.setSelection(AdapterView.INVALID_POSITION);
@@ -718,7 +805,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                         }
                         applyLocalState(state, replaceForm);
                         updateSaveButtonState();
-                        startServiceSync();
+                        if (pendingScopeEditor != null && started && !persistedConfigInvalid) openScopeEditor();
+                        else startServiceSync();
                     });
         } catch (RuntimeException failure) {
             ProjectLog.warn("settings load end status=FAILED exception="
@@ -755,6 +843,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 fields[i].setHint(fieldHints[i]);
             }
             enabledInput.setChecked(snapshot.enabled);
+            scopeDraft = snapshot.translationScope;
+            updateScopeSummary();
             loggingInput.setChecked(snapshot.loggingEnabled);
             protocolSpinner.setSelection(positionOf(snapshot.protocol));
             streamingInput.setChecked(snapshot.streaming);
@@ -962,6 +1052,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             resetButton.setEnabled(available && persistedConfigInvalid);
         }
         enabledInput.setEnabled(formAvailable);
+        scopeButton.setEnabled(formAvailable && started && !scopeLoading);
+        scopeSummary.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         loggingInput.setEnabled(formAvailable);
         protocolSpinner.setEnabled(formAvailable);
         protocolSpinner.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
@@ -1008,6 +1100,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         MemoryPrefs memoryPrefs = new MemoryPrefs();
         memoryPrefs.put(Config.KEY_ENABLED, enabledInput.isChecked());
+        memoryPrefs.put(Config.KEY_TRANSLATION_SCOPE, scopeDraft.toJson());
         memoryPrefs.put(Config.KEY_LOGGING_ENABLED, loggingInput.isChecked());
         memoryPrefs.put(Config.KEY_PROTOCOL,
                 protocolAt(protocolSpinner.getSelectedItemPosition()));

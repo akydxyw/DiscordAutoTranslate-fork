@@ -21,7 +21,9 @@
 | `core/ContentTree`、`TextExtractor` | 按出现位置捕获结构并生成请求输入 |
 | `core/StateStore`、`TranslationTaskId`、`Scheduler`、`TranslationCache` | 状态、任务所有权、调度及结果复用 |
 | `hooks/MessageHooks`、`EmbedHooks`、`PollHooks` | 原生绑定与转换作用域；输入由 profile 指定 |
-| `hooks/HookBridge` | 唯一生产入口、身份映射、配置与引擎协调 |
+| `hooks/HookBridge` | 唯一生产入口、身份与行位置映射、范围判定、配置与引擎协调 |
+| `core/TranslationScope`、`hooks/MessageLocation` | 严格范围模型及 profile 验证的位置读取，不按名称匹配 |
+| `hooks/LocationReporter`、`core/RecentLocations*` | 单一有界后台目录上报及受限 Provider，目录不并入翻译配置 |
 | `hooks/RerenderRegistry`、`RenderDispatcher`、`RowRefresher` | 显示订阅、主线程原生重放及列表行刷新 |
 | `hooks/ContentNodes`、`StructurableTextFactory` | 按捕获计划严格回填及宿主对象重建 |
 | `translate/` | API 校验、请求及设置页测试 |
@@ -52,7 +54,7 @@ Hook 安装期间 `HookRuntime` 暂停，拦截器仅执行宿主。全部必需
 
 ## 热重载
 
-旧代次先关闭业务准入并等待已进入的调用退出，再取消请求并确认所有当前及退休调度器线程退出。随后在主线程停止图标动画和 Poll 触摸回调，清除注入 builder 及正文私有折叠测量 TextView 中的模块图标/点击 span，保留其原生文本及其他 span。通过已登记的最新原生绑定恢复宿主可见文本，确认可见及私有文本不再包含旧模块 span，最后解绑句柄并清理状态、缓存、宿主构造缓存、渲染队列和模块资源。调用、线程或 UI 清理超时及失败均拒绝热重载并要求重启；不把“请求取消”当作“线程已退出”，也不手工重写宿主文本掩盖清理失败。
+旧代次先关闭业务准入并等待已进入的调用退出，再取消请求并确认所有当前及退休调度器线程退出。确认最近目录上报线程退出后，在主线程停止图标动画和 Poll 触摸回调，清除注入 builder 及正文私有折叠测量 TextView 中的模块图标/点击 span，保留其原生文本及其他 span。通过已登记的最新原生绑定恢复宿主可见文本，确认可见及私有文本不再包含旧模块 span，最后解绑句柄并清理状态、缓存、宿主构造缓存、渲染队列和模块资源。调用、线程或 UI 清理超时及失败均拒绝热重载并要求重启；不把“请求取消”当作“线程已退出”，也不手工重写宿主文本掩盖清理失败。
 
 新代次在解绑前从旧句柄快照恢复目标 ClassLoader，用保存的 versionCode 从新 APK 读取 profile，再检查必需目标。只从该 profile 的消息绑定类恢复 loader，不能采用 `Application.attach` 的系统 loader。资料恢复、解绑或安装不完整均阻止继续安装并明确要求重启。
 

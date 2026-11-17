@@ -23,6 +23,9 @@ public final class Config {
     public static final String KEY_ENABLED = "auto_translate_enabled";
     public static final boolean DEF_ENABLED = true;
 
+    // ---- 翻译范围（默认策略、服务器及频道规则）----
+    public static final String KEY_TRANSLATION_SCOPE = "translation_scope";
+
     // ---- 项目日志（不参与翻译配置版本）----
     public static final String KEY_LOGGING_ENABLED = "logging_enabled";
     public static final boolean DEF_LOGGING_ENABLED = false;
@@ -131,6 +134,7 @@ public final class Config {
     public static class Snapshot {
         public final boolean enabled;
         public final boolean loggingEnabled;
+        public final TranslationScope translationScope;
         public final String apiUrl;
         public final String apiKey;
         public final String model;
@@ -150,6 +154,8 @@ public final class Config {
         Snapshot(SharedPreferences p) {
             enabled = readBoolean(p, KEY_ENABLED, DEF_ENABLED);
             loggingEnabled = readBoolean(p, KEY_LOGGING_ENABLED, DEF_LOGGING_ENABLED);
+            translationScope = p.contains(KEY_TRANSLATION_SCOPE)
+                    ? TranslationScope.parse(p.getString(KEY_TRANSLATION_SCOPE, null)) : TranslationScope.ALL;
             apiUrl = str(p, KEY_API_URL, DEF_API_URL);
             apiKey = str(p, KEY_API_KEY, DEF_API_KEY);
             model = str(p, KEY_MODEL, DEF_MODEL);
@@ -167,6 +173,7 @@ public final class Config {
         private Snapshot(String error) {
             enabled = DEF_ENABLED;
             loggingEnabled = DEF_LOGGING_ENABLED;
+            translationScope = TranslationScope.ALL;
             apiUrl = DEF_API_URL;
             apiKey = DEF_API_KEY;
             model = DEF_MODEL;

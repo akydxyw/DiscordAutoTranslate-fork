@@ -29,6 +29,7 @@ public class PollTextProjectionTest {
         store.onNewGeneration();
         Scheduler.reset();
         CardState.clear();
+        HookBridge.get().rememberMessageLocation(ROW, new MessageLocation(null, "223456789012345678"));
         titleKey = key("question", "Question");
         answerKey = key("answer:a", ORIGINAL);
     }

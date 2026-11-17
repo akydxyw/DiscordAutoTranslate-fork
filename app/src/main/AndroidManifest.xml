@@ -2,9 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <package android:name="com.discord" />
+    </queries>
 
     <application
         android:allowBackup="false"
+        android:forceQueryable="true"
         android:hasCode="true"
         android:label="@string/module_name"
         android:icon="@mipmap/ic_launcher"
@@ -21,6 +25,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Only Discord UID observations are accepted; the directory is never exposed externally. -->
+        <provider
+            android:name=".core.RecentLocationsProvider"
+            android:authorities="${applicationId}.recent_locations"
+            android:exported="true"
+            android:grantUriPermissions="false" />
 
         <!-- 注意：io.github.libxposed.service.XposedProvider 由
              io.github.libxposed:service 这个 AAR 自带的 manifest 声明并合并进来，

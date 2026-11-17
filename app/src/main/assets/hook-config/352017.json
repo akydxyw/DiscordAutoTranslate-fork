@@ -261,6 +261,7 @@
     "RecyclerViewAdapterObservable": "k3.n0",
     "MessageContentViewHolder": "ea.p0",
     "Message": "com.discord.chat.bridge.Message",
+    "GuildId": "com.discord.primitives.GuildId",
     "Embed": "n7.c",
     "EmbedField": "n7.o",
     "RecyclerView": "androidx.recyclerview.widget.RecyclerView",
@@ -536,7 +537,12 @@
   },
   "accessors": {
     "Message": {
-      "getId": "getId-3Eiw7ao"
+      "getId": "getId-3Eiw7ao",
+      "getChannelId": "getChannelId-o4g7jtM",
+      "getGuildId": "getGuildId-qOKuAAo"
+    },
+    "GuildId": {
+      "asString": "toString"
     },
     "RecyclerViewViewHolder": {
       "getBindingAdapterPosition": "f",

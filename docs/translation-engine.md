@@ -42,6 +42,7 @@ HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单
 |---|---|---|
 | `auto_translate_enabled` | true | 自动翻译开关 |
 | `logging_enabled` | false | 项目日志开关，不参与翻译版本 |
+| `translation_scope` | 默认翻译、无规则 | 单一 JSON 对象：`defaultTranslate`、`servers`、`channels`；规则含字符串 `id/label` 和布尔 `translate` |
 | `api_url` | `https://api.openai.com/v1` | 基础地址，自动追加协议端点 |
 | `api_key` / `extra_headers` | 空 | 密钥及每行 `Name: Value` 的额外头 |
 | `api_model` | `gpt-4o-mini` | 模型 |
@@ -58,9 +59,19 @@ HTTP 累计响应最多 1 MiB 字节，decoder/SSE 累计最多 1 MiB UTF-16 单
 
 设置页在既有持久化 executor 上读取和提交配置；包含 poison 检查的权威快照读取也在后台完成，页面重建不会在主线程等待另一个页面的提交锁。`SettingsPersistence` 统一处理读取及停止期间的延后交付；首次读取完成前禁用配置操作。页面弱订阅进程级服务连接，仅未保存草稿写入实例状态，异步完成不得覆盖已恢复草稿或后续编辑。Discord 不监听 remote preferences 变化，**保存并成功同步后重启 Discord 生效**。
 
+### 翻译范围与最近目录
+
+`TranslationScope` 是唯一规则模型：频道规则 > 服务器规则 > 默认策略。服务器/频道各最多 256 条规则；ID 只接受无前导零的正十进制 uint64，备注最多 80 UTF-16 单元且只用于显示。重复 ID、未知 JSON 键或错误类型使整份配置无效，不自动修复。未保存新键才默认全部翻译。
+
+原生 `message.bind` 按 profile 捕获 `Message` 的频道 long 和可空 `GuildId` 包装对象（null 表示私信）。两版本 ID getter 的完整名称与返回类型均核实；`GuildId.toString` 返回十进制 ID。`HookBridge` 记录有界行位置；正文及 Embed/Poll 键均回到包含它的行，位置未知时拒绝请求和译文消费。全局开关继续阻止新请求；范围 gate 位于状态创建和缓存读取之前，重试及异步交付重新核对范围和所有权。范围变化清理状态、卡片及缓存、使旧代次失效，但不改变 API 请求版本。
+
+`RecentLocations` 与配置存储分离，仅保存最近 128 个频道及其可空服务器 ID。宿主 remote preferences 在 API 102 中只读，目录只走 `LocationReporter → RecentLocationsProvider → 模块私有 preferences`：后台有界队列，每 250 ms 最多一次请求、同频道一分钟内不重复上报；失败记录固定类别，不重试、不改用其他通道。Provider 校验调用包与 Binder UID、schema/ID/频率并确认提交，不向外返回目录、消息身份、正文或凭据。模块声明 `forceQueryable` 以满足宿主反向可见性；不要求先打开设置页。线程退出失败时拒绝热重载。
+
+设置页使用独立平铺规则卡片、默认策略及搜索/编辑弹窗，不使用树形三态列表。仅“应用到草稿”交给已有配置保存链；取消不保存，旋转/停止保留编辑器草稿和正在编辑的 ID/备注/动作，远程导入不得覆盖正在编辑的副本。最近目录读取失败明确提示，不假装为空目录。目录只反映实际 bind，不是全量服务器或频道清单，不 hook 真实名称。
+
 ### 设置页 API 测试与结果
 
-三种测试使用当前表单快照，不要求先保存，也不要求 LSPosed 可用；草稿测试不会提交设置或启用日志。离线检查复用 `JsonApiEngine.validateConfig`；两个网络测试通过唯一的 `ApiTester.newCall(cfg, TestKind, text)` 请求链路运行。固定探针只由 `ApiTester` 选择，设置页传入的测试文本不影响连接测试。页面停止时主动断开其 HTTP 请求并取消 Future，迟到结果不更新页面。
+三种测试使用当前表单快照，不要求先保存，也不要求 LSPosed 可用；草稿测试不会提交设置或启用日志；不受消息服务器/频道范围限制。离线检查复用 `JsonApiEngine.validateConfig`；两个网络测试通过唯一的 `ApiTester.newCall(cfg, TestKind, text)` 请求链路运行。固定探针只由 `ApiTester` 选择，设置页传入的测试文本不影响连接测试。页面停止时主动断开其 HTTP 请求并取消 Future，迟到结果不更新页面。
 
 | 测试类型 | 成功的含义 | 结果中的译文 |
 |---|---|---|

@@ -18,6 +18,23 @@ import java.util.Map;
  */
 public class ConfigTest {
 
+    @Test
+    public void scopeDefaultsOnlyWhenAbsentAndDoesNotChangeApiVersion() {
+        Config.Snapshot defaults = Config.read(new MemoryPrefs());
+        assertEquals(TranslationScope.ALL, defaults.translationScope);
+        TranslationScope rules = new TranslationScope(false, java.util.Collections.emptyList(),
+                java.util.Collections.singletonList(new TranslationScope.Rule("123456789012345678", "notes", true)));
+        Config.Snapshot saved = Config.read(new MemoryPrefs().put(Config.KEY_TRANSLATION_SCOPE, rules.toJson()));
+        assertEquals(rules, saved.translationScope);
+        assertEquals(defaults.version(), saved.version());
+        for (Object value : new Object[]{"", "{}", false, 1, "null"}) {
+            MemoryPrefs prefs = new MemoryPrefs().put(Config.KEY_TRANSLATION_SCOPE, value);
+            Map<String, ?> before = new HashMap<>(prefs.getAll());
+            assertTrue(Config.read(prefs).configError != null);
+            assertEquals(before, prefs.getAll());
+        }
+    }
+
     /** 空配置（什么都没存）应全部使用默认值。 */
     @Test
     public void emptyPrefsUseAllDefaults() {

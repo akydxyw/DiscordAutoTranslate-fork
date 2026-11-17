@@ -11,7 +11,7 @@ import java.util.Map;
 /** Configuration persistence/sync policy, independent of service and Activity lifecycles. */
 public final class ConfigurationSync {
     public static final List<String> CONFIG_KEYS = Collections.unmodifiableList(Arrays.asList(
-            Config.KEY_ENABLED, Config.KEY_LOGGING_ENABLED, Config.KEY_API_URL,
+            Config.KEY_ENABLED, Config.KEY_LOGGING_ENABLED, Config.KEY_TRANSLATION_SCOPE, Config.KEY_API_URL,
             Config.KEY_API_KEY, Config.KEY_MODEL,
             Config.KEY_TARGET_LANG, Config.KEY_EXTRA_HEADERS, Config.KEY_SYSTEM_PROMPT,
             Config.KEY_PROTOCOL, Config.KEY_STREAMING, Config.KEY_TIMEOUT_MS,
@@ -210,6 +210,9 @@ public final class ConfigurationSync {
             Map<String, Object> raw = new LinkedHashMap<>();
             raw.put(Config.KEY_ENABLED, snapshot.enabled);
             raw.put(Config.KEY_LOGGING_ENABLED, snapshot.loggingEnabled);
+            if (!TranslationScope.ALL.equals(snapshot.translationScope)) {
+                raw.put(Config.KEY_TRANSLATION_SCOPE, snapshot.translationScope.toJson());
+            }
             raw.put(Config.KEY_PROTOCOL, snapshot.protocol);
             raw.put(Config.KEY_STREAMING, snapshot.streaming);
             putUnlessDefault(raw, Config.KEY_API_URL, snapshot.apiUrl, Config.DEF_API_URL);

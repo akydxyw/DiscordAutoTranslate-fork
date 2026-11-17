@@ -27,6 +27,42 @@ public class ConfigurationSyncTest {
     private static final String INITIALIZED = "settings_initialized";
 
     @Test
+    public void scopeUsesTheSameImportSaveAndRemoteTransactionChain() {
+        assertTrue(ConfigurationSync.CONFIG_KEYS.contains(Config.KEY_TRANSLATION_SCOPE));
+        TranslationScope scope = new TranslationScope(false, java.util.Collections.singletonList(
+                new TranslationScope.Rule("123456789012345678", "server", true)), java.util.Collections.emptyList());
+        FakePrefs local = localBeforeImport();
+        FakePrefs remote = remoteValues();
+        remote.memory.put(Config.KEY_TRANSLATION_SCOPE, scope.toJson());
+        local.outcomes.add(true);
+        assertTrue(ConfigurationSync.synchronize(local.prefs, remote.prefs).imported());
+        assertEquals(scope.toJson(), local.disk.get(Config.KEY_TRANSLATION_SCOPE));
+        assertEquals(scope, ConfigurationSync.loadLocal(local.prefs).snapshot.translationScope);
+        FakePrefs next = remoteValues();
+        next.outcomes.add(true);
+        assertTrue(ConfigurationSync.synchronize(local.prefs, next.prefs).succeeded());
+        assertEquals(scope.toJson(), next.disk.get(Config.KEY_TRANSLATION_SCOPE));
+        local.outcomes.add(true);
+        next.outcomes.add(true);
+        assertTrue(ConfigurationSync.save(local.prefs, next.prefs, Config.read(null)).succeeded());
+        assertFalse(local.disk.containsKey(Config.KEY_TRANSLATION_SCOPE));
+        assertFalse(next.disk.containsKey(Config.KEY_TRANSLATION_SCOPE));
+    }
+
+    @Test
+    public void invalidScopeCannotCreateAnEditorOrOverwriteSavedRules() {
+        for (Object value : new Object[]{"{}", "", false, 7}) {
+            FakePrefs local = localBeforeImport();
+            FakePrefs remote = remoteValues();
+            remote.memory.put(Config.KEY_TRANSLATION_SCOPE, value);
+            ConfigurationSync.Result result = ConfigurationSync.synchronize(local.prefs, remote.prefs);
+            assertEquals(ConfigurationSync.Status.INVALID_SOURCE, result.status);
+            assertEquals(0, local.editors);
+            assertEquals(0, remote.editors);
+        }
+    }
+
+    @Test
     public void firstImportFailureRestoresAbsentMarkerAndNeverPromotesAuthority() {
         FakePrefs local = localBeforeImport();
         FakePrefs remote = remoteValues();
