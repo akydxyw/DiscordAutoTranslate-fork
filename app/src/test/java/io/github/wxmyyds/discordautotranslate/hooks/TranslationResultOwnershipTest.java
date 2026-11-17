@@ -14,7 +14,10 @@ import org.junit.Test;
 public class TranslationResultOwnershipTest {
     private final HookBridge bridge = HookBridge.get();
     private final StateStore store = StateStore.get();
-    @Before public void setup() { store.onNewGeneration(); bridge.reset(); TranslationCache.get().clear(); }
+    @Before public void setup() {
+        store.onNewGeneration(); bridge.reset(); TranslationCache.get().clear();
+        bridge.rememberMessageLocation("row", new MessageLocation(null, "123456789012345678"));
+    }
     @After public void cleanup() { store.onNewGeneration(); bridge.reset(); TranslationCache.get().clear(); }
 
     @Test public void discardedOldResultCannotResetNewTranslationOrPopulateCache() {

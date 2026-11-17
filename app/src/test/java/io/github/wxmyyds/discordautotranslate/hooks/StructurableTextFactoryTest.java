@@ -78,6 +78,7 @@ public class StructurableTextFactoryTest {
             String translated = "译文第一行\n" + "完整译文".repeat(100);
             entry.translatedText = translated;
             entry.status = io.github.wxmyyds.discordautotranslate.core.StateStore.Status.TRANSLATED;
+            bridge.rememberMessageLocation(id, new MessageLocation(null, "223456789012345678"));
             bridge.rememberMessageRevision(id, null);
             bridge.rememberCanonicalContent(id, original);
             assertNull(bridge.currentTranslation(id, projected));

@@ -21,7 +21,8 @@
 | `core/ContentTree`、`TextExtractor` | 按出现位置捕获结构并生成请求输入 |
 | `core/StateStore`、`TranslationTaskId`、`Scheduler`、`TranslationCache` | 状态、任务所有权、调度及结果复用 |
 | `hooks/MessageHooks`、`EmbedHooks`、`PollHooks` | 原生绑定与转换作用域；输入由 profile 指定 |
-| `hooks/HookBridge` | 唯一生产入口、身份映射、配置与引擎协调 |
+| `hooks/HookBridge` | 唯一生产入口、身份与行位置映射、范围判定、配置与引擎协调 |
+| `core/TranslationScope`、`hooks/MessageLocation` | 严格范围模型及 profile 验证的位置读取，不按名称匹配 |
 | `hooks/RerenderRegistry`、`RenderDispatcher`、`RowRefresher` | 显示订阅、主线程原生重放及列表行刷新 |
 | `hooks/ContentNodes`、`StructurableTextFactory` | 按捕获计划严格回填及宿主对象重建 |
 | `translate/` | API 校验、请求及设置页测试 |

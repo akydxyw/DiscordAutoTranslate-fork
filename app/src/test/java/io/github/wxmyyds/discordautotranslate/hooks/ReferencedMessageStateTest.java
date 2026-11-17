@@ -24,6 +24,7 @@ public class ReferencedMessageStateTest {
         TranslationCache.get().clear();
         bridge = HookBridge.get();
         bridge.reset();
+        bridge.rememberMessageLocation(ID, new MessageLocation(null, "223456789012345678"));
         HookRuntime.activate();
     }
 

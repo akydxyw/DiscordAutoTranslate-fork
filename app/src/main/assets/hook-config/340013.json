@@ -296,7 +296,12 @@
       "getMessageId": "getMessageId-3Eiw7ao"
     },
     "Message": {
-      "getId": "getId-3Eiw7ao"
+      "getId": "getId-3Eiw7ao",
+      "getChannelId": "getChannelId-o4g7jtM",
+      "getGuildId": "getGuildId-qOKuAAo"
+    },
+    "GuildId": {
+      "asString": "toString"
     },
     "RecyclerViewViewHolder": {
       "getBindingAdapterPosition": "getBindingAdapterPosition",
@@ -342,6 +347,7 @@
     "PrimitiveStructurableText": "com.discord.chat.bridge.structurabletext.PrimitiveStructurableText",
     "AnnotatedStructurableText": "com.discord.chat.bridge.structurabletext.AnnotatedStructurableText",
     "Message": "com.discord.chat.bridge.Message",
+    "GuildId": "com.discord.primitives.GuildId",
     "TextContentNode": "com.discord.chat.bridge.contentnode.TextContentNode",
     "StrongContentNode": "com.discord.chat.bridge.contentnode.StrongContentNode",
     "LHeadingContentNode": "com.discord.chat.bridge.contentnode.LHeadingContentNode",

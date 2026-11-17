@@ -47,6 +47,24 @@ public final class HookBridge {
     /** 正文视图 → 消息 ID（有界，避免列表回收后无限增长）。 */
     private final Map<View, String> viewToMessageId = boundedMap(512);
 
+    /** Bounded server/channel locations; only native message row bindings own these records. */
+    private final Map<String, MessageLocation> messageLocations = boundedMap(512);
+
+    void rememberMessageLocation(String messageId, MessageLocation location) {
+        messageLocations.put(messageId, location);
+    }
+
+    void forgetMessageLocation(String messageId) {
+        messageLocations.remove(messageId);
+    }
+
+    /** One gate for bodies, Embed/Poll slots, retries and async ownership. Unknown location is denied. */
+    boolean translationAllowed(String key, Config.Snapshot snapshot) {
+        if (!snapshot.enabled || snapshot.configError != null) return false;
+        MessageLocation location = messageLocations.get(cardRowOf(key));
+        return location != null && snapshot.translationScope.allows(location.guildId, location.channelId);
+    }
+
     /** Only native row bindings own edit metadata; source snapshots live with state. */
     private final Map<String, MessageRevision> messageRevisions = boundedMap(512);
 
@@ -116,7 +134,8 @@ public final class HookBridge {
 
     /**
      * 更新配置。会影响翻译结果的配置变化（URL/模型/目标语言/协议/提示词/凭据）
-     * 发生后，递增状态代次使旧译文与在途任务失效（需求 §5.6、§5.7）。
+     * 或范围匹配策略变化后，递增状态代次使旧译文与在途任务失效。
+     * 纯范围备注或规则顺序变化保留状态与任务所有权（需求 §5.6、§5.7）。
      */
     public void updateConfig(Config.Snapshot c) {
         if (c == null) {
@@ -129,7 +148,8 @@ public final class HookBridge {
         Scheduler.get().setMaxConcurrency(c.maxConcurrency);
 
         // version() 已包含密钥/额外请求头指纹：凭据变更同样会使缓存与在途结果失效。
-        if (old == null || !old.version().equals(c.version())) {
+        if (old == null || !old.version().equals(c.version())
+                || !old.translationScope.sameMatchingPolicy(c.translationScope)) {
             StateStore.get().onNewGeneration();
             TranslationCache.get().clear();
             CardState.clear();
@@ -180,6 +200,7 @@ public final class HookBridge {
     public void reset() {
         viewToMessageId.clear();
         messageRevisions.clear();
+        messageLocations.clear();
         contentIdentityToMessageId.clear();
         CardState.clear();
     }
@@ -275,6 +296,7 @@ public final class HookBridge {
     /** One current capture feeds identity verification, native reconstruction and icon eligibility. */
     @Nullable
     ReferencedTranslation currentTranslation(String key, @Nullable Object content) {
+        if (!scopeAllowsDisplay(key)) return null;
         TextExtractor.Result extracted = TextExtractor.extract(content);
         StateStore.Entry state = matchingState(key, extracted);
         return state == null ? null : new ReferencedTranslation(state, content, extracted);
@@ -328,7 +350,16 @@ public final class HookBridge {
         return isPollKey(key) ? cardRowOf(key) : key.substring(0, key.lastIndexOf('\u0000'));
     }
 
+    /** Scope also gates consuming retained/cached results; the existing global-off display contract stays. */
+    boolean scopeAllowsDisplay(String key) {
+        Config.Snapshot snapshot = config;
+        MessageLocation location = messageLocations.get(cardRowOf(key));
+        return snapshot.configError == null && location != null
+                && snapshot.translationScope.allows(location.guildId, location.channelId);
+    }
+
     boolean showingOriginal(String key, StateStore.Entry entry) {
+        if (!scopeAllowsDisplay(key)) return true;
         CardState.Card card = isCardKey(key) ? CardState.forKey(key) : null;
         return isCardKey(key) ? card == null || card.showingOriginal() : entry.showingOriginal;
     }
@@ -382,17 +413,20 @@ public final class HookBridge {
         }
 
         Config.Snapshot cfg = config;
+        if (!cfg.enabled) {
+            ProjectLog.warnOnce("translation.disabled", "translation skipped: auto-translate is disabled");
+            return;
+        }
+        if (!translationAllowed(messageId, cfg)) {
+            ProjectLog.infoOnce("translation.scopeDenied", "translation skipped: translation scope denied");
+            return;
+        }
         // The single captured request keeps style ranges and retained-node anchors.
         // The segment suffix is only a cache namespace, not another request protocol.
         String requestText = ex.text;
         String hash = contentHashOf(ex, cfg);
         StateStore.Entry entry = StateStore.get().obtain(messageId, hash);
         rememberCanonicalContent(messageId, structurableText);
-        if (!cfg.enabled) {
-            ProjectLog.warnOnce("translation.disabled", "translation skipped: auto-translate is disabled");
-            // 总开关关闭：不发起新翻译，保留已有译文（需求 §2.7）。
-            return;
-        }
         if (entry.status == StateStore.Status.TRANSLATING
                 || entry.status == StateStore.Status.TRANSLATED) {
             return; // 已有在途任务或已有译文，不重复翻译（需求 §5.4 去重）。
@@ -407,15 +441,6 @@ public final class HookBridge {
         String cached = TranslationCache.get().get(hash);
         if (cached != null) {
             if (StateStore.get().useCached(entry, cached)) refreshTranslation(messageId);
-            return;
-        }
-
-        if (!cfg.isUsable()) {
-            ProjectLog.warnOnce("translation.config", "translation API configuration is unusable"
-                    + " configErrorPresent=" + (cfg.configError != null));
-            if (StateStore.get().failIdle(entry,
-                    cfg.configError != null ? cfg.configError : "API 未配置"))
-                refreshTranslation(messageId);
             return;
         }
 
@@ -435,7 +460,8 @@ public final class HookBridge {
         if (task == null) return;
         refreshTranslation(messageId);
         Scheduler.get().submit(task, requestText, engine,
-                identity -> HookRuntime.isActive() && config.enabled && StateStore.get().owns(identity),
+                identity -> HookRuntime.isActive() && translationAllowed(identity.messageId, config)
+                        && StateStore.get().owns(identity),
                 (identity, accepted, translated, error) -> {
                     try (HookRuntime.Lease lease = HookRuntime.enter()) {
                         if (lease != null) onTranslateResult(identity, accepted, translated, error);
@@ -453,9 +479,10 @@ public final class HookBridge {
                         ? ((TranslationException) error).kind().name() : "none")
                 + " causeClass=" + (error == null || error.getCause() == null
                         ? "none" : error.getCause().getClass().getSimpleName()));
-        boolean success = accepted && error == null && translated != null && !translated.isEmpty();
-        if (!StateStore.get().complete(task, accepted, translated,
-                success ? null : accepted ? describe(error) : null)) return;
+        boolean admitted = accepted && translationAllowed(task.messageId, config);
+        boolean success = admitted && error == null && translated != null && !translated.isEmpty();
+        if (!StateStore.get().complete(task, admitted, translated,
+                success ? null : admitted ? describe(error) : null)) return;
         if (success) TranslationCache.get().put(task.contentHash, translated);
         refreshTranslation(task.messageId);
     }
@@ -545,7 +572,7 @@ public final class HookBridge {
 
     /** 失败后重试：由图标点击触发（需求 §2.6）。 */
     public void retry(String messageId) {
-        if (!HookRuntime.isActive()) return;
+        if (!HookRuntime.isActive() || !translationAllowed(messageId, config)) return;
         StateStore.Entry e = StateStore.get().peek(messageId);
         if (e == null) {
             return;

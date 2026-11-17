@@ -6,6 +6,9 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Dialog;
+import android.os.Bundle;
+
 import io.github.wxmyyds.discordautotranslate.core.Config;
 import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
@@ -91,6 +94,48 @@ public class SettingsActivityTest {
             assertSame(currentTask, get(page, "testFuture"));
             assertSame(currentCall, get(page, "testCall"));
         }
+    }
+
+    @Test
+    public void scopeEditorGuardRejectsEveryLifecycleAndPersistenceBlockerWithoutConsumingRestore()
+            throws Exception {
+        for (String reason : new String[]{"stopped", "destroyed", "unloaded", "invalid",
+                "loading", "dialog", "save", "sync"}) {
+            SettingsActivity page = new SettingsActivity();
+            set(page, "started", !reason.equals("stopped"));
+            set(page, "destroyed", reason.equals("destroyed"));
+            set(page, "configurationLoaded", !reason.equals("unloaded"));
+            set(page, "persistedConfigInvalid", reason.equals("invalid"));
+            set(page, "saveInProgress", reason.equals("save"));
+            set(page, "syncInProgress", reason.equals("sync"));
+            if (reason.equals("loading")) {
+                Field loading = SettingsPersistence.class.getDeclaredField("loading");
+                loading.setAccessible(true);
+                loading.set(get(page, "persistence"), true);
+            }
+            Dialog currentDialog = reason.equals("dialog") ? new Dialog(page) : null;
+            set(page, "scopeDialog", currentDialog);
+            Bundle restore = new Bundle();
+            set(page, "pendingScopeEditor", restore);
+
+            // The button uses this same predicate. No stub widget rendering is asserted.
+            assertEquals(reason, Boolean.FALSE, invoke(page, "canOpenScopeEditor", new Class<?>[0]));
+            invoke(page, "openScopeEditor", new Class<?>[0]);
+            assertSame(restore, get(page, "pendingScopeEditor"));
+            assertSame(currentDialog, get(page, "scopeDialog"));
+        }
+    }
+
+    @Test
+    public void scopeEditorGuardAllowsReadyPageAndPendingLifecycleRestoration() throws Exception {
+        SettingsActivity page = new SettingsActivity();
+        set(page, "started", true);
+        set(page, "configurationLoaded", true);
+        assertEquals(Boolean.TRUE, invoke(page, "canOpenScopeEditor", new Class<?>[0]));
+        Bundle restore = new Bundle();
+        set(page, "pendingScopeEditor", restore);
+        assertEquals(Boolean.TRUE, invoke(page, "canOpenScopeEditor", new Class<?>[0]));
+        assertSame(restore, get(page, "pendingScopeEditor"));
     }
 
     @Test

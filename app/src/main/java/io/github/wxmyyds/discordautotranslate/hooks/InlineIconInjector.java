@@ -166,7 +166,8 @@ public final class InlineIconInjector {
                 return rendered;
             }
             String messageId = HookBridge.get().resolveMessageId(structurable);
-            boolean iconAllowed = scope.allows(messageId);
+            boolean iconAllowed = scope.allows(messageId)
+                    && HookBridge.get().scopeAllowsDisplay(messageId);
             if (!iconAllowed) {
                 ProjectLog.warnOnce("icon.noMessageIdentity", "icon injection skipped: message identity not resolved");
                 return rendered;

@@ -43,6 +43,7 @@ public class EmbedCardStateTest {
         Scheduler.MainThread.clear();
         ContentNodeTestProfile.activate(ContentNodesTest.class, EmbedCardStateTest.class);
         bridge.reset();
+        bridge.rememberMessageLocation(ROW, new MessageLocation(null, "223456789012345678"));
         store.onNewGeneration();
         TranslationCache.get().clear();
         RerenderRegistry.clear();

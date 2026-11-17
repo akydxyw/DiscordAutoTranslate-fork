@@ -68,6 +68,8 @@ public final class MessageHooks {
         if (bind == null || spec == null) {
             return;
         }
+        MessageLocation.Reader locationReader = MessageLocation.Reader.create(config,
+                bind.getParameterTypes()[spec.optInt("modelArgument", -1)]);
         ProjectLog.infoOnce("message.bind.target", "message.bind target="
                 + bind.toGenericString());
         out.add(module.hook(bind)
@@ -81,7 +83,7 @@ public final class MessageHooks {
                         RerenderRegistry.unregister(oldPreview);
                         HookBridge.get().unbindView(oldPreview);
                         try {
-                            bindPre(chain, spec);
+                            bindPre(chain, spec, locationReader);
                         } catch (Throwable t) {
                             ProjectLog.warnOnce("message.bind.exception", "message.bind processing failed with "
                                     + t.getClass().getName());
@@ -127,7 +129,8 @@ public final class MessageHooks {
     }
 
     /** Establishes the content identity mapping from the configured model argument. */
-    private static void bindPre(XposedInterface.Chain chain, JSONObject spec) {
+    private static void bindPre(XposedInterface.Chain chain, JSONObject spec,
+                                MessageLocation.Reader locationReader) {
         int modelArgument = spec.optInt("modelArgument", -1);
         if (modelArgument < 0 || modelArgument >= chain.getArgs().size()) {
             return;
@@ -151,6 +154,9 @@ public final class MessageHooks {
         if (!validMessageId) {
             return;
         }
+        HookBridge.get().forgetMessageLocation(messageId);
+        MessageLocation location = locationReader.read(model);
+        HookBridge.get().rememberMessageLocation(messageId, location);
         String revisionGetter = spec.optString("editedTimestampGetter", null);
         if (revisionGetter != null) {
             HookBridge.get().rememberMessageRevision(messageId,

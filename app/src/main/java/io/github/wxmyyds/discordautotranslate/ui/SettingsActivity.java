@@ -2,6 +2,7 @@ package io.github.wxmyyds.discordautotranslate.ui;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
@@ -14,7 +15,7 @@ import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.CheckBox;
+import android.widget.Switch;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -27,6 +28,7 @@ import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.R;
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.TranslationScope;
 import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
@@ -123,9 +125,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private EditText systemPromptInput;
     private EditText timeoutInput;
     private EditText concurrencyInput;
-    private CheckBox enabledInput;
-    private CheckBox loggingInput;
-    private CheckBox streamingInput;
+    private Switch enabledInput;
+    private Switch loggingInput;
+    private Switch streamingInput;
+    private TextView enabledHint;
+    private TextView loggingHint;
+    private TextView streamingHint;
     private TextView statusText;
     private TextView resultText;
     private EditText testTextInput;
@@ -134,6 +139,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private Button configCheckButton;
     private Button testConnectionButton;
     private Button testTranslationButton;
+    private Button scopeButton;
+    private TextView scopeSummary;
+    private TranslationScope scopeDraft = TranslationScope.ALL;
+    private Dialog scopeDialog;
+    private Bundle pendingScopeEditor;
+    private static final String STATE_SCOPE_EDITOR = "scope_editor";
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -144,6 +155,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         prefs = getSharedPreferences(LOCAL_PREFS_NAME, MODE_PRIVATE);
         installDirtyTracking();
         restoreDraft(savedInstanceState);
+        pendingScopeEditor = savedInstanceState == null ? null : savedInstanceState.getBundle(STATE_SCOPE_EDITOR);
         loadIntoUi();
         updateSaveButtonState();
         if (!persistedConfigInvalid) {
@@ -165,6 +177,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         XposedServiceConnectionHolder.bind(this);
         persistence.start();
+        if (pendingScopeEditor != null && configurationLoaded && !persistence.isLoading()) openScopeEditor();
         updateSaveButtonState();
     }
 
@@ -172,6 +185,10 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     protected void onStop() {
         started = false;
         persistence.stop();
+        if (scopeDialog != null) {
+            pendingScopeEditor = TranslationScopeEditor.saveState(scopeDialog);
+            scopeDialog.dismiss(); scopeDialog = null;
+        }
         XposedServiceConnectionHolder.unbind(this);
         cancelPendingTest();
         updateSaveButtonState();
@@ -192,6 +209,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     @Override
     protected void onSaveInstanceState(@NonNull Bundle outState) {
         super.onSaveInstanceState(outState);
+        if (scopeDialog != null) outState.putBundle(STATE_SCOPE_EDITOR, TranslationScopeEditor.saveState(scopeDialog));
+        else if (pendingScopeEditor != null) outState.putBundle(STATE_SCOPE_EDITOR, pendingScopeEditor);
         if (persistedConfigInvalid || !hasUnsavedChanges) {
             return;
         }
@@ -201,6 +220,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             draft.putString("field_" + i, fields[i].getText().toString());
         }
         draft.putBoolean("enabled", enabledInput.isChecked());
+        draft.putString("scope", scopeDraft.toJson());
         draft.putBoolean("logging", loggingInput.isChecked());
         draft.putBoolean("streaming", streamingInput.isChecked());
         draft.putInt("protocol", protocolSpinner.getSelectedItemPosition());
@@ -223,6 +243,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 fields[i].setText(draft.getString("field_" + i));
             }
             enabledInput.setChecked(draft.getBoolean("enabled"));
+            scopeDraft = TranslationScope.parse(draft.getString("scope"));
+            updateScopeSummary();
             loggingInput.setChecked(draft.getBoolean("logging", Config.DEF_LOGGING_ENABLED));
             protocolSpinner.setSelection(draft.getInt("protocol"));
             streamingInput.setChecked(draft.getBoolean("streaming"));
@@ -267,7 +289,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private void startServiceSync() {
         if (!started || destroyed || service == null || remotePrefs == null
                 || !configurationLoaded || persistence.isLoading()
-                || saveInProgress || syncInProgress
+                || saveInProgress || syncInProgress || scopeDialog != null || pendingScopeEditor != null
                 || syncAttemptGeneration == serviceGeneration) {
             return;
         }
@@ -371,17 +393,24 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         statusText.setTextSize(12f);
         root.addView(statusText, matchWrap());
 
-        enabledInput = new CheckBox(this);
-        enabledInput.setText(R.string.label_enabled);
-        root.addView(enabledInput, matchWrap());
+        enabledInput = new Switch(this);
+        enabledHint = addToggle(root, enabledInput, SettingsToggleText.Setting.TRANSLATION);
 
-        loggingInput = new CheckBox(this);
-        loggingInput.setText(R.string.label_logging_enabled);
-        root.addView(loggingInput, matchWrap());
-        TextView loggingHint = new TextView(this);
-        loggingHint.setTextSize(12f);
-        loggingHint.setText(R.string.hint_logging_enabled);
-        root.addView(loggingHint, matchWrap());
+        scopeButton = new Button(this);
+        scopeButton.setText(R.string.scope_title);
+        scopeButton.setOnClickListener(view -> openScopeEditor());
+        root.addView(scopeButton, matchWrap());
+        scopeSummary = new TextView(this);
+        scopeSummary.setTextSize(12f);
+        root.addView(scopeSummary, matchWrap());
+        updateScopeSummary();
+
+        loggingInput = new Switch(this);
+        loggingHint = addToggle(root, loggingInput, SettingsToggleText.Setting.LOGGING);
+        TextView loggingPrivacy = new TextView(this);
+        loggingPrivacy.setTextSize(12f);
+        loggingPrivacy.setText(R.string.hint_logging_privacy);
+        root.addView(loggingPrivacy, matchWrap());
 
         // 供应商协议：请求体与译文解析按所选协议内置实现，
         // 不再让用户手写 JSON 请求模板与译文提取路径。
@@ -414,9 +443,12 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         protocolHint.setText(R.string.hint_protocol);
         root.addView(protocolHint, matchWrap());
 
-        streamingInput = new CheckBox(this);
-        streamingInput.setText(R.string.label_streaming);
-        root.addView(streamingInput, matchWrap());
+        streamingInput = new Switch(this);
+        streamingHint = addToggle(root, streamingInput, SettingsToggleText.Setting.STREAMING);
+        TextView toggleDraftHint = new TextView(this);
+        toggleDraftHint.setTextSize(12f);
+        toggleDraftHint.setText(R.string.hint_switch_draft);
+        root.addView(toggleDraftHint, matchWrap());
 
         // 注意：TYPE_TEXT_VARIATION_* 必须与 TYPE_CLASS_TEXT 组合使用。
         urlInput = addField(root, getString(R.string.label_api_url),
@@ -531,6 +563,63 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         return scroll;
     }
 
+    private TextView addToggle(LinearLayout parent, Switch input, SettingsToggleText.Setting setting) {
+        input.setShowText(false);
+        input.setTextSize(16f);
+        input.setMinimumHeight(dp(48));
+        parent.addView(input, matchWrap());
+        TextView hint = new TextView(this);
+        hint.setTextSize(12f);
+        parent.addView(hint, matchWrap());
+        input.setOnCheckedChangeListener((button, checked) -> {
+            updateToggleText(input, hint, setting);
+            markDirty();
+        });
+        updateToggleText(input, hint, setting);
+        return hint;
+    }
+
+    private void updateToggleText(Switch input, TextView hint, SettingsToggleText.Setting setting) {
+        SettingsToggleText copy = SettingsToggleText.select(setting, input.isChecked(),
+                configurationLoaded, persistedConfigInvalid, protocolSpinner == null ? null
+                        : protocolAt(protocolSpinner.getSelectedItemPosition()));
+        input.setText(getString(R.string.switch_title_state, getString(setting.title), getString(copy.state)));
+        hint.setText(copy.description);
+    }
+
+    private void updateScopeSummary() {
+        scopeSummary.setText(getString(R.string.scope_summary,
+                getString(scopeDraft.defaultTranslate ? R.string.scope_default_translate
+                        : R.string.scope_default_do_not_translate),
+                scopeDraft.servers.size(), scopeDraft.channels.size()));
+    }
+
+    /** Shared by the button and entry, including lifecycle and persistence exclusion. */
+    private boolean canOpenScopeEditor() {
+        return started && !destroyed && configurationLoaded && !persistedConfigInvalid
+                && !persistence.isLoading() && scopeDialog == null && !saveInProgress && !syncInProgress;
+    }
+
+    private void openScopeEditor() {
+        if (!canOpenScopeEditor()) return;
+        Bundle restore = pendingScopeEditor;
+        pendingScopeEditor = null;
+        TranslationScope initial = restore == null ? scopeDraft
+                : TranslationScope.parse(restore.getString("scope"));
+        scopeDialog = TranslationScopeEditor.show(this, initial, updated -> {
+            scopeDraft = updated;
+            updateScopeSummary();
+            markDirty();
+        });
+        if (restore != null) TranslationScopeEditor.restoreState(scopeDialog, restore);
+        scopeDialog.setOnDismissListener(dialog -> {
+            scopeDialog = null;
+            updateSaveButtonState();
+            if (started && !destroyed && pendingScopeEditor == null) startServiceSync();
+        });
+        updateSaveButtonState();
+    }
+
     private EditText addField(LinearLayout parent, String label, String hint, int inputType) {
         TextView tv = new TextView(this);
         tv.setText(label);
@@ -601,9 +690,6 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         timeoutInput.addTextChangedListener(watcher);
         concurrencyInput.addTextChangedListener(watcher);
         testTextInput.addTextChangedListener(watcher);
-        enabledInput.setOnCheckedChangeListener((button, checked) -> markDirty());
-        loggingInput.setOnCheckedChangeListener((button, checked) -> markDirty());
-        streamingInput.setOnCheckedChangeListener((button, checked) -> markDirty());
     }
 
     private void markDirty() {
@@ -636,6 +722,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             boolean hasSelection = position >= 0 && position < 3;
             streamingInput.setEnabled(configurationLoaded && !persistedConfigInvalid && hasSelection
                     && Protocols.supportsStreaming(protocolAt(position)));
+            updateToggleText(streamingInput, streamingHint, SettingsToggleText.Setting.STREAMING);
         }
     }
 
@@ -679,12 +766,16 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     /** 无效快照的占位值不是用户保存的设置；锁定页面直到用户明确重置。 */
     private void showInvalidSavedConfig() {
         persistedConfigInvalid = true;
+        pendingScopeEditor = null;
+        if (scopeDialog != null) { scopeDialog.dismiss(); scopeDialog = null; }
         boolean wasLoading = loadingUi;
         loadingUi = true;
         try {
             cancelPendingTest();
             ProjectLog.configure(Config.invalidSnapshot());
             enabledInput.setChecked(false);
+            scopeDraft = TranslationScope.ALL;
+            scopeSummary.setText("");
             loggingInput.setChecked(false);
             streamingInput.setChecked(false);
             protocolSpinner.setSelection(AdapterView.INVALID_POSITION);
@@ -718,7 +809,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                         }
                         applyLocalState(state, replaceForm);
                         updateSaveButtonState();
-                        startServiceSync();
+                        if (pendingScopeEditor != null && started && !persistedConfigInvalid) openScopeEditor();
+                        else startServiceSync();
                     });
         } catch (RuntimeException failure) {
             ProjectLog.warn("settings load end status=FAILED exception="
@@ -755,6 +847,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 fields[i].setHint(fieldHints[i]);
             }
             enabledInput.setChecked(snapshot.enabled);
+            scopeDraft = snapshot.translationScope;
+            updateScopeSummary();
             loggingInput.setChecked(snapshot.loggingEnabled);
             protocolSpinner.setSelection(positionOf(snapshot.protocol));
             streamingInput.setChecked(snapshot.streaming);
@@ -962,7 +1056,11 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             resetButton.setEnabled(available && persistedConfigInvalid);
         }
         enabledInput.setEnabled(formAvailable);
+        scopeButton.setEnabled(canOpenScopeEditor());
+        scopeSummary.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         loggingInput.setEnabled(formAvailable);
+        updateToggleText(enabledInput, enabledHint, SettingsToggleText.Setting.TRANSLATION);
+        updateToggleText(loggingInput, loggingHint, SettingsToggleText.Setting.LOGGING);
         protocolSpinner.setEnabled(formAvailable);
         protocolSpinner.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         targetLanguageSpinner.setEnabled(formAvailable);
@@ -1008,6 +1106,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
         }
         MemoryPrefs memoryPrefs = new MemoryPrefs();
         memoryPrefs.put(Config.KEY_ENABLED, enabledInput.isChecked());
+        memoryPrefs.put(Config.KEY_TRANSLATION_SCOPE, scopeDraft.toJson());
         memoryPrefs.put(Config.KEY_LOGGING_ENABLED, loggingInput.isChecked());
         memoryPrefs.put(Config.KEY_PROTOCOL,
                 protocolAt(protocolSpinner.getSelectedItemPosition()));

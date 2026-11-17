@@ -67,6 +67,7 @@ public class ReplyBindingTest {
         return version == 340013 ? new OlderReference(message, system) : new CurrentReference(message, system);
     }
     private StateStore.Entry canonical(Object body, String revision) {
+        bridge.rememberMessageLocation(ID, new MessageLocation(null, "223456789012345678"));
         String key = bridge.embedStateKeys(ID, java.util.Collections.singletonList(body)).get(0);
         StateStore.Entry entry = store.obtain(ID, key.substring(key.lastIndexOf('\u0000') + 1));
         bridge.rememberMessageRevision(ID, revision);
