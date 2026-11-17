@@ -128,6 +128,55 @@ public class JsonApiEngineTest {
         }
     }
 
+    @Test
+    public void executeConnectionModeAndTranslateShareRequestsButNotTranslationValidation()
+            throws Exception {
+        for (String protocol : new String[]{Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_OPENAI_RESPONSES, Config.PROTOCOL_ANTHROPIC_MESSAGES}) {
+            for (boolean streaming : new boolean[]{false, true}) {
+                String text = "<translate>你好</translate> XXXX";
+                String body = Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)
+                        ? streaming ? "data: {\"choices\":[{\"delta\":{\"content\":"
+                                + JSONObject.quote(text) + "}}]}\n\ndata: [DONE]\n\n" : chatJson(text)
+                        : Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)
+                        ? streaming ? "data: {\"type\":\"content_block_delta\",\"delta\":{"
+                                + "\"type\":\"text_delta\",\"text\":" + JSONObject.quote(text)
+                                + "}}\n\ndata: {\"type\":\"message_stop\"}\n\n" : anthropicJson(text)
+                        : streaming ? responsesDelta(0, text) + responsesCompleted(1, text)
+                                : responsesJson(text);
+                java.util.List<FakeConnection> connections = new java.util.ArrayList<>();
+                AtomicInteger opens = new AtomicInteger();
+                JsonApiEngine engine = new JsonApiEngine(config(protocol, streaming), http(url -> {
+                    opens.incrementAndGet();
+                    FakeConnection connection = new FakeConnection(body);
+                    connections.add(connection);
+                    return connection;
+                }));
+                JsonApiEngine.Exchange exchange = engine.execute("hello", false);
+                assertEquals(text, exchange.translated);
+                assertEquals(200, exchange.httpStatus);
+                assertTrue(active(engine).isEmpty());
+                try {
+                    engine.translate("hello");
+                    fail("translate must enable the shared translation validator");
+                } catch (TranslationException failure) {
+                    assertEquals(TranslationException.Kind.PARSE, failure.kind());
+                    assertEquals(TranslationException.Reason.TRANSLATION_INVALID, failure.reason());
+                    assertEquals(200, failure.httpStatus());
+                }
+                assertEquals(2, opens.get());
+                assertTrue(active(engine).isEmpty());
+                assertEquals(new JSONObject(connections.get(0).output.toString("UTF-8")).toString(),
+                        new JSONObject(connections.get(1).output.toString("UTF-8")).toString());
+                for (FakeConnection connection : connections) {
+                    assertTrue(connection.disconnected);
+                    assertFalse(connection.getUseCaches());
+                    assertFalse(connection.getInstanceFollowRedirects());
+                }
+            }
+        }
+    }
+
     private static String chatJson(String text) {
         return "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
                 + "\"content\":" + JSONObject.quote(text) + "}}]}";
@@ -152,7 +201,9 @@ public class JsonApiEngineTest {
                         : response.getJSONArray("choices").getJSONObject(0);
                 // org.json removes a key for Java null; JSONObject.NULL remains explicit JSON null.
                 terminal.put(anthropic ? "stop_reason" : "finish_reason", reason);
-                assertJsonFailureCleansUp(protocol, response.toString());
+                assertJsonFailureCleansUp(protocol, response.toString(), reason instanceof String
+                        ? TranslationException.Reason.GENERATION_STOPPED
+                        : TranslationException.Reason.RESPONSE_INVALID);
             }
         }
     }
@@ -177,6 +228,11 @@ public class JsonApiEngineTest {
     }
 
     private static void assertJsonFailureCleansUp(String protocol, String body) throws Exception {
+        assertJsonFailureCleansUp(protocol, body, TranslationException.Reason.RESPONSE_INVALID);
+    }
+
+    private static void assertJsonFailureCleansUp(String protocol, String body,
+                                                 TranslationException.Reason reason) throws Exception {
         FakeConnection connection = new FakeConnection(body);
         AtomicInteger opens = new AtomicInteger();
         JsonApiEngine engine = new JsonApiEngine(config(protocol, false),
@@ -186,6 +242,8 @@ public class JsonApiEngineTest {
             fail("JSON failure must not return text to the success/cache callback");
         } catch (TranslationException failure) {
             assertEquals(TranslationException.Kind.PARSE, failure.kind());
+            assertEquals(reason, failure.reason());
+            assertEquals(200, failure.httpStatus());
             for (String detail : new String[]{"private body", "private.invalid", "private-key"}) {
                 assertFalse(failure.getMessage().contains(detail));
                 assertFalse(failure.toString().contains(detail));
@@ -264,6 +322,7 @@ public class JsonApiEngineTest {
                 fail("Responses failure must reject accumulated text");
             } catch (TranslationException failure) {
                 assertEquals(TranslationException.Kind.PARSE, failure.kind());
+                assertEquals(200, failure.httpStatus());
                 for (String detail : new String[]{secret, "private body", "private.invalid", "private-key"}) {
                     assertFalse(failure.getMessage().contains(detail));
                     assertFalse(failure.toString().contains(detail));
@@ -301,6 +360,8 @@ public class JsonApiEngineTest {
                 fail("Responses must enforce the shared transport limits");
             } catch (TranslationException failure) {
                 assertEquals(TranslationException.Kind.PARSE, failure.kind());
+                assertEquals(TranslationException.Reason.RESPONSE_INVALID, failure.reason());
+                assertEquals(200, failure.httpStatus());
                 assertEquals(messages[i], failure.getMessage());
             }
             assertEquals(1, opens.get());
@@ -343,7 +404,7 @@ public class JsonApiEngineTest {
             engine.cancel(worker);
             worker.join(5000);
             assertFalse(worker.isAlive());
-            assertCancelled(failure.get());
+            assertCancelled(failure.get(), 200);
             assertEquals(1, opens.get());
             assertTrue(connection.disconnected);
             assertTrue(active(engine).isEmpty());
@@ -367,6 +428,9 @@ public class JsonApiEngineTest {
                 fail("The selected Responses mode must reject the other response format");
             } catch (TranslationException failure) {
                 assertEquals(TranslationException.Kind.PARSE, failure.kind());
+                assertEquals(streaming ? TranslationException.Reason.RESPONSE_INCOMPLETE
+                        : TranslationException.Reason.RESPONSE_INVALID, failure.reason());
+                assertEquals(200, failure.httpStatus());
             }
             assertEquals(1, opens.get());
             assertTrue(connection.disconnected);
@@ -398,8 +462,7 @@ public class JsonApiEngineTest {
                         validated.get(anthropic ? "x-api-key" : "Authorization"));
                 String body = anthropic ? anthropicJson("你好")
                         : Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
-                        ? "{\"output\":[{\"type\":\"message\",\"content\":["
-                                + "{\"type\":\"output_text\",\"text\":\"你好\"}]}]}"
+                        ? responsesJson("你好")
                         : chatJson("你好");
                 FakeConnection connection = new FakeConnection(body);
                 AtomicInteger opens = new AtomicInteger();
@@ -532,6 +595,8 @@ public class JsonApiEngineTest {
                 fail("Malicious reason must reject accumulated text");
             } catch (TranslationException e) {
                 assertEquals(TranslationException.Kind.PARSE, e.kind());
+                assertEquals(TranslationException.Reason.GENERATION_STOPPED, e.reason());
+                assertEquals(200, e.httpStatus());
                 for (String detail : new String[]{privateBody, privateUrl, privateSecret}) {
                     assertFalse(e.getMessage().contains(detail));
                     assertFalse(e.toString().contains(detail));
@@ -547,7 +612,7 @@ public class JsonApiEngineTest {
 
     @Test
     public void rawHttpErrorsAreClassifiedBeforeSuccessParsingWithoutBodyLeakage() throws Exception {
-        for (int status : new int[]{302, 401, 403, 429, 500}) {
+        for (int status : new int[]{302, 400, 401, 403, 404, 429, 500}) {
             FakeConnection connection = new FakeConnection("secret non-SSE body");
             connection.status = status;
             JsonApiEngine engine = new JsonApiEngine(config(Config.PROTOCOL_ANTHROPIC_MESSAGES, true),
@@ -558,6 +623,9 @@ public class JsonApiEngineTest {
             } catch (TranslationException e) {
                 assertEquals(status == 429 ? TranslationException.Kind.RATE_LIMIT
                         : TranslationException.Kind.HTTP, e.kind());
+                assertEquals(status == 429 ? TranslationException.Reason.RATE_LIMITED
+                        : TranslationException.Reason.HTTP_ERROR, e.reason());
+                assertEquals(status, e.httpStatus());
                 assertFalse(e.userMessage().contains("secret"));
             }
             assertTrue(active(engine).isEmpty());
@@ -580,6 +648,10 @@ public class JsonApiEngineTest {
                 fail("Expected strict parse rejection");
             } catch (TranslationException e) {
                 assertEquals(TranslationException.Kind.PARSE, e.kind());
+                assertEquals(200, e.httpStatus());
+                assertEquals(body.equals(chatJson("你好"))
+                        ? TranslationException.Reason.RESPONSE_INCOMPLETE
+                        : TranslationException.Reason.TRANSLATION_INVALID, e.reason());
             }
             assertEquals(1, opens.get());
             assertTrue(active(engine).isEmpty());
@@ -605,6 +677,8 @@ public class JsonApiEngineTest {
             fail("Partial translation without a completed stream must not be accepted");
         } catch (TranslationException failure) {
             assertEquals(TranslationException.Kind.TIMEOUT, failure.kind());
+            assertEquals(TranslationException.Reason.REQUEST_TIMEOUT, failure.reason());
+            assertEquals(200, failure.httpStatus());
             assertTrue(failure.getCause() instanceof SocketTimeoutException);
             assertFalse(failure.userMessage().contains("private response detail"));
         }
@@ -626,6 +700,8 @@ public class JsonApiEngineTest {
             fail("Missing protocol end event must reject partial translation");
         } catch (TranslationException failure) {
             assertEquals(TranslationException.Kind.PARSE, failure.kind());
+            assertEquals(TranslationException.Reason.RESPONSE_INCOMPLETE, failure.reason());
+            assertEquals(200, failure.httpStatus());
         }
         assertEquals(200, connection.status);
         assertEquals(1, opens.get());
@@ -647,7 +723,7 @@ public class JsonApiEngineTest {
         worker.start();
         worker.join(5000);
         assertFalse(worker.isAlive());
-        assertCancelled(failure.get());
+        assertCancelled(failure.get(), 0);
         assertEquals(0, opens.get());
         assertTrue(active(engine).isEmpty());
     }
@@ -679,7 +755,7 @@ public class JsonApiEngineTest {
             release.countDown();
             worker.join(5000);
             assertFalse(worker.isAlive());
-            assertCancelled(failure.get());
+            assertCancelled(failure.get(), 0);
             assertTrue(connection.disconnected);
             assertEquals(0, connection.output.size());
             assertTrue(active(engine).isEmpty());
@@ -718,7 +794,7 @@ public class JsonApiEngineTest {
             engine.cancel(worker);
             worker.join(5000);
             assertFalse(worker.isAlive());
-            assertCancelled(failure.get());
+            assertCancelled(failure.get(), 200);
             assertTrue(connection.disconnected);
             assertTrue(active(engine).isEmpty());
         } finally {
@@ -727,9 +803,12 @@ public class JsonApiEngineTest {
         }
     }
 
-    private static void assertCancelled(Throwable failure) {
+    private static void assertCancelled(Throwable failure, int status) {
         assertTrue(String.valueOf(failure), failure instanceof TranslationException);
         assertEquals(TranslationException.Kind.CANCELLED, ((TranslationException) failure).kind());
+        assertEquals(TranslationException.Reason.CANCELLED,
+                ((TranslationException) failure).reason());
+        assertEquals(status, ((TranslationException) failure).httpStatus());
     }
 
     private static void awaitIgnoringInterrupts(CountDownLatch latch) throws IOException {

@@ -5,112 +5,184 @@ import androidx.annotation.Nullable;
 import java.util.concurrent.Callable;
 
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+import io.github.wxmyyds.discordautotranslate.core.TranslationException;
 
-/**
- * 连接测试与测试翻译（需求 §3.1、§5.5、§8：可测试 API 连接和实际翻译）。
- *
- * <p>由设置界面创建单次 Call，在后台线程同步执行并在页面停止时主动取消。
- * 返回设置页实际消费的成功标志、译文与耗时。</p>
- */
+/** Settings tests share the production request, decoder and cancellation owner. */
 public final class ApiTester {
+    public enum TestKind { CONFIGURATION, CONNECTION, TRANSLATION }
 
-    /** 测试结果。 */
-    public static final class Result {
-        public final boolean ok;
-        /** 测试翻译时的译文（仅成功时有值）。 */
-        @Nullable
-        public final String translated;
-        /** 耗时毫秒。 */
-        public final long elapsedMs;
+    /** Failure metadata plus the unmodified non-2xx HTTP error body for settings-test display. */
+    public static final class Failure {
+        public final TranslationException.Kind kind;
+        public final TranslationException.Reason reason;
+        public final int httpStatus;
+        public final String exceptionType;
+        @Nullable public final String upstreamErrorBody;
 
-        Result(boolean ok, @Nullable String translated, long elapsedMs) {
-            this.ok = ok;
-            this.translated = translated;
-            this.elapsedMs = elapsedMs;
+        private Failure(TranslationException.Kind kind, TranslationException.Reason reason,
+                        int httpStatus, String exceptionType, @Nullable String upstreamErrorBody) {
+            this.kind = kind;
+            this.reason = reason;
+            this.httpStatus = httpStatus;
+            this.exceptionType = exceptionType;
+            this.upstreamErrorBody = upstreamErrorBody;
+        }
+
+        private static Failure from(Throwable failure) {
+            if (failure instanceof TranslationException) {
+                TranslationException error = (TranslationException) failure;
+                Throwable cause = error.getCause();
+                String body = error instanceof JsonApiEngine.UpstreamHttpException
+                        ? ((JsonApiEngine.UpstreamHttpException) error).responseBody : null;
+                return new Failure(error.kind(), error.reason(), error.httpStatus(),
+                        (cause == null ? error : cause).getClass().getSimpleName(), body);
+            }
+            return new Failure(TranslationException.Kind.UNKNOWN,
+                    TranslationException.Reason.UNKNOWN_FAILURE, 0,
+                    failure.getClass().getSimpleName(), null);
+        }
+
+        private static Failure cancelled(int httpStatus) {
+            return new Failure(TranslationException.Kind.CANCELLED,
+                    TranslationException.Reason.CANCELLED, httpStatus, "TranslationException", null);
         }
     }
 
-    /** 默认测试文本：包含引号、换行、反斜杠，同时验证请求体转义是否正确。 */
-    public static final String DEFAULT_TEST_TEXT =
-            "Hello, \"world\"\\\nThis is a test.";
+    public static final class Result {
+        public final boolean ok;
+        @Nullable public final String translated;
+        public final long elapsedMs;
+        public final TestKind testKind;
+        @Nullable public final Failure failure;
 
-    private ApiTester() {
+        private Result(TestKind testKind, @Nullable String translated, long elapsedMs,
+                       @Nullable Failure failure) {
+            this.ok = failure == null;
+            this.translated = failure == null && testKind == TestKind.TRANSLATION
+                    ? translated : null;
+            this.elapsedMs = elapsedMs;
+            this.testKind = testKind;
+            this.failure = failure;
+        }
     }
 
-    /**
-     * Create before executor submission so cancellation also covers queued work.
-     * Connection checks use DEFAULT_TEST_TEXT through this same request chain.
-     */
-    public static Call newCall(Config.Snapshot cfg, String text) {
-        return new Call(new JsonApiEngine(cfg), text);
+    /** Fixed request probe; quoting/newlines also exercise request JSON escaping. */
+    public static final String DEFAULT_TEST_TEXT = "Hello, \"world\"\\\nThis is a test.";
+
+    private ApiTester() {}
+
+    /** Create before executor submission so cancellation also covers queued work. */
+    public static Call newCall(Config.Snapshot cfg, TestKind testKind, String text) {
+        return new Call(new JsonApiEngine(cfg), testKind, text, cfg);
     }
 
-    /** One-shot synchronous request owner; cancellation actively disconnects HTTP I/O. */
+    /** One-shot owner; page cancellation actively disconnects HTTP I/O. */
     public static final class Call implements Callable<Result> {
         private final JsonApiEngine engine;
+        private final TestKind testKind;
         private final String text;
+        private final String protocol;
+        private final boolean streaming;
         private boolean used;
         private boolean cancelled;
-        @Nullable
-        private Thread worker;
+        @Nullable private Thread worker;
 
-        Call(JsonApiEngine engine, String text) {
+        Call(JsonApiEngine engine, TestKind testKind, String text, Config.Snapshot cfg) {
+            if (testKind != TestKind.CONNECTION && testKind != TestKind.TRANSLATION) {
+                throw new IllegalArgumentException("Network tests require a network test kind");
+            }
             this.engine = engine;
-            this.text = text;
+            this.testKind = testKind;
+            this.text = testKind == TestKind.CONNECTION ? DEFAULT_TEST_TEXT : text;
+            this.protocol = diagnosticProtocol(cfg.protocol);
+            this.streaming = cfg.streaming;
         }
 
         @Override
         public Result call() {
-            long start = System.currentTimeMillis();
+            long start = System.nanoTime();
             synchronized (this) {
-                if (used) {
-                    throw new IllegalStateException("API test calls cannot be reused");
-                }
+                if (used) throw new IllegalStateException("API test calls cannot be reused");
                 used = true;
                 if (cancelled) {
-                    return new Result(false, null, System.currentTimeMillis() - start);
+                    Result result = new Result(testKind, null, elapsed(start), Failure.cancelled(0));
+                    logResult(result);
+                    return result;
                 }
-                // Publish before engine registration. cancel() interrupts this worker
-                // in that gap; JsonApiEngine checks it before opening a connection.
+                // Publish before registration; cancel interrupts the pre-attach gap.
                 worker = Thread.currentThread();
             }
+            ProjectLog.info("api.test.start test=" + testKind + " protocol=" + protocol
+                    + " streaming=" + streaming);
             Result result;
+            int responseStatus = 0;
             try {
-                String translated = engine.translate(text);
-                result = new Result(true, translated, System.currentTimeMillis() - start);
-            } catch (Throwable failure) {
-                result = new Result(false, null, System.currentTimeMillis() - start);
+                JsonApiEngine.Exchange exchange = engine.execute(text,
+                        testKind == TestKind.TRANSLATION);
+                responseStatus = exchange.httpStatus;
+                result = new Result(testKind, exchange.translated, elapsed(start), null);
+            } catch (Exception failure) {
+                result = new Result(testKind, null, elapsed(start), Failure.from(failure));
+            } finally {
+                synchronized (this) {
+                    // Always release ownership, including Errors handled by the Future boundary.
+                    worker = null;
+                }
             }
             synchronized (this) {
-                worker = null;
-                return cancelled
-                        ? new Result(false, null, System.currentTimeMillis() - start) : result;
+                if (cancelled && (result.failure == null
+                        || result.failure.kind != TranslationException.Kind.CANCELLED)) {
+                    // Preserve known status even if cancellation wins after successful decoding.
+                    int status = result.failure == null ? responseStatus : result.failure.httpStatus;
+                    result = new Result(testKind, null, elapsed(start), Failure.cancelled(status));
+                }
             }
+            logResult(result);
+            return result;
         }
 
         public synchronized void cancel() {
             cancelled = true;
-            if (worker != null) {
-                // Keep ownership until cancel returns: a completed call must never
-                // interrupt unrelated work subsequently assigned to the same thread.
-                engine.cancel(worker);
-            }
+            if (worker != null) engine.cancel(worker);
         }
     }
 
-    /**
-     * 离线自检：不发起网络请求，只校验配置本身的完整性。
-     * 供设置界面在无网络时给出有用的提示。
-     */
+    /** Offline check consumes the same configuration validation, without network I/O. */
     public static Result selfCheck(Config.Snapshot cfg) {
-        long start = System.currentTimeMillis();
+        long start = System.nanoTime();
+        ProjectLog.info("api.test.start test=CONFIGURATION protocol="
+                + diagnosticProtocol(cfg.protocol) + " streaming=" + cfg.streaming);
+        Result result;
         try {
-            // 与真实请求共用同一套配置校验，避免两处规则不一致。
             JsonApiEngine.validateConfig(cfg);
-            long ms = System.currentTimeMillis() - start;
-            return new Result(true, null, ms);
-        } catch (Throwable failure) {
-            return new Result(false, null, System.currentTimeMillis() - start);
+            result = new Result(TestKind.CONFIGURATION, null, elapsed(start), null);
+        } catch (Exception failure) {
+            result = new Result(TestKind.CONFIGURATION, null, elapsed(start), Failure.from(failure));
+        }
+        logResult(result);
+        return result;
+    }
+
+    private static long elapsed(long start) {
+        return (System.nanoTime() - start) / 1_000_000L;
+    }
+
+    private static String diagnosticProtocol(String protocol) {
+        if (Config.PROTOCOL_OPENAI_COMPATIBLE.equals(protocol)
+                || Config.PROTOCOL_OPENAI_RESPONSES.equals(protocol)
+                || Config.PROTOCOL_ANTHROPIC_MESSAGES.equals(protocol)) return protocol;
+        return "INVALID";
+    }
+
+    private static void logResult(Result result) {
+        if (result.ok) {
+            ProjectLog.info("api.test.complete test=" + result.testKind + " outcome=SUCCESS");
+        } else {
+            Failure failure = result.failure;
+            ProjectLog.warn("api.test.complete test=" + result.testKind + " outcome=FAILURE kind="
+                    + failure.kind + " reason=" + failure.reason + " httpStatus="
+                    + failure.httpStatus + " errorClass=" + failure.exceptionType);
         }
     }
 }

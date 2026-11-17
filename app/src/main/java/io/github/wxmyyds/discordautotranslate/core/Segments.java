@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  *
  * <p>引擎与渲染层共用 {@link #hasSegmentMarkers} 拒绝残留分段标记，
  * 不解析、剥离或修复标记。{@link #plainTextViolation} 还检查空文本、
- * 模板占位符与长度比例异常，不把损坏内容送进节点树。</p>
+ * 包装标签、模板占位符与长度比例异常，不把损坏内容送进节点树。</p>
  */
 public final class Segments {
 
@@ -33,7 +33,7 @@ public final class Segments {
     }
 
     /**
-     * 译文的防损坏校验：非空、无旧分段标记、原样保留结构定位、长度比例合理。
+     * 译文的防损坏校验：非空、无包装标签与旧分段标记、原样保留结构定位、长度比例合理。
      *
      * <p>单链路在引擎侧返回前调用：复读刷屏（长度
      * 暴涨）、内容大面积丢失（长度骤减）、标记泄漏与模板占位符都在这里
@@ -49,6 +49,10 @@ public final class Segments {
     public static String plainTextViolation(@Nullable String translated, String source) {
         if (translated == null || translated.trim().isEmpty()) {
             return "译文为空";
+        }
+        if (translated.contains(Protocols.WRAPPER_OPEN)
+                || translated.contains(Protocols.WRAPPER_CLOSE)) {
+            return "译文包含包装标签";
         }
         if (hasSegmentMarkers(translated)) {
             return "译文中残留分段标记";

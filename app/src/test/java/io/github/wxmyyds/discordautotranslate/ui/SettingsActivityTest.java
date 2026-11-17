@@ -7,23 +7,48 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
+import io.github.wxmyyds.discordautotranslate.core.PreferenceCommit;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
 import io.github.wxmyyds.discordautotranslate.translate.ApiTester;
 
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 
 /** Android stubs permit ownership/guard checks; widget lifecycle loading is tested via SettingsPersistence. */
 public class SettingsActivityTest {
+    private final List<String> logs = new ArrayList<>();
+
+    @Before
+    public void captureProjectLogs() {
+        ProjectLog.configure(Config.read(null));
+        // Test-only observation; the settings Activity never attaches a framework destination.
+        ProjectLog.attach((priority, tag, message) -> logs.add(message));
+    }
+
+    @After
+    public void releaseProjectLogs() {
+        ProjectLog.configure(Config.read(null));
+        ProjectLog.attach(null);
+    }
+
     @Test
     public void pageCancellationCancelsBothTheQueuedOwnerAndItsFuture() throws Exception {
         SettingsActivity page = new SettingsActivity();
         ApiTester.Call call = ApiTester.newCall(Config.read(new MemoryPrefs()
-                .put(Config.KEY_API_URL, "invalid")), ApiTester.DEFAULT_TEST_TEXT);
+                .put(Config.KEY_API_URL, "invalid")), ApiTester.TestKind.CONNECTION,
+                ApiTester.DEFAULT_TEST_TEXT);
         FutureTask<ApiTester.Result> future = new FutureTask<>(call);
         set(page, "testCall", call);
         set(page, "testFuture", future);
@@ -45,10 +70,11 @@ public class SettingsActivityTest {
     public void lateTestDeliveryCannotConsumeStoppedDestroyedOrReplacedPageWork() throws Exception {
         for (String reason : new String[]{"stopped", "destroyed", "generation", "task"}) {
             SettingsActivity page = new SettingsActivity();
-            ApiTester.Call currentCall = ApiTester.newCall(Config.read(null), "hello");
+            ApiTester.Call currentCall = ApiTester.newCall(Config.read(null),
+                    ApiTester.TestKind.TRANSLATION, "hello");
             FutureTask<ApiTester.Result> currentTask = new FutureTask<>(currentCall);
             FutureTask<ApiTester.Result> oldTask = new FutureTask<>(
-                    ApiTester.newCall(Config.read(null), "old"));
+                    ApiTester.newCall(Config.read(null), ApiTester.TestKind.TRANSLATION, "old"));
             set(page, "started", !reason.equals("stopped"));
             set(page, "destroyed", reason.equals("destroyed"));
             set(page, "testGeneration", 2L);
@@ -65,6 +91,128 @@ public class SettingsActivityTest {
             assertSame(currentTask, get(page, "testFuture"));
             assertSame(currentCall, get(page, "testCall"));
         }
+    }
+
+    @Test
+    public void failedSaveCannotEnableDraftLoggingOrExposeExceptionContent() throws Exception {
+        Config.Snapshot draft = loggingSnapshot(true);
+        record("save", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.LOCAL_COMMIT_FAILED, false,
+                new IllegalStateException("https://secret.invalid sk-secret response-body")), draft);
+        assertTrue(logs.isEmpty());
+
+        ProjectLog.configure(loggingSnapshot(true));
+        record("save", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.LOCAL_COMMIT_FAILED, false,
+                new IllegalStateException("https://secret.invalid sk-secret response-body")),
+                loggingSnapshot(false));
+        assertEquals(Arrays.asList("settings save end status=LOCAL_COMMIT_FAILED"
+                + " direction=SAVE localCommitted=false exception=IllegalStateException"), logs);
+    }
+
+    @Test
+    public void committedSaveEnablesLoggingBeforeItsResultAndRemoteFailureStaysDistinct()
+            throws Exception {
+        record("save", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.SUCCESS, true, null), loggingSnapshot(true));
+        record("save", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.REMOTE_COMMIT_FAILED, true,
+                new SecurityException("credential response https://secret.invalid")),
+                loggingSnapshot(true));
+        assertEquals(Arrays.asList(
+                "settings save end status=SUCCESS direction=SAVE localCommitted=true",
+                "settings save end status=REMOTE_COMMIT_FAILED direction=SAVE"
+                        + " localCommitted=true exception=SecurityException"), logs);
+    }
+
+    @Test
+    public void confirmedImportEnablesLogsButFailedImportDoesNotApplyRemoteDraft() throws Exception {
+        record("sync", syncResult(ConfigurationSync.Direction.IMPORT,
+                ConfigurationSync.Status.LOCAL_COMMIT_FAILED, false, null), loggingSnapshot(true));
+        assertTrue(logs.isEmpty());
+        record("sync", syncResult(ConfigurationSync.Direction.IMPORT,
+                ConfigurationSync.Status.SUCCESS, true, null), loggingSnapshot(true));
+        record("sync", syncResult(ConfigurationSync.Direction.EXPORT,
+                ConfigurationSync.Status.REMOTE_COMMIT_FAILED, false, null), loggingSnapshot(false));
+        assertEquals(Arrays.asList(
+                "settings sync end status=SUCCESS direction=IMPORT localCommitted=true",
+                "settings sync end status=REMOTE_COMMIT_FAILED direction=EXPORT"
+                        + " localCommitted=false"), logs);
+    }
+
+    @Test
+    public void onlyCommittedResetDisablesLoggingAndSuppressesItsSuccessOutput() throws Exception {
+        ProjectLog.configure(loggingSnapshot(true));
+        record("reset", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.LOCAL_COMMIT_FAILED, false,
+                new IllegalArgumentException("secret reset failure")), Config.read(null));
+        assertEquals(1, logs.size());
+        assertEquals("settings reset end status=LOCAL_COMMIT_FAILED direction=SAVE"
+                + " localCommitted=false exception=IllegalArgumentException", logs.get(0));
+        record("reset", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.SUCCESS, true, null), Config.read(null));
+        ProjectLog.info("after-reset");
+        assertEquals(1, logs.size());
+    }
+
+    @Test
+    public void unexpectedFutureFailureLogsOnlyItsTypeUnderTheSavedGate() throws Exception {
+        Throwable failure = new AssertionError("sk-secret https://secret.invalid raw-body");
+        invoke(null, "recordUnexpectedTestFailure", new Class<?>[]{Throwable.class}, failure);
+        assertTrue(logs.isEmpty());
+        ProjectLog.configure(loggingSnapshot(true));
+        invoke(null, "recordUnexpectedTestFailure", new Class<?>[]{Throwable.class}, failure);
+        assertEquals(Arrays.asList("settings test future end status=UNKNOWN_FAILURE"
+                + " exception=AssertionError"), logs);
+    }
+
+    @Test
+    public void rollbackFailureLogsFixedFlagAndExceptionTypesOnly() throws Exception {
+        Constructor<PreferenceCommit.Result> constructor = PreferenceCommit.Result.class
+                .getDeclaredConstructor(boolean.class, Throwable.class, boolean.class, Throwable.class);
+        constructor.setAccessible(true);
+        Throwable failure = new IllegalStateException("sk-secret original-body");
+        PreferenceCommit.Result transaction = constructor.newInstance(false, failure, true,
+                new SecurityException("https://secret.invalid rollback-body"));
+        ProjectLog.configure(loggingSnapshot(true));
+        record("save", syncResult(ConfigurationSync.Direction.SAVE,
+                ConfigurationSync.Status.LOCAL_COMMIT_FAILED, false, transaction, failure),
+                loggingSnapshot(false));
+        assertEquals(Arrays.asList("settings save end status=LOCAL_COMMIT_FAILED direction=SAVE"
+                + " localCommitted=false exception=IllegalStateException rollbackFailed=true"
+                + " rollbackException=SecurityException"), logs);
+    }
+
+    private static Config.Snapshot loggingSnapshot(boolean enabled) {
+        return Config.read(new MemoryPrefs().put(Config.KEY_LOGGING_ENABLED, enabled)
+                .put(Config.KEY_API_URL, "https://secret.invalid/v1")
+                .put(Config.KEY_API_KEY, "sk-secret")
+                .put(Config.KEY_EXTRA_HEADERS, "X-Secret: header-secret")
+                .put(Config.KEY_SYSTEM_PROMPT, "private prompt body"));
+    }
+
+    private static ConfigurationSync.Result syncResult(ConfigurationSync.Direction direction,
+            ConfigurationSync.Status status, boolean localCommitted, Throwable failure)
+            throws Exception {
+        return syncResult(direction, status, localCommitted, null, failure);
+    }
+
+    private static ConfigurationSync.Result syncResult(ConfigurationSync.Direction direction,
+            ConfigurationSync.Status status, boolean localCommitted,
+            PreferenceCommit.Result transaction, Throwable failure) throws Exception {
+        Constructor<ConfigurationSync.Result> constructor = ConfigurationSync.Result.class
+                .getDeclaredConstructor(ConfigurationSync.Direction.class,
+                        ConfigurationSync.Status.class, boolean.class,
+                        PreferenceCommit.Result.class, Throwable.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(direction, status, localCommitted, transaction, failure);
+    }
+
+    private static void record(String operation, ConfigurationSync.Result result,
+                               Config.Snapshot confirmedLocal) throws Exception {
+        invoke(null, "recordConfigurationResult",
+                new Class<?>[]{String.class, ConfigurationSync.Result.class, Config.Snapshot.class},
+                operation, result, confirmedLocal);
     }
 
     private static Object invoke(SettingsActivity page, String name, Class<?>[] parameters,

@@ -8,8 +8,9 @@
 |---|---|
 | [build.yml](../.github/workflows/build.yml) | 非 `main` 分支 push，或面向 `main` 的 PR，在变更匹配 `app/**`、`build.gradle`、`settings.gradle`、`gradle.properties`、`.github/workflows/**` 时自动运行 Debug 构建；手动可选 Debug/Release |
 | [release.yml](../.github/workflows/release.yml) | 仅手动发布；stable 固定来源 main，prerelease 使用指定分支或完整 SHA |
+| [release-notes.yml](../.github/workflows/release-notes.yml) | 更新日志、共享脚本或发布工作流变更时检查说明并生成双模式预览；也可手动触发，不创建发布 |
 
-纯文档/Skill 改动不触发自动构建，合并后的 `main` push 也不触发；如需验证，手动选择对应分支。构建工作流执行单元测试、上传 HTML 报告、检查 Xposed 元数据及图标资源、验证 APK 签名并上传 APK。发布工作流执行测试、Release 打包及签名验证后创建 tag/Release。
+普通文档/Skill 改动不触发自动构建；`docs/releases/Update-Log.md` 改动只触发发布说明检查，不触发 APK 构建。合并后的 `main` push 不触发这些验证；如需验证，手动选择对应分支。构建工作流执行单元测试、上传 HTML 报告、检查 Xposed 元数据及图标资源、验证 APK 签名并上传 APK。发布工作流先检查并生成更新日志，再执行测试、Release 打包及签名验证后创建 tag/Release。
 
 报告验证时提供来源完整 SHA、Actions run 链接及实际结果；下载并读取测试报告中的 tests/failures/skipped。CI 绿色只代表已执行检查通过，不代表所有版本签名、Android 生命周期或设备行为已验证。交付 APK 时核对 artifact 来源，复制后比较 SHA-256。
 
@@ -26,7 +27,15 @@
 
 工作流将密钥写入 runner 临时目录，通过 `KEYSTORE_PROPERTIES` 提供给 `app/build.gradle`。Debug/Release 使用同一证书；缺配置明确失败，不产生替代签名。密钥及 properties 不提交、不输出，原始 keystore 应独立离线备份。旧版本覆盖升级要求包名和签名一致。
 
-发布版本名：stable 填 `X.Y.Z`，须高于最近正式版；prerelease 填 `X.Y.Z-rc.N`，基础版本按工作流校验。versionCode 从全部发布 tag 的高水位递增，tag 为 `<versionCode>-<versionName>`。版本修改只记录到 tag 引用的发布提交，不改写 main，不维护长期发布分支。stable 同步到 `Xposed-Modules-Repo/io.github.wxmyyds.discordautotranslate`；prerelease 仅发布到源码仓库。运行发布会创建外部产物，须遵循当前用户授权范围。
+发布版本名：stable 填 `X.Y.Z`，须高于最近正式版；prerelease 填 `X.Y.Z-rc.N`，基础版本按工作流校验。versionCode 从全部发布 tag 的高水位递增，tag 为 `<versionCode>-<versionName>`。版本修改只记录到 tag 引用的发布提交，不改写 main，不维护长期发布分支。发布前将来源分支解析并固定到完整 commit SHA，拒绝 tag 作为来源；stable 同步到 `Xposed-Modules-Repo/io.github.wxmyyds.discordautotranslate`，仅创建新发布，已存在或同步出错时明确失败、不覆盖；prerelease 仅发布到源码仓库。运行发布会创建外部产物，须遵循当前用户授权范围。
+
+## 更新日志
+
+[docs/releases/Update-Log.md](releases/Update-Log.md) 是唯一的发布变更摘要来源。每次准备发布时只更新这个文件，**替换为本次面向用户的变化及必要注意事项**，不追加历史版本、内部提交列表或构建信息。使用二级及以下标题，不写版本主标题；版本在手动发布时填写，标题及版本号、来源 SHA、构建链接由工作流自动附加。
+
+stable 读取 `main` 中的文件，prerelease 读取所选分支/SHA 中的文件；正式版条目必须先经 PR 合入 `main`。两种发布模式共用同一校验/生成脚本；正式版同步到 LSPosed 时使用同一份正文。文件缺失、非普通文件、无有效内容、存在 TODO/TBD 或“待补充/待填写”、包含一级标题或下划线式标题时直接失败，禁止回退到提交、PR 或其他文件。旧来源若没有该文件或脚本，也不能发布。
+
+`Check release notes` 工作流在 GitHub Actions 中测试共享脚本，并上传 stable/prerelease 两份 Markdown 预览，内容来自当前来源的同一个更新日志；示例版本及 versionCode 仅验证格式，不预占版本、不创建 tag/Release、不同步 LSPosed。实际发布的正文也会在打包及推 tag 前写入步骤摘要。**该操作需要通过 GitHub Actions 执行。** 校验不能判断说明是否过时或描述准确，发版前仍需人工确认内容与所选源码一致；历史说明由已有 GitHub Releases 保留。
 
 ## 静态检查与测试边界
 
@@ -53,6 +62,6 @@ JVM 单测无真实 Android 布局/Hook 环境。它可以验证纯逻辑、配�
 
 ## 排障
 
-需要日志时先在设置页启用项目日志、保存并重启 Discord。按安装/身份映射、检测、请求、严格回填、刷新五个阶段定位，不凭单一图标判定根因。
+需要日志时先在设置页启用项目日志并成功保存；设置页测试日志直接进入 logcat，Discord 日志还需同步成功并重启 Discord。按安装/身份映射、检测、请求、严格回填、刷新五个阶段定位，不凭单一图标判定根因。
 
-LSPosed 导出日志未必包含完整 logcat。固定原因码和异常类型可帮助分类，但日志不携带消息身份，不能把相邻的成功、PARSE、NETWORK 或结构拒绝记录自动归为同一条消息。不得为排障增加正文、身份、视图几何输出或第二次宿主遍历。
+LSPosed 导出日志未必包含完整 logcat。固定原因码和异常类型可帮助分类，但项目诊断不主动输出消息身份，不能把相邻的成功、PARSE、NETWORK 或结构拒绝记录自动归为同一条消息。非 2xx 上游 HTTP 错误正文按既定链路原样显示，并在日志启用时原样记录，可能含敏感信息，分享前必须检查。除此之外，不得为排障增加消息正文、身份、视图几何输出或第二次宿主遍历。

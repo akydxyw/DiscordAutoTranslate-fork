@@ -38,13 +38,39 @@ jobs:
     name: Build, tag and publish (${{ inputs.mode }})
     runs-on: ubuntu-24.04
     steps:
+      # Resolve branches explicitly and pin checkout to a commit; tags are not build sources.
+      - name: Resolve source commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          SOURCE_REF: ${{ inputs.mode == 'stable' && 'main' || inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" == "prerelease" && "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            SOURCE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF" --jq '.sha')
+          else
+            git check-ref-format --branch "$SOURCE_REF" >/dev/null || {
+              echo "::error::来源必须是有效分支名或完整 40 位 commit SHA"
+              exit 1
+            }
+            ENCODED_REF=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["SOURCE_REF"], safe=""))')
+            SOURCE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$ENCODED_REF" --jq '.object.sha')
+          fi
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::未解析到有效来源 commit"; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
       # Stable releases use main; prereleases use the selected branch or SHA.
       # Tags track release versions, so release/prerelease branches are no longer maintained.
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.mode == 'stable' && 'main' || inputs.source_ref }}
+          ref: ${{ steps.source.outputs.sha }}
           fetch-depth: 0
+
+      # Only the selected source update log is accepted; no commit-list or alternate-file path.
+      - name: Check update log
+        run: python3 .github/scripts/release_notes.py --check
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -84,7 +110,6 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           INPUT: ${{ inputs.version }}
-          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
 
@@ -155,11 +180,6 @@ jobs:
             NEW_CODE=$((HIGH_WATER + 1))
           # Prerelease path
           else
-            if ! git check-ref-format --branch "$SOURCE_REF" >/dev/null 2>&1 &&
-              ! [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::source_ref 必须是有效分支名或完整 40 位 commit SHA（当前：'$SOURCE_REF'）"
-              exit 1
-            fi
             [[ "$INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]] || {
               echo "::error::预发布版本号必须为 X.Y.Z-rc.N（例如 1.0.1-rc.1），当前：'$INPUT'"
               exit 1
@@ -189,12 +209,27 @@ jobs:
           echo "已写入 versionName=$VERSION, versionCode=$NEW_CODE"
           git diff -- app/build.gradle
 
-          echo "previousStableTag=$LATEST_STABLE_TAG" >> "$GITHUB_OUTPUT"
           echo "sourceSha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "sourceRef=$SOURCE_REF" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "versionCode=$NEW_CODE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Generate and preview both release modes through the same renderer, before any tag is pushed.
+      - name: Prepare release notes
+        env:
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION_CODE: ${{ steps.resolve.outputs.versionCode }}
+          SOURCE_REF: ${{ inputs.mode == 'stable' && 'main' || inputs.source_ref }}
+          SOURCE_SHA: ${{ steps.resolve.outputs.sourceSha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_notes.py \
+            --mode "$MODE" --version "$VERSION" --version-code "$VERSION_CODE" \
+            --source-ref "$SOURCE_REF" --source-sha "$SOURCE_SHA" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify release synchronization configuration
         if: inputs.mode == 'stable'
@@ -207,6 +242,8 @@ jobs:
             echo "请配置对 $LSPOSED_REPO 具有 Contents: Read and write 权限的 GitHub token"
             exit 1
           fi
+          CAN_PUSH=$(GH_TOKEN="$LSPOSED_REPO_TOKEN" gh api "repos/$LSPOSED_REPO" --jq '.permissions.push')
+          [[ "$CAN_PUSH" == "true" ]] || { echo "::error::LSPOSED_REPO_TOKEN 没有目标仓库写权限"; exit 1; }
 
       # 所有发布版本都必须签名。测试和打包配置使用同一份 Actions 注入的签名。
       - name: Materialize release keystore
@@ -262,9 +299,6 @@ jobs:
           VERSION: ${{ steps.resolve.outputs.version }}
           VERSION_CODE: ${{ steps.resolve.outputs.versionCode }}
           TAG: ${{ steps.resolve.outputs.tag }}
-          SOURCE_REF: ${{ steps.resolve.outputs.sourceRef }}
-          SOURCE_SHA: ${{ steps.resolve.outputs.sourceSha }}
-          PREVIOUS_STABLE_TAG: ${{ steps.resolve.outputs.previousStableTag }}
           LSPOSED_REPO_TOKEN: ${{ secrets.LSPOSED_REPO_TOKEN }}
         run: |
           set -euo pipefail
@@ -283,77 +317,25 @@ jobs:
           echo "已推送 tag $TAG"
 
           if [[ "$MODE" == "stable" ]]; then
-            # The previous stable tag was selected before creating this release.
-            # Prerelease codes may occur between two stable versions.
-            PREV="$PREVIOUS_STABLE_TAG"
-            RANGE="${PREV:+$PREV..}HEAD"
-            echo "变更范围：$RANGE（上一个正式版：${PREV:-无}）"
-            LOG=$(git log "$RANGE" --no-merges --pretty=format:'%s' 2>/dev/null \
-              | grep -vE '^(Merge (pull request|branch)|chore(release)?:)' || true)
-
-            {
-              echo "# $APP_NAME $VERSION"
-              echo
-              echo "## ✨ 新功能"
-              echo "$LOG" | grep -E '^(feat|feature)(\(|:)' | sed 's/^/ - /' || true
-              echo
-              echo "## 🐛 修复"
-              echo "$LOG" | grep -E '^fix(\(|:)' | sed 's/^/ - /' || true
-              echo
-              echo "## ⚙️ 改进与优化"
-              echo "$LOG" | grep -E '^(refactor|perf)(\(|:)' | sed 's/^/ - /' || true
-              echo
-              echo "## 📦 其他"
-              echo "$LOG" | grep -vE '^(feat|feature|fix|refactor|perf)(\(|:)' | sed 's/^/ - /' || true
-              echo
-              echo "基于 \`main\` 最新代码构建，versionCode $VERSION_CODE。"
-            } > /tmp/release-notes.md
-
-            echo "===== 发布说明预览 ====="
-            cat /tmp/release-notes.md
-
             gh release create "$TAG" \
               --title "$APP_NAME $VERSION" \
-              --notes-file /tmp/release-notes.md \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
               "$APP_NAME.apk"
 
             # Keep the LSPosed Modules Repo release in sync with the source release.
             # The target repository is intentionally updated only for stable releases.
             echo "同步正式版到 $LSPOSED_REPO：$TAG"
-            if GH_TOKEN="$LSPOSED_REPO_TOKEN" gh release view "$TAG" --repo "$LSPOSED_REPO" >/dev/null 2>&1; then
-              GH_TOKEN="$LSPOSED_REPO_TOKEN" gh release edit "$TAG" \
-                --repo "$LSPOSED_REPO" \
-                --title "$APP_NAME $VERSION" \
-                --notes-file /tmp/release-notes.md
-              GH_TOKEN="$LSPOSED_REPO_TOKEN" gh release upload "$TAG" \
-                --repo "$LSPOSED_REPO" \
-                "$APP_NAME.apk" \
-                --clobber
-            else
-              GH_TOKEN="$LSPOSED_REPO_TOKEN" gh release create "$TAG" \
-                --repo "$LSPOSED_REPO" \
-                --target main \
-                --title "$APP_NAME $VERSION" \
-                --notes-file /tmp/release-notes.md \
-                "$APP_NAME.apk"
-            fi
+            GH_TOKEN="$LSPOSED_REPO_TOKEN" gh release create "$TAG" \
+              --repo "$LSPOSED_REPO" \
+              --target main \
+              --title "$APP_NAME $VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              "$APP_NAME.apk"
             echo "已同步 $LSPOSED_REPO 发布：$TAG"
           else
-            {
-              echo "# $APP_NAME $VERSION（预发布）"
-              echo
-              echo "- 来源：\`$SOURCE_REF\`（SHA \`$SOURCE_SHA\`）"
-              echo "- versionCode：$VERSION_CODE"
-              echo "- 此版本用于验证分支上的新功能，实机验证状态请参看对应文档。"
-              echo "- 构建记录：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            } > /tmp/prerelease-notes.md
-
-            echo "===== 发布说明预览 ====="
-            cat /tmp/prerelease-notes.md
-
             gh release create "$TAG" \
               --title "$APP_NAME $VERSION（预发布）" \
               --prerelease \
-              --notes-file /tmp/prerelease-notes.md \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
               "$APP_NAME.apk"
           fi

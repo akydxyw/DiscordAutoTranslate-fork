@@ -396,30 +396,24 @@ public class ProtocolsTest {
                 extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp));
     }
 
-    /** 模型回显包装标签时严格拒绝，不剥离后继续回填。 */
+    /** 模型回显包装标签：协议解码原样返回，由译文 validator 拒绝，不剥离。 */
     @Test
-    public void echoedWrapperTagsAreRejected() throws Exception {
+    public void echoedWrapperTagsAreRejectedByTranslationValidator() throws Exception {
         String resp = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":"
                 + "\"<translate>\\n你好\\n</translate>\"}}]}";
-        try {
-            extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp);
-            fail("包装标签必须明确失败");
-        } catch (TranslationException e) {
-            assertEquals(TranslationException.Kind.PARSE, e.kind());
-        }
+        String text = extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp);
+        assertEquals("<translate>\n你好\n</translate>", text);
+        assertEquals("译文包含包装标签", Segments.plainTextViolation(text, "hello"));
     }
 
-    /** 剥离后仍残留标签 = 输出结构损坏，按解析失败拒绝（宁显原文不显字面量）。 */
+    /** 正文中的包装污染也由同一个译文 validator 拒绝，不做清理或修复。 */
     @Test
-    public void residualWrapperTagsAreRejectedAsParseError() {
+    public void residualWrapperTagsAreRejectedByTranslationValidator() throws Exception {
         String resp = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":"
                 + "\"前言 <translate>你好</translate>\"}}]}";
-        try {
-            extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp);
-            fail("残留包装标签必须失败");
-        } catch (TranslationException e) {
-            assertEquals(TranslationException.Kind.PARSE, e.kind());
-        }
+        String text = extractByFixtureMode(Config.PROTOCOL_OPENAI_COMPATIBLE, resp);
+        assertEquals("前言 <translate>你好</translate>", text);
+        assertEquals("译文包含包装标签", Segments.plainTextViolation(text, "hello"));
     }
 
     /**
@@ -580,6 +574,7 @@ public class ProtocolsTest {
                 fail("Private completion reason must reject text");
             } catch (TranslationException e) {
                 assertEquals(TranslationException.Kind.PARSE, e.kind());
+                assertEquals(TranslationException.Reason.GENERATION_STOPPED, e.reason());
                 for (String detail : new String[]{secret, "private body", "private.invalid", "private-key"}) {
                     assertFalse(e.getMessage().contains(detail));
                     assertFalse(e.toString().contains(detail));
@@ -809,6 +804,7 @@ public class ProtocolsTest {
                     fail("Malicious reason must reject accumulated text");
                 } catch (TranslationException e) {
                     assertEquals(TranslationException.Kind.PARSE, e.kind());
+                    assertEquals(TranslationException.Reason.GENERATION_STOPPED, e.reason());
                     assertEquals(i == 0
                             ? "生成被截断（finish_reason 非正常结束），译文不完整"
                             : "生成被截断（stop_reason 非正常结束），译文不完整", e.getMessage());
@@ -822,15 +818,19 @@ public class ProtocolsTest {
     }
 
     @Test
-    public void streamingWrapperTagsAreRejectedEvenAcrossDeltas() {
-        assertParseError(Config.PROTOCOL_OPENAI_COMPATIBLE,
+    public void streamingWrapperTagsAreRejectedByValidatorEvenAcrossDeltas() throws Exception {
+        String chat = decodeFixture(Config.PROTOCOL_OPENAI_COMPATIBLE,
                 "data: {\"choices\":[{\"delta\":{\"content\":\"<trans\"}}]}\n\n"
                         + "data: {\"choices\":[{\"delta\":{\"content\":\"late>你好\"}}]}\n\n"
                         + "data: [DONE]\n\n", true);
-        assertParseError(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+        assertEquals("<translate>你好", chat);
+        assertEquals("译文包含包装标签", Segments.plainTextViolation(chat, "hello"));
+        String anthropic = decodeFixture(Config.PROTOCOL_ANTHROPIC_MESSAGES,
                 "data: {\"type\":\"content_block_delta\","
                         + "\"delta\":{\"type\":\"text_delta\",\"text\":\"</translate>\"}}\n\n"
                         + "data: {\"type\":\"message_stop\"}\n\n", true);
+        assertEquals("</translate>", anthropic);
+        assertEquals("译文包含包装标签", Segments.plainTextViolation(anthropic, "hello"));
     }
 
     @Test
@@ -1112,23 +1112,177 @@ public class ProtocolsTest {
     }
 
     @Test
-    public void responsesRejectWrapperTagsAssembledAcrossDeltasAndParts() throws Exception {
+    public void responsesWrapperTagsAreRejectedByValidatorAcrossDeltasAndParts() throws Exception {
         for (String tag : new String[]{"<translate>", "</translate>"}) {
             String first = tag.substring(0, 5);
             String second = tag.substring(5) + "你好";
             JSONObject response = responseResult(first);
             response.getJSONArray("output").getJSONObject(0).getJSONArray("content")
                     .put(new JSONObject().put("type", "output_text").put("text", second));
-            assertParseError(response.toString());
-            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+            String jsonText = decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES,
+                    response.toString(), false);
+            String streamedParts = decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES,
                     responseSse(responseDelta(0, 0, 0, "msg_1", first))
                             + responseSse(responseDelta(1, 0, 1, "msg_1", second))
                             + responseSse(responseCompleted(2, response)), true);
-            assertParseError(Config.PROTOCOL_OPENAI_RESPONSES,
+            String streamedDeltas = decodeFixture(Config.PROTOCOL_OPENAI_RESPONSES,
                     responseSse(responseDelta(0, 0, 0, "msg_1", first))
                             + responseSse(responseDelta(1, 0, 0, "msg_1", second))
                             + responseSse(responseCompleted(2, responseResult(tag + "你好"))), true);
+            for (String text : new String[]{jsonText, streamedParts, streamedDeltas}) {
+                assertEquals(tag + "你好", text);
+                assertEquals("译文包含包装标签", Segments.plainTextViolation(text, "hello"));
+            }
         }
+    }
+
+    @Test
+    public void missingTerminalEventsHaveResponseIncompleteReasonForEveryProtocol() throws Exception {
+        String[] protocols = {Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_ANTHROPIC_MESSAGES, Config.PROTOCOL_OPENAI_RESPONSES};
+        String[] prefixes = {
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},"
+                        + "\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"type\":\"content_block_delta\","
+                        + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
+                        + "data: {\"type\":\"message_delta\","
+                        + "\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+                responseSse(responseDelta(0, 0, 0, "msg_1", "你好"))
+                        + responseSse(responseEvent("response.output_text.done", 1).put("text", "你好"))
+        };
+        String[] terminals = {"data: [DONE]\n\n", "data: {\"type\":\"message_stop\"}\n\n",
+                responseSse(responseCompleted(2, responseResult("你好")))};
+        for (int i = 0; i < protocols.length; i++) {
+            for (String suffix : new String[]{"", terminals[i].substring(0, terminals[i].length() - 1),
+                    "data: {\"private\":\"unfinished"}) {
+                assertFailureReason(protocols[i], prefixes[i] + suffix, true,
+                        TranslationException.Reason.RESPONSE_INCOMPLETE);
+            }
+            assertFailureReason(protocols[i], "", true,
+                    TranslationException.Reason.RESPONSE_INCOMPLETE);
+        }
+    }
+
+    @Test
+    public void abnormalChatAndAnthropicStopsHaveGenerationStoppedReasonInBothModes() throws Exception {
+        for (String reason : new String[]{"unknown", "length", "max_tokens", "refusal",
+                "content_filter", "tool_calls", "function_call", "tool_use", "pause_turn",
+                "model_context_window_exceeded", "private stop reason"}) {
+            JSONObject chat = chatResult("你好");
+            chat.getJSONArray("choices").getJSONObject(0).put("finish_reason", reason);
+            assertFailureReason(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            assertFailureReason(Config.PROTOCOL_OPENAI_COMPATIBLE,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n"
+                            + "data: {\"choices\":[{\"finish_reason\":" + JSONObject.quote(reason)
+                            + "}]}\n\ndata: [DONE]\n\n", true,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            assertFailureReason(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    anthropicResult("你好").put("stop_reason", reason).toString(), false,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            assertFailureReason(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    "data: {\"type\":\"content_block_delta\","
+                            + "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
+                            + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":"
+                            + JSONObject.quote(reason) + "}}\n\n"
+                            + "data: {\"type\":\"message_stop\"}\n\n", true,
+                    TranslationException.Reason.GENERATION_STOPPED);
+        }
+    }
+
+    @Test
+    public void malformedCompletionFieldsKeepResponseInvalidReason() throws Exception {
+        for (Object value : new Object[]{JSONObject.NULL, 42, true, new JSONObject(), new JSONArray()}) {
+            JSONObject chat = chatResult("你好");
+            chat.getJSONArray("choices").getJSONObject(0).put("finish_reason", value);
+            assertFailureReason(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false,
+                    TranslationException.Reason.RESPONSE_INVALID);
+            assertFailureReason(Config.PROTOCOL_ANTHROPIC_MESSAGES,
+                    anthropicResult("你好").put("stop_reason", value).toString(), false,
+                    TranslationException.Reason.RESPONSE_INVALID);
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                    responseSse(responseCompleted(0, responseResult("").put("status", value))), true,
+                    TranslationException.Reason.RESPONSE_INVALID);
+        }
+        JSONObject chat = chatResult("你好");
+        chat.getJSONArray("choices").getJSONObject(0).remove("finish_reason");
+        assertFailureReason(Config.PROTOCOL_OPENAI_COMPATIBLE, chat.toString(), false,
+                TranslationException.Reason.RESPONSE_INVALID);
+        JSONObject anthropic = anthropicResult("你好");
+        anthropic.remove("stop_reason");
+        assertFailureReason(Config.PROTOCOL_ANTHROPIC_MESSAGES, anthropic.toString(), false,
+                TranslationException.Reason.RESPONSE_INVALID);
+        JSONObject response = responseResult("");
+        response.remove("status");
+        assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseCompleted(0, response)), true,
+                TranslationException.Reason.RESPONSE_INVALID);
+        assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                responseSse(responseEvent("response.completed", 0)), true,
+                TranslationException.Reason.RESPONSE_INVALID);
+        for (String protocol : new String[]{Config.PROTOCOL_OPENAI_COMPATIBLE,
+                Config.PROTOCOL_ANTHROPIC_MESSAGES, Config.PROTOCOL_OPENAI_RESPONSES}) {
+            assertFailureReason(protocol, "{", false, TranslationException.Reason.RESPONSE_INVALID);
+            assertFailureReason(protocol, "data: {\n\n", true,
+                    TranslationException.Reason.RESPONSE_INVALID);
+        }
+    }
+
+    @Test
+    public void responsesGenerationFailuresHaveGenerationStoppedReasonInBothModes() throws Exception {
+        String prefix = responseSse(responseDelta(0, 0, 0, "msg_1", "你好"));
+        for (String type : new String[]{"response.failed", "response.incomplete"}) {
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                    prefix + responseSse(responseEvent(type, 1)), true,
+                    TranslationException.Reason.GENERATION_STOPPED);
+        }
+        for (String status : new String[]{"failed", "incomplete", "in_progress", "private status"}) {
+            JSONObject response = responseResult("你好").put("status", status);
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES, response.toString(), false,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                    prefix + responseSse(responseCompleted(1, response)), true,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            JSONObject messageResponse = responseResult("你好");
+            messageResponse.getJSONArray("output").getJSONObject(0).put("status", status);
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES, messageResponse.toString(), false,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                    prefix + responseSse(responseCompleted(1, messageResponse)), true,
+                    TranslationException.Reason.GENERATION_STOPPED);
+        }
+        for (String field : new String[]{"error", "incomplete_details"}) {
+            JSONObject response = responseResult("你好").put(field, new JSONObject().put("message", "private"));
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES, response.toString(), false,
+                    TranslationException.Reason.GENERATION_STOPPED);
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                    prefix + responseSse(responseCompleted(1, response)), true,
+                    TranslationException.Reason.GENERATION_STOPPED);
+        }
+    }
+
+    @Test
+    public void responsesProtocolDamageAndRefusalsRemainResponseInvalid() throws Exception {
+        String prefix = responseSse(responseDelta(0, 0, 0, "msg_1", "你好"));
+        for (String type : new String[]{"response.refusal.delta", "response.refusal.done", "error"}) {
+            assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                    prefix + responseSse(responseEvent(type, 1)), true,
+                    TranslationException.Reason.RESPONSE_INVALID);
+        }
+        assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                prefix + responseSse(responseCompleted(1, responseResult("被改写"))), true,
+                TranslationException.Reason.RESPONSE_INVALID);
+        assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                prefix + responseSse(responseDelta(0, 0, 0, "msg_1", "重复事件")), true,
+                TranslationException.Reason.RESPONSE_INVALID);
+        JSONObject refusal = responseResult("你好");
+        refusal.getJSONArray("output").getJSONObject(0).getJSONArray("content")
+                .put(new JSONObject().put("type", "refusal").put("refusal", "private"));
+        assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES, refusal.toString(), false,
+                TranslationException.Reason.RESPONSE_INVALID);
+        assertFailureReason(Config.PROTOCOL_OPENAI_RESPONSES,
+                prefix + responseSse(responseCompleted(1, refusal)), true,
+                TranslationException.Reason.RESPONSE_INVALID);
     }
 
     private static JSONObject chatResult(String text) throws Exception {
@@ -1182,6 +1336,18 @@ public class ProtocolsTest {
                 assertFalse(failure.userMessage().contains(detail));
             }
             assertTrue(failure.getCause() == null);
+        }
+    }
+
+    private static void assertFailureReason(String protocol, String body, boolean streaming,
+                                           TranslationException.Reason reason) {
+        try {
+            decodeFixture(protocol, body, streaming);
+            fail("Expected protocol failure");
+        } catch (TranslationException failure) {
+            assertEquals(TranslationException.Kind.PARSE, failure.kind());
+            assertEquals(reason, failure.reason());
+            assertEquals(0, failure.httpStatus());
         }
     }
 
