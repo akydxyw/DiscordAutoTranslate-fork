@@ -573,47 +573,54 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
 
     private void openScopeEditor() {
         if (!started || destroyed || !configurationLoaded || persistedConfigInvalid
-                || persistence.isLoading() || scopeLoading || saveInProgress || syncInProgress) return;
+                || persistence.isLoading() || scopeLoading || scopeDialog != null || saveInProgress || syncInProgress) return;
         scopeLoading = true;
         final long generation = ++scopeLoadGeneration;
         updateSaveButtonState();
-        saveExecutor.execute(() -> {
-            final List<TranslationScopeEditor.SeenChannel> recent = new ArrayList<>();
-            RuntimeException error = null;
-            try {
-                SharedPreferences directory = getSharedPreferences(RecentLocations.PREFS, MODE_PRIVATE);
-                for (RecentLocations.Entry entry : RecentLocations.parse(directory.getString(RecentLocations.KEY, "[]"))) {
-                    recent.add(new TranslationScopeEditor.SeenChannel(entry.guildId, entry.channelId));
+        try {
+            saveExecutor.execute(() -> {
+                final List<TranslationScopeEditor.SeenChannel> recent = new ArrayList<>();
+                RuntimeException error = null;
+                try {
+                    SharedPreferences directory = getSharedPreferences(RecentLocations.PREFS, MODE_PRIVATE);
+                    for (RecentLocations.Entry entry : RecentLocations.parse(directory.getString(RecentLocations.KEY, "[]"))) {
+                        recent.add(new TranslationScopeEditor.SeenChannel(entry.guildId, entry.channelId));
+                    }
+                } catch (RuntimeException failure) {
+                    error = failure;
                 }
-            } catch (RuntimeException failure) {
-                error = failure;
-            }
-            final RuntimeException failure = error;
-            persistence.post(() -> {
-                if (generation != scopeLoadGeneration) return;
-                scopeLoading = false;
-                updateSaveButtonState();
-                if (!started || destroyed || persistedConfigInvalid || syncInProgress || saveInProgress) return;
-                if (failure != null) {
-                    ProjectLog.warn("scope directory load failed exception=" + failure.getClass().getSimpleName());
-                    updateStatus(getString(R.string.scope_directory_failed));
-                    return;
-                }
-                Bundle restore = pendingScopeEditor;
-                pendingScopeEditor = null;
-                TranslationScope initial = restore == null ? scopeDraft : TranslationScope.parse(restore.getString("scope"));
-                scopeDialog = TranslationScopeEditor.show(this, initial, updated -> {
-                    scopeDraft = updated;
-                    updateScopeSummary();
-                    markDirty();
-                }, recent);
-                if (restore != null) TranslationScopeEditor.restoreState(scopeDialog, restore);
-                scopeDialog.setOnDismissListener(dialog -> {
-                    scopeDialog = null;
-                    if (started && !destroyed && pendingScopeEditor == null) startServiceSync();
+                final RuntimeException failure = error;
+                persistence.post(() -> {
+                    if (generation != scopeLoadGeneration) return;
+                    scopeLoading = false;
+                    updateSaveButtonState();
+                    if (!started || destroyed || persistedConfigInvalid || syncInProgress || saveInProgress) return;
+                    if (failure != null) {
+                        ProjectLog.warn("scope directory load failed exception=" + failure.getClass().getSimpleName());
+                        updateStatus(getString(R.string.scope_directory_failed));
+                        return;
+                    }
+                    Bundle restore = pendingScopeEditor;
+                    pendingScopeEditor = null;
+                    TranslationScope initial = restore == null ? scopeDraft : TranslationScope.parse(restore.getString("scope"));
+                    scopeDialog = TranslationScopeEditor.show(this, initial, updated -> {
+                        scopeDraft = updated;
+                        updateScopeSummary();
+                        markDirty();
+                    }, recent);
+                    if (restore != null) TranslationScopeEditor.restoreState(scopeDialog, restore);
+                    scopeDialog.setOnDismissListener(dialog -> {
+                        scopeDialog = null;
+                        if (started && !destroyed && pendingScopeEditor == null) startServiceSync();
+                    });
                 });
             });
-        });
+        } catch (RuntimeException failure) {
+            scopeLoading = false;
+            updateSaveButtonState();
+            ProjectLog.warn("scope directory submission failed exception=" + failure.getClass().getSimpleName());
+            updateStatus(getString(R.string.scope_directory_failed));
+        }
     }
 
     private EditText addField(LinearLayout parent, String label, String hint, int inputType) {
@@ -764,6 +771,8 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     /** 无效快照的占位值不是用户保存的设置；锁定页面直到用户明确重置。 */
     private void showInvalidSavedConfig() {
         persistedConfigInvalid = true;
+        pendingScopeEditor = null;
+        if (scopeDialog != null) { scopeDialog.dismiss(); scopeDialog = null; }
         boolean wasLoading = loadingUi;
         loadingUi = true;
         try {
