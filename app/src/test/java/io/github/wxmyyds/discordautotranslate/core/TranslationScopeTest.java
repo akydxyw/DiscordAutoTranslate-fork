@@ -361,6 +361,62 @@ public class TranslationScopeTest {
         assertFalse(scope.equals("scope"));
     }
 
+    @Test
+    public void matchingPolicyIgnoresLabelsAndOrderButKeepsDefaultIdsActionsAndPartitions() {
+        TranslationScope scope = new TranslationScope(false,
+                Arrays.asList(rule("1", true), rule("2", false)),
+                Arrays.asList(rule("3", false), rule("4", true)));
+        TranslationScope renamed = new TranslationScope(false,
+                Arrays.asList(new TranslationScope.Rule("1", "renamed", true), rule("2", false)),
+                Arrays.asList(new TranslationScope.Rule("3", "renamed", false), rule("4", true)));
+        TranslationScope reordered = new TranslationScope(false,
+                Arrays.asList(rule("2", false), rule("1", true)),
+                Arrays.asList(rule("4", true), rule("3", false)));
+        assertTrue(scope.sameMatchingPolicy(scope));
+        assertTrue(scope.sameMatchingPolicy(TranslationScope.parse(scope.toJson())));
+        for (TranslationScope same : Arrays.asList(renamed, reordered)) {
+            assertNotEquals(scope, same);
+            assertNotEquals(scope.toJson(), same.toJson());
+            assertTrue(scope.sameMatchingPolicy(same));
+            assertTrue(same.sameMatchingPolicy(scope));
+        }
+        TranslationScope[] changed = {
+                new TranslationScope(true, scope.servers, scope.channels),
+                new TranslationScope(false, Arrays.asList(rule("5", true), rule("2", false)), scope.channels),
+                new TranslationScope(false, scope.servers, Arrays.asList(rule("5", false), rule("4", true))),
+                new TranslationScope(false, Arrays.asList(rule("1", false), rule("2", false)), scope.channels),
+                new TranslationScope(false, scope.servers, Arrays.asList(rule("3", true), rule("4", true))),
+                new TranslationScope(false, scope.channels, scope.servers),
+                new TranslationScope(false, Collections.emptyList(), scope.channels),
+                new TranslationScope(false, scope.servers, Collections.emptyList())
+        };
+        for (TranslationScope different : changed) {
+            assertFalse(scope.sameMatchingPolicy(different));
+            assertFalse(different.sameMatchingPolicy(scope));
+        }
+        assertFalse(scope.sameMatchingPolicy(null));
+    }
+
+    @Test
+    public void listOnlyEditorDraftAndAppliedSnapshotStayIsolated() {
+        TranslationScope initial = new TranslationScope(false,
+                Collections.singletonList(rule("1", true)), Collections.singletonList(rule("2", false)));
+        List<TranslationScope.Rule> servers = new ArrayList<>(initial.servers);
+        List<TranslationScope.Rule> channels = new ArrayList<>(initial.channels);
+        servers.set(0, new TranslationScope.Rule("1", "edited", false));
+        channels.add(rule("3", true));
+        // Cancel leaves the initial snapshot untouched; Apply freezes the current containers.
+        assertEquals(Collections.singletonList(rule("1", true)), initial.servers);
+        assertEquals(Collections.singletonList(rule("2", false)), initial.channels);
+        TranslationScope applied = new TranslationScope(true, servers, channels);
+        servers.clear();
+        channels.clear();
+        assertEquals("edited", applied.servers.get(0).label);
+        assertFalse(applied.servers.get(0).translate);
+        assertEquals(2, applied.channels.size());
+        assertTrue(applied.defaultTranslate);
+    }
+
     private static TranslationScope.Rule rule(String id, boolean translate) {
         return new TranslationScope.Rule(id, "label", translate);
     }

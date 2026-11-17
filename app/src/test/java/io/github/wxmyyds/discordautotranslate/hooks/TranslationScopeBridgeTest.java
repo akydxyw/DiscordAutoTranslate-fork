@@ -312,12 +312,26 @@ public class TranslationScopeBridgeTest {
     }
 
     @Test
-    public void scopeChangeKeepsApiCacheKeyButClearsStateCardsCacheAndInFlightGeneration() {
-        Config.Snapshot before = snapshot(true, TranslationScope.ALL);
+    public void matchingPolicyChangesClearStateCardsCacheAndInFlightGeneration() {
+        TranslationScope scope = new TranslationScope(true,
+                Arrays.asList(rule("10", true), rule("11", false)),
+                Arrays.asList(rule("20", true), rule("21", false)));
+        TranslationScope[] changed = {
+                new TranslationScope(false, scope.servers, scope.channels),
+                new TranslationScope(true, Arrays.asList(rule("10", true), rule("12", false)), scope.channels),
+                new TranslationScope(true, scope.servers, Arrays.asList(rule("20", true), rule("22", false))),
+                new TranslationScope(true, Arrays.asList(rule("10", true), rule("11", true)), scope.channels),
+                new TranslationScope(true, scope.servers, Arrays.asList(rule("20", true), rule("21", true))),
+                new TranslationScope(true, Collections.emptyList(), scope.channels),
+                new TranslationScope(true, scope.servers, Collections.emptyList())
+        };
+        for (TranslationScope after : changed) assertPolicyInvalidates(scope, after);
+    }
+
+    private void assertPolicyInvalidates(TranslationScope scope, TranslationScope changedScope) {
+        Config.Snapshot before = snapshot(true, scope);
         // The row remains allowed, proving the obsolete callback is rejected by ownership,
         // not merely by the new policy's gate.
-        TranslationScope changedScope = new TranslationScope(false, Collections.emptyList(),
-                Collections.singletonList(rule("20", true)));
         Config.Snapshot after = snapshot(true, changedScope);
         assertNotEquals(before.translationScope, after.translationScope);
         assertEquals(before.version(), after.version());
@@ -373,8 +387,33 @@ public class TranslationScopeBridgeTest {
     public void equalImmutableScopeDoesNotInvalidateOwnedWorkOrRetainedState() {
         TranslationScope scope = new TranslationScope(false,
                 Collections.singletonList(rule("10", true)), Collections.emptyList());
+        assertPolicyRetains(scope, TranslationScope.parse(scope.toJson()));
+    }
+
+    @Test
+    public void labelAndOrderChangesKeepStateCardsCacheAndTaskOwnership() {
+        TranslationScope scope = new TranslationScope(false,
+                Arrays.asList(rule("10", true), rule("11", false)),
+                Arrays.asList(rule("20", true), rule("21", false)));
+        TranslationScope renamed = new TranslationScope(false,
+                Arrays.asList(new TranslationScope.Rule("10", "renamed server", true), rule("11", false)),
+                Arrays.asList(new TranslationScope.Rule("20", "renamed channel", true), rule("21", false)));
+        TranslationScope reordered = new TranslationScope(false,
+                Arrays.asList(rule("11", false), rule("10", true)),
+                Arrays.asList(rule("21", false), rule("20", true)));
+        assertNotEquals(scope, renamed);
+        assertNotEquals(scope, reordered);
+        assertPolicyRetains(scope, renamed);
+        assertPolicyRetains(scope, reordered);
+    }
+
+    private void assertPolicyRetains(TranslationScope scope, TranslationScope updatedScope) {
+        // Each display-only edit starts with independent retained/work fixtures.
+        store.onNewGeneration();
+        CardState.clear();
+        TranslationCache.get().clear();
         Config.Snapshot before = snapshot(true, scope);
-        Config.Snapshot equal = snapshot(true, TranslationScope.parse(scope.toJson()));
+        Config.Snapshot updated = snapshot(true, updatedScope);
         bridge.updateConfig(before);
         bridge.rememberMessageLocation(ROW, new MessageLocation("10", "20"));
         StateStore.Entry entry = store.obtain(ROW, "hash");
@@ -383,20 +422,29 @@ public class TranslationScopeBridgeTest {
         Object source = new Object();
         store.rememberSource(ROW, new StateStore.Source(source, false, null));
         String cardKey = keys(ROW)[1];
+        StateStore.Entry cardEntry = store.obtain(cardKey, "card-hash");
+        assertTrue(store.useCached(cardEntry, "retained card translation"));
         CardState.Card card = CardState.bind(HookBridge.cardIdentityOf(cardKey), cardKey,
                 Collections.singletonList(cardKey));
         TranslationCache.get().put("retained", "translation");
         int generation = store.generation();
 
-        bridge.updateConfig(equal);
+        bridge.updateConfig(updated);
 
-        assertEquals(before.version(), equal.version());
+        assertEquals(before.version(), updated.version());
         assertEquals(generation, store.generation());
         assertSame(entry, store.peek(ROW));
         assertSame(source, store.source(ROW).content);
         assertSame(card, CardState.forKey(cardKey));
+        assertSame(cardEntry, store.peek(cardKey));
+        assertEquals(StateStore.Status.TRANSLATED, cardEntry.status);
+        assertEquals("retained card translation", cardEntry.translatedText);
         assertTrue(store.owns(task));
         assertEquals("translation", TranslationCache.get().get("retained"));
+        bridge.onTranslateResult(task, true, "completed after display-only edit", null);
+        assertEquals(StateStore.Status.TRANSLATED, entry.status);
+        assertEquals("completed after display-only edit", entry.translatedText);
+        assertEquals("completed after display-only edit", TranslationCache.get().get("hash"));
     }
 
     /** A regression must fail locally in the fake engine, never contact an API. */

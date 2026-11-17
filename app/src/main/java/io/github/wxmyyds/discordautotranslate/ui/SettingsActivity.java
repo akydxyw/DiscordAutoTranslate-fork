@@ -566,9 +566,14 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
                 scopeDraft.servers.size(), scopeDraft.channels.size()));
     }
 
+    /** Shared by the button and entry, including lifecycle and persistence exclusion. */
+    private boolean canOpenScopeEditor() {
+        return started && !destroyed && configurationLoaded && !persistedConfigInvalid
+                && !persistence.isLoading() && scopeDialog == null && !saveInProgress && !syncInProgress;
+    }
+
     private void openScopeEditor() {
-        if (!started || destroyed || !configurationLoaded || persistedConfigInvalid
-                || persistence.isLoading() || scopeDialog != null || saveInProgress || syncInProgress) return;
+        if (!canOpenScopeEditor()) return;
         Bundle restore = pendingScopeEditor;
         pendingScopeEditor = null;
         TranslationScope initial = restore == null ? scopeDraft
@@ -1025,7 +1030,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             resetButton.setEnabled(available && persistedConfigInvalid);
         }
         enabledInput.setEnabled(formAvailable);
-        scopeButton.setEnabled(formAvailable && started && scopeDialog == null);
+        scopeButton.setEnabled(canOpenScopeEditor());
         scopeSummary.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         loggingInput.setEnabled(formAvailable);
         protocolSpinner.setEnabled(formAvailable);

@@ -1,5 +1,8 @@
 package io.github.wxmyyds.discordautotranslate.ui;
 
+import static io.github.wxmyyds.discordautotranslate.core.TranslationScope.MAX_LABEL_LENGTH;
+import static io.github.wxmyyds.discordautotranslate.core.TranslationScope.MAX_RULES;
+
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -37,9 +40,6 @@ import io.github.wxmyyds.discordautotranslate.core.TranslationScope;
 
 /** Edits an isolated draft; only Apply delivers it to the activity's existing save flow. */
 final class TranslationScopeEditor {
-    private static final int MAX_RULES = 256;
-    private static final int MAX_LABEL_LENGTH = 80;
-
     private TranslationScopeEditor() {
     }
 
@@ -85,14 +85,6 @@ final class TranslationScopeEditor {
         }
     }
 
-    private static List<TranslationScope.Rule> copyRules(List<TranslationScope.Rule> source) {
-        List<TranslationScope.Rule> result = new ArrayList<>(source.size());
-        for (TranslationScope.Rule rule : source) {
-            result.add(new TranslationScope.Rule(rule.id, rule.label, rule.translate));
-        }
-        return result;
-    }
-
     private static final class ScopeDialog extends Dialog {
         private final Activity activity;
         private final Consumer<TranslationScope> onApply;
@@ -124,8 +116,8 @@ final class TranslationScopeEditor {
             this.activity = Objects.requireNonNull(activity);
             this.onApply = Objects.requireNonNull(onApply);
             Objects.requireNonNull(initial);
-            servers = copyRules(initial.servers);
-            channels = copyRules(initial.channels);
+            servers = new ArrayList<>(initial.servers);
+            channels = new ArrayList<>(initial.channels);
             defaultTranslate = initial.defaultTranslate;
             setOwnerActivity(activity);
             requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -226,8 +218,7 @@ final class TranslationScopeEditor {
             actions.addView(cancel, weighted());
             Button apply = button(R.string.scope_apply);
             apply.setOnClickListener(view -> {
-                TranslationScope draft = new TranslationScope(defaultTranslate,
-                        copyRules(servers), copyRules(channels));
+                TranslationScope draft = new TranslationScope(defaultTranslate, servers, channels);
                 // This callback marks the activity draft dirty; it must not persist here.
                 onApply.accept(draft);
                 dismiss();

@@ -47,7 +47,7 @@ public final class HookBridge {
     /** 正文视图 → 消息 ID（有界，避免列表回收后无限增长）。 */
     private final Map<View, String> viewToMessageId = boundedMap(512);
 
-    /** Only native row bindings own edit metadata; source snapshots live with state. */
+    /** Bounded server/channel locations; only native message row bindings own these records. */
     private final Map<String, MessageLocation> messageLocations = boundedMap(512);
 
     void rememberMessageLocation(String messageId, MessageLocation location) {
@@ -134,7 +134,8 @@ public final class HookBridge {
 
     /**
      * 更新配置。会影响翻译结果的配置变化（URL/模型/目标语言/协议/提示词/凭据）
-     * 发生后，递增状态代次使旧译文与在途任务失效（需求 §5.6、§5.7）。
+     * 或范围匹配策略变化后，递增状态代次使旧译文与在途任务失效。
+     * 纯范围备注或规则顺序变化保留状态与任务所有权（需求 §5.6、§5.7）。
      */
     public void updateConfig(Config.Snapshot c) {
         if (c == null) {
@@ -148,7 +149,7 @@ public final class HookBridge {
 
         // version() 已包含密钥/额外请求头指纹：凭据变更同样会使缓存与在途结果失效。
         if (old == null || !old.version().equals(c.version())
-                || !old.translationScope.equals(c.translationScope)) {
+                || !old.translationScope.sameMatchingPolicy(c.translationScope)) {
             StateStore.get().onNewGeneration();
             TranslationCache.get().clear();
             CardState.clear();
@@ -440,15 +441,6 @@ public final class HookBridge {
         String cached = TranslationCache.get().get(hash);
         if (cached != null) {
             if (StateStore.get().useCached(entry, cached)) refreshTranslation(messageId);
-            return;
-        }
-
-        if (!cfg.isUsable()) {
-            ProjectLog.warnOnce("translation.config", "translation API configuration is unusable"
-                    + " configErrorPresent=" + (cfg.configError != null));
-            if (StateStore.get().failIdle(entry,
-                    cfg.configError != null ? cfg.configError : "API 未配置"))
-                refreshTranslation(messageId);
             return;
         }
 

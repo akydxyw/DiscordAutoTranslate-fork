@@ -123,19 +123,12 @@ public final class StateStore {
         return true;
     }
 
-    /** Synchronous cache/config decisions use the same state owner as async results. */
+    /** Synchronous cache hits use the same state owner as async results. */
     public synchronized boolean useCached(Entry entry, String translated) {
         if (entries.get(entry.messageId) != entry || entry.status != Status.IDLE) return false;
         entry.translatedText = translated;
         entry.status = Status.TRANSLATED;
         entry.showingOriginal = false;
-        return true;
-    }
-
-    public synchronized boolean failIdle(Entry entry, String error) {
-        if (entries.get(entry.messageId) != entry || entry.status != Status.IDLE) return false;
-        entry.lastError = error;
-        entry.status = Status.FAILED;
         return true;
     }
 

@@ -8,15 +8,17 @@ import org.json.JSONTokener;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Immutable translation policy: channel rule, then server rule, then the default. */
 public final class TranslationScope {
-    private static final int MAX_RULES = 256;
-    private static final int MAX_LABEL_LENGTH = 80;
+    public static final int MAX_RULES = 256;
+    public static final int MAX_LABEL_LENGTH = 80;
 
     public static final TranslationScope ALL = new TranslationScope(
             true, Collections.emptyList(), Collections.emptyList());
@@ -46,7 +48,7 @@ public final class TranslationScope {
             }
             String trimmedLabel = label.trim();
             if (trimmedLabel.length() > MAX_LABEL_LENGTH) {
-                throw new IllegalArgumentException("Rule label exceeds 80 characters");
+                throw new IllegalArgumentException("Rule label exceeds " + MAX_LABEL_LENGTH + " characters");
             }
             this.id = id;
             this.label = trimmedLabel;
@@ -183,6 +185,23 @@ public final class TranslationScope {
             }
         }
         return defaultTranslate;
+    }
+
+    /** Compare matching policy only: labels and rule order are display/serialization details. */
+    public boolean sameMatchingPolicy(TranslationScope other) {
+        return other != null && defaultTranslate == other.defaultTranslate
+                && sameRuleActions(servers, other.servers)
+                && sameRuleActions(channels, other.channels);
+    }
+
+    private static boolean sameRuleActions(List<Rule> rules, List<Rule> other) {
+        if (rules.size() != other.size()) return false;
+        Map<String, Boolean> actions = new HashMap<>();
+        for (Rule rule : other) actions.put(rule.id, rule.translate);
+        for (Rule rule : rules) {
+            if (!Boolean.valueOf(rule.translate).equals(actions.get(rule.id))) return false;
+        }
+        return true;
     }
 
     /** Fixed key order and list order make the compact representation stable. */
