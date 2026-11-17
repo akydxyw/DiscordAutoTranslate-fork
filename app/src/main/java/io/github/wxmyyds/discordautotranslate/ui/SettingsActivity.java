@@ -29,7 +29,6 @@ import androidx.annotation.Nullable;
 import io.github.wxmyyds.discordautotranslate.R;
 import io.github.wxmyyds.discordautotranslate.core.Config;
 import io.github.wxmyyds.discordautotranslate.core.TranslationScope;
-import io.github.wxmyyds.discordautotranslate.core.RecentLocations;
 import io.github.wxmyyds.discordautotranslate.core.ConfigurationSync;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
 import io.github.wxmyyds.discordautotranslate.core.MemoryPrefs;
@@ -141,8 +140,6 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private TextView scopeSummary;
     private TranslationScope scopeDraft = TranslationScope.ALL;
     private Dialog scopeDialog;
-    private boolean scopeLoading;
-    private long scopeLoadGeneration;
     private Bundle pendingScopeEditor;
     private static final String STATE_SCOPE_EDITOR = "scope_editor";
 
@@ -185,8 +182,6 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     protected void onStop() {
         started = false;
         persistence.stop();
-        scopeLoadGeneration++;
-        scopeLoading = false;
         if (scopeDialog != null) {
             pendingScopeEditor = TranslationScopeEditor.saveState(scopeDialog);
             scopeDialog.dismiss(); scopeDialog = null;
@@ -291,7 +286,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
     private void startServiceSync() {
         if (!started || destroyed || service == null || remotePrefs == null
                 || !configurationLoaded || persistence.isLoading()
-                || saveInProgress || syncInProgress || scopeLoading || scopeDialog != null || pendingScopeEditor != null
+                || saveInProgress || syncInProgress || scopeDialog != null || pendingScopeEditor != null
                 || syncAttemptGeneration == serviceGeneration) {
             return;
         }
@@ -573,54 +568,23 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
 
     private void openScopeEditor() {
         if (!started || destroyed || !configurationLoaded || persistedConfigInvalid
-                || persistence.isLoading() || scopeLoading || scopeDialog != null || saveInProgress || syncInProgress) return;
-        scopeLoading = true;
-        final long generation = ++scopeLoadGeneration;
-        updateSaveButtonState();
-        try {
-            saveExecutor.execute(() -> {
-                final List<TranslationScopeEditor.SeenChannel> recent = new ArrayList<>();
-                RuntimeException error = null;
-                try {
-                    SharedPreferences directory = getSharedPreferences(RecentLocations.PREFS, MODE_PRIVATE);
-                    for (RecentLocations.Entry entry : RecentLocations.parse(directory.getString(RecentLocations.KEY, "[]"))) {
-                        recent.add(new TranslationScopeEditor.SeenChannel(entry.guildId, entry.channelId));
-                    }
-                } catch (RuntimeException failure) {
-                    error = failure;
-                }
-                final RuntimeException failure = error;
-                persistence.post(() -> {
-                    if (generation != scopeLoadGeneration) return;
-                    scopeLoading = false;
-                    updateSaveButtonState();
-                    if (!started || destroyed || persistedConfigInvalid || syncInProgress || saveInProgress) return;
-                    if (failure != null) {
-                        ProjectLog.warn("scope directory load failed exception=" + failure.getClass().getSimpleName());
-                        updateStatus(getString(R.string.scope_directory_failed));
-                        return;
-                    }
-                    Bundle restore = pendingScopeEditor;
-                    pendingScopeEditor = null;
-                    TranslationScope initial = restore == null ? scopeDraft : TranslationScope.parse(restore.getString("scope"));
-                    scopeDialog = TranslationScopeEditor.show(this, initial, updated -> {
-                        scopeDraft = updated;
-                        updateScopeSummary();
-                        markDirty();
-                    }, recent);
-                    if (restore != null) TranslationScopeEditor.restoreState(scopeDialog, restore);
-                    scopeDialog.setOnDismissListener(dialog -> {
-                        scopeDialog = null;
-                        if (started && !destroyed && pendingScopeEditor == null) startServiceSync();
-                    });
-                });
-            });
-        } catch (RuntimeException failure) {
-            scopeLoading = false;
+                || persistence.isLoading() || scopeDialog != null || saveInProgress || syncInProgress) return;
+        Bundle restore = pendingScopeEditor;
+        pendingScopeEditor = null;
+        TranslationScope initial = restore == null ? scopeDraft
+                : TranslationScope.parse(restore.getString("scope"));
+        scopeDialog = TranslationScopeEditor.show(this, initial, updated -> {
+            scopeDraft = updated;
+            updateScopeSummary();
+            markDirty();
+        });
+        if (restore != null) TranslationScopeEditor.restoreState(scopeDialog, restore);
+        scopeDialog.setOnDismissListener(dialog -> {
+            scopeDialog = null;
             updateSaveButtonState();
-            ProjectLog.warn("scope directory submission failed exception=" + failure.getClass().getSimpleName());
-            updateStatus(getString(R.string.scope_directory_failed));
-        }
+            if (started && !destroyed && pendingScopeEditor == null) startServiceSync();
+        });
+        updateSaveButtonState();
     }
 
     private EditText addField(LinearLayout parent, String label, String hint, int inputType) {
@@ -1061,7 +1025,7 @@ public class SettingsActivity extends Activity implements XposedServiceConnectio
             resetButton.setEnabled(available && persistedConfigInvalid);
         }
         enabledInput.setEnabled(formAvailable);
-        scopeButton.setEnabled(formAvailable && started && !scopeLoading);
+        scopeButton.setEnabled(formAvailable && started && scopeDialog == null);
         scopeSummary.setVisibility(persistedConfigInvalid ? View.INVISIBLE : View.VISIBLE);
         loggingInput.setEnabled(formAvailable);
         protocolSpinner.setEnabled(formAvailable);

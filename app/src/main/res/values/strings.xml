@@ -97,7 +97,6 @@
     <string name="scope_default_translate">Translate by default</string>
     <string name="scope_default_do_not_translate">Do not translate by default</string>
     <string name="scope_search_hint">Search by label or ID</string>
-    <string name="scope_add_recent">Add from recently seen</string>
     <string name="scope_cancel">Cancel</string>
     <string name="scope_apply">Apply to draft</string>
     <string name="scope_servers_title">Server rules (%1$d/%2$d)</string>
@@ -127,13 +126,6 @@
     <string name="scope_error_duplicate">A rule with this ID already exists in this section</string>
     <string name="scope_error_limit">Each section supports at most %1$d rules. Delete a rule first.</string>
     <string name="scope_error_action">Select Translate or Do not translate</string>
-    <string name="scope_recent_servers">Recently seen servers</string>
-    <string name="scope_recent_channels">Recently seen channels</string>
-    <string name="scope_recent_server_item">Server ID: %1$s</string>
-    <string name="scope_recent_channel_item">Channel ID: %1$s — %2$s</string>
-    <string name="scope_dm">Direct message</string>
-    <string name="scope_recent_empty">No entries recorded yet. Browse messages in Discord, or use Add to enter an ID.</string>
-    <string name="scope_explanation">Channel rules override server rules, then the default policy. Delete a rule to inherit. Global off blocks new translations. Apply only updates this draft; save and sync settings, then restart Discord. Only observed IDs are listed, not a complete server/channel directory.</string>
+    <string name="scope_explanation">Channel rules override server rules, then the default policy. Delete a rule to inherit. Global off blocks new translations. Apply only updates this draft; save and sync settings, then restart Discord. Copy a server or channel ID in Discord developer mode to add a rule.</string>
     <string name="scope_summary">%1$s · %2$d server rules · %3$d channel rules</string>
-    <string name="scope_directory_failed">Could not read the recent directory. Saved rules are unchanged.</string>
 </resources>

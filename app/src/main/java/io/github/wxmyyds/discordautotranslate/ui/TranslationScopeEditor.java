@@ -25,11 +25,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -45,20 +43,10 @@ final class TranslationScopeEditor {
     private TranslationScopeEditor() {
     }
 
-    static final class SeenChannel {
-        final String guildId;
-        final String channelId;
-
-        SeenChannel(String guildId, String channelId) {
-            this.guildId = guildId;
-            this.channelId = Objects.requireNonNull(channelId);
-        }
-    }
-
     /** The owner must dismiss the returned dialog in Activity.onStop(). */
     static Dialog show(Activity activity, TranslationScope initial,
-                       Consumer<TranslationScope> onApply, List<SeenChannel> recent) {
-        ScopeDialog dialog = new ScopeDialog(activity, initial, onApply, recent);
+                       Consumer<TranslationScope> onApply) {
+        ScopeDialog dialog = new ScopeDialog(activity, initial, onApply);
         dialog.show();
         Window window = Objects.requireNonNull(dialog.getWindow());
         window.getDecorView().setPadding(0, 0, 0, 0);
@@ -110,7 +98,6 @@ final class TranslationScopeEditor {
         private final Consumer<TranslationScope> onApply;
         private final List<TranslationScope.Rule> servers;
         private final List<TranslationScope.Rule> channels;
-        private final List<SeenChannel> recent;
         private final Set<Dialog> children = new LinkedHashSet<>();
         private final ColorStateList primary;
         private final ColorStateList secondary;
@@ -132,7 +119,7 @@ final class TranslationScopeEditor {
         private int otherChoice;
 
         ScopeDialog(Activity activity, TranslationScope initial,
-                    Consumer<TranslationScope> onApply, List<SeenChannel> recent) {
+                    Consumer<TranslationScope> onApply) {
             super(activity);
             this.activity = Objects.requireNonNull(activity);
             this.onApply = Objects.requireNonNull(onApply);
@@ -140,7 +127,6 @@ final class TranslationScopeEditor {
             servers = copyRules(initial.servers);
             channels = copyRules(initial.channels);
             defaultTranslate = initial.defaultTranslate;
-            this.recent = new ArrayList<>(Objects.requireNonNull(recent));
             setOwnerActivity(activity);
             requestWindowFeature(Window.FEATURE_NO_TITLE);
             setCanceledOnTouchOutside(false);
@@ -222,10 +208,6 @@ final class TranslationScopeEditor {
                 }
             });
             content.addView(search);
-
-            Button recentButton = button(R.string.scope_add_recent);
-            recentButton.setOnClickListener(view -> showRecentKinds());
-            content.addView(recentButton);
 
             serverTitle = addSectionHeader(content, true);
             serverCards = column();
@@ -462,68 +444,6 @@ final class TranslationScopeEditor {
                 renderRules();
                 editor.dismiss();
             });
-        }
-
-        private void showRecentKinds() {
-            if (recent.isEmpty()) {
-                showRecentEmpty();
-                return;
-            }
-            String[] kinds = {activity.getString(R.string.scope_recent_servers),
-                    activity.getString(R.string.scope_recent_channels)};
-            showChild(new AlertDialog.Builder(activity)
-                    .setTitle(R.string.scope_add_recent)
-                    .setItems(kinds, (dialog, which) -> showRecentList(which == 0))
-                    .setNegativeButton(R.string.scope_cancel, null)
-                    .create());
-        }
-
-        private void showRecentList(boolean server) {
-            Map<String, String> entries = new LinkedHashMap<>();
-            for (SeenChannel seen : recent) {
-                boolean directMessage = seen.guildId == null;
-                if (server) {
-                    if (!directMessage) {
-                        entries.put(seen.guildId, activity.getString(
-                                R.string.scope_recent_server_item, seen.guildId));
-                    }
-                } else {
-                    String context = directMessage ? activity.getString(R.string.scope_dm)
-                            : activity.getString(R.string.scope_recent_server_item, seen.guildId);
-                    entries.put(seen.channelId, activity.getString(
-                            R.string.scope_recent_channel_item, seen.channelId, context));
-                }
-            }
-            if (entries.isEmpty()) {
-                showRecentEmpty();
-                return;
-            }
-            List<String> ids = new ArrayList<>(entries.keySet());
-            String[] labels = entries.values().toArray(new String[0]);
-            showChild(new AlertDialog.Builder(activity)
-                    .setTitle(server ? R.string.scope_recent_servers : R.string.scope_recent_channels)
-                    .setItems(labels, (dialog, which) -> {
-                        String id = ids.get(which);
-                        TranslationScope.Rule original = null;
-                        for (TranslationScope.Rule rule : server ? servers : channels) {
-                            if (rule.id.equals(id)) {
-                                original = rule;
-                                break;
-                            }
-                        }
-                        // Only prefill known IDs; existing rules keep their label and action.
-                        editRule(server, original, id);
-                    })
-                    .setNegativeButton(R.string.scope_cancel, null)
-                    .create());
-        }
-
-        private void showRecentEmpty() {
-            showChild(new AlertDialog.Builder(activity)
-                    .setTitle(R.string.scope_add_recent)
-                    .setMessage(R.string.scope_recent_empty)
-                    .setPositiveButton(R.string.scope_close, null)
-                    .create());
         }
 
         private LinearLayout column() {

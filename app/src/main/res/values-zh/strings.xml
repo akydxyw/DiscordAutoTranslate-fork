@@ -97,7 +97,6 @@
     <string name="scope_default_translate">默认翻译</string>
     <string name="scope_default_do_not_translate">默认不翻译</string>
     <string name="scope_search_hint">按备注或 ID 搜索</string>
-    <string name="scope_add_recent">从最近出现添加</string>
     <string name="scope_cancel">取消</string>
     <string name="scope_apply">应用到草稿</string>
     <string name="scope_servers_title">服务器规则（%1$d/%2$d）</string>
@@ -127,13 +126,6 @@
     <string name="scope_error_duplicate">此分区已存在相同 ID 的规则</string>
     <string name="scope_error_limit">每个分区最多 %1$d 条规则，请先删除规则。</string>
     <string name="scope_error_action">请选择翻译或不翻译</string>
-    <string name="scope_recent_servers">最近出现的服务器</string>
-    <string name="scope_recent_channels">最近出现的频道</string>
-    <string name="scope_recent_server_item">服务器 ID：%1$s</string>
-    <string name="scope_recent_channel_item">频道 ID：%1$s — %2$s</string>
-    <string name="scope_dm">私信</string>
-    <string name="scope_recent_empty">尚无记录。可先在 Discord 浏览消息，或使用添加按钮录入 ID。</string>
-    <string name="scope_explanation">频道规则优先于服务器规则，再使用默认策略。删除规则即继承。全局关闭阻止新翻译。“应用”仅更新草稿，之后请保存、同步设置并重启 Discord。最近目录只包含实际观察到的 ID，不是完整服务器/频道列表。</string>
+    <string name="scope_explanation">频道规则优先于服务器规则，再使用默认策略。删除规则即继承。全局关闭阻止新翻译。“应用”仅更新草稿，之后请保存、同步设置并重启 Discord。在 Discord 开发者模式中复制服务器或频道 ID 后添加规则。</string>
     <string name="scope_summary">%1$s · %2$d 条服务器规则 · %3$d 条频道规则</string>
-    <string name="scope_directory_failed">无法读取最近目录，已保存规则未改变。</string>
 </resources>

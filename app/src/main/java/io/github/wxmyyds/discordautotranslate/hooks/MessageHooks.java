@@ -169,7 +169,6 @@ public final class MessageHooks {
         View rowView = asView(chain.getThisObject());
         if (rowView != null) {
             HookBridge.get().bindView(rowView, messageId);
-            if (!RenderDispatcher.isRerendering()) LocationReporter.observe(location, rowView.getContext());
         }
     }
 
