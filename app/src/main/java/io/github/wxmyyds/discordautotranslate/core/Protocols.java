@@ -155,20 +155,17 @@ public final class Protocols {
      *
      * <p>API URL 是基础地址，只填到 {@code /v1}（或网关的基础路径），
      * 端点后缀由所选协议决定：Compatible 追加 {@code /chat/completions}，
-     * Responses 追加 {@code /responses}，切换协议不需要改 URL。
-     * URL 不应自带协议端点后缀，写了会被再次追加成重复路径。</p>
+     * Responses 追加 {@code /responses}，切换协议不需要改 URL。</p>
+     *
+     * <p>两种真实配置也会得到正确端点：URL 已带当前协议的完整后缀时不重复追加
+     * （否则会拼成 {@code /chat/completions/chat/completions} 而返回 404）；
+     * URL 带查询串（例如 Azure 风格的 {@code ?api-version=...}）时后缀插在
+     * 路径末尾、查询串之前，而不是拼到查询串后面。</p>
      *
      * @throws IllegalArgumentException API URL 或协议无效
      */
     public static String endpoint(String protocol, String apiUrl) {
         if (apiUrl == null || apiUrl.trim().isEmpty()) {
-            throw new IllegalArgumentException("API URL is empty");
-        }
-        String url = apiUrl.trim();
-        while (url.endsWith("/")) {
-            url = url.substring(0, url.length() - 1);
-        }
-        if (url.isEmpty()) {
             throw new IllegalArgumentException("API URL is empty");
         }
         String suffix;
@@ -181,7 +178,28 @@ public final class Protocols {
         } else {
             throw new IllegalArgumentException("Unsupported provider protocol");
         }
-        return url + suffix;
+
+        String url = apiUrl.trim();
+        int tailStart = url.length();
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c == '?' || c == '#') {
+                tailStart = i;
+                break;
+            }
+        }
+        String base = url.substring(0, tailStart);
+        String tail = url.substring(tailStart);
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        if (base.isEmpty()) {
+            throw new IllegalArgumentException("API URL is empty");
+        }
+        if (!base.endsWith(suffix)) {
+            base = base + suffix;
+        }
+        return base + tail;
     }
 
     /** 是否该协议支持本模块当前实现的流式响应格式。 */

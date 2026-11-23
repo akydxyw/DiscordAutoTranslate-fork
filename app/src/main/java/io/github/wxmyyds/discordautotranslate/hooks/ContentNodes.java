@@ -365,8 +365,10 @@ public final class ContentNodes {
 
     static List<String> alignTranslation(String plain, AlignmentPlan plan) {
         if (plan.groupIds.isEmpty()) throw reject(RejectionReason.NO_TRANSLATABLE_SEGMENTS);
-        requireAnchorCounts(plain, plan.urls, RejectionReason.URL_COUNT);
-        requireAnchorCounts(plain, plan.emojiAnchors, RejectionReason.EMOJI_COUNT);
+        plain = repairStyleMarkers(plain);
+        requireAnchorCounts(plain, plan.urls, RejectionReason.URL_COUNT, false);
+        // emoji 锚点允许被模型丢弃：丢弃时相邻片段按合并回填处理（见 alignSpanToParts）。
+        requireAnchorCounts(plain, plan.emojiAnchors, RejectionReason.EMOJI_COUNT, true);
         if (!RetainedNodeMarkers.matchesExpected(plain, plan.retainedMarkers))
             throw reject(RejectionReason.RETAINED_MARKER);
         requireStyleMarkers(plain, plan);
@@ -376,32 +378,84 @@ public final class ContentNodes {
         return alignTokens(plain, plan);
     }
 
+    /** 模型写坏的样式标记：{@code </ x1>}、{@code < x1 >} 等多余空白。 */
+    private static final java.util.regex.Pattern SLOPPY_STYLE_MARKER =
+            java.util.regex.Pattern.compile("<\\s*(/?)\\s*x(\\d+)\\s*>");
+
+    /** 丢弃闭标记时，样式内容延伸到的下一个样式标记边界。 */
+    private static final java.util.regex.Pattern ANY_STYLE_MARKER =
+            java.util.regex.Pattern.compile("<x\\d+>|</x\\d+>");
+
+    /**
+     * 归一化译文里的样式标记：小模型常把 {@code </x1>} 写成 {@code </ x1>}
+     * 或在标记内夹带空白。只收紧标记内的空白，不改写其他内容。
+     */
+    static String repairStyleMarkers(String plain) {
+        java.util.regex.Matcher m = SLOPPY_STYLE_MARKER.matcher(plain);
+        if (!m.find()) {
+            return plain;
+        }
+        StringBuilder sb = new StringBuilder(plain.length());
+        int last = 0;
+        do {
+            sb.append(plain, last, m.start())
+                    .append('<').append(m.group(1)).append('x')
+                    .append(m.group(2)).append('>');
+            last = m.end();
+        } while (m.find());
+        return sb.append(plain.substring(last)).toString();
+    }
+
     // Recognize malformed reserved tags too; an exact-tag-only scan would let them reach Text.
     private static final java.util.regex.Pattern STYLE_PREFIX =
             java.util.regex.Pattern.compile("<\\s*/?\\s*x(?![A-Za-z_])",
                     java.util.regex.Pattern.CASE_INSENSITIVE);
 
-    /** The captured flat sequence must occur exactly once, with no nesting or extra reserved tags. */
+    /**
+     * The markers that ARE present must form an in-order subsequence of the expected
+     * open/close sequence; the model may drop individual markers (tolerated, see
+     * {@link #alignByStyleMarkers}), but wrong ids, duplicates and reordering are rejected.
+     */
     private static void requireStyleMarkers(String plain, AlignmentPlan plan) {
         java.util.regex.Matcher markers = STYLE_PREFIX.matcher(plain);
         int styleId = 1;
         boolean closing = false;
         while (markers.find()) {
-            RejectionReason reason = closing ? RejectionReason.STYLE_CLOSE : RejectionReason.STYLE_OPEN;
-            if (styleId > plan.styleMarkers) throw reject(reason);
-            String expected = (closing ? "</x" : "<x") + styleId + ">";
-            if (!plain.startsWith(expected, markers.start())) throw reject(reason);
-            if (closing) styleId++;
-            closing = !closing;
+            int end = plain.indexOf('>', markers.start());
+            if (end < 0) {
+                // 截断的/未闭合的标记碎片：按样式错误拒绝。
+                throw reject(closing ? RejectionReason.STYLE_CLOSE : RejectionReason.STYLE_OPEN);
+            }
+            String text = plain.substring(markers.start(), end + 1);
+            boolean matchClosing = text.startsWith("</");
+            int n;
+            try {
+                n = Integer.parseInt(text.substring(matchClosing ? 3 : 2, text.length() - 1));
+            } catch (NumberFormatException | StringIndexOutOfBoundsException e) {
+                throw reject(matchClosing ? RejectionReason.STYLE_CLOSE : RejectionReason.STYLE_OPEN);
+            }
+            if (n > plan.styleMarkers || n < styleId
+                    || (n == styleId && closing && !matchClosing)) {
+                throw reject(matchClosing ? RejectionReason.STYLE_CLOSE : RejectionReason.STYLE_OPEN);
+            }
+            if (n > styleId) {
+                // 中间样式的标记被模型整对丢弃：直接跳到该样式。
+                styleId = n;
+            }
+            if (matchClosing) {
+                styleId++;
+                closing = false;
+            } else {
+                closing = true;
+            }
         }
-        if (closing) throw reject(RejectionReason.STYLE_CLOSE);
-        if (styleId <= plan.styleMarkers) throw reject(RejectionReason.STYLE_OPEN);
     }
 
     /**
      * 按样式标记扫描译文：树序遍历令牌流，样式片段的译文取自
      * {@code <xN>…</xN>} 之间，其余文本按标记间隔分配给相邻的普通片段。
-     * 任何标记缺失、错位或空内容都会拒绝整条回填。
+     * 标记写坏时先做无损修复（见 repairStyleMarkers）；仍缺失、错位或
+     * 空内容则拒绝整条回填。
      */
     private static List<String> alignByStyleMarkers(String plain, AlignmentPlan plan) {
         List<String> parts = new ArrayList<>(
@@ -411,24 +465,46 @@ public final class ContentNodes {
         for (PlanToken t : plan.tokens) {
             if (t.anchor != null) {
                 int at = plain.indexOf(t.anchor, cursor);
-                if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
+                if (at < 0) {
+                    if (t.emoji) {
+                        continue; // emoji 锚点被模型丢弃：两侧片段按合并回填处理。
+                    }
+                    throw reject(RejectionReason.ANCHOR_ORDER);
+                }
                 String prefix = itemPrefix(plain.substring(cursor, at), t);
                 assignRun(prefix, pending, parts, plan);
                 pending.clear();
                 cursor = at + t.anchor.length();
             } else if (t.styleId > 0) {
                 String open = "<x" + t.styleId + ">";
-                int at = plain.indexOf(open, cursor);
-                if (at < 0) throw reject(RejectionReason.STYLE_OPEN);
-                assignRun(itemPrefix(plain.substring(cursor, at), t), pending, parts, plan);
-                pending.clear();
                 String close = "</x" + t.styleId + ">";
-                int end = plain.indexOf(close, at + open.length());
-                if (end < 0) throw reject(RejectionReason.STYLE_CLOSE);
-                String styled = plain.substring(at + open.length(), end).trim();
+                int at = plain.indexOf(open, cursor);
+                int contentStart;
+                if (at >= 0) {
+                    assignRun(itemPrefix(plain.substring(cursor, at), t), pending, parts, plan);
+                    pending.clear();
+                    contentStart = at + open.length();
+                } else {
+                    // 模型丢弃了开标记：上一个已消费边界到闭标记之间的文本
+                    // 整体视为该样式片段的译文，之前的普通片段保持为空。
+                    if (plain.indexOf(close, cursor) < 0) throw reject(RejectionReason.STYLE_OPEN);
+                    contentStart = cursor;
+                    pending.clear();
+                }
+                int end = plain.indexOf(close, contentStart);
+                int nextCursor;
+                if (end < 0) {
+                    // 模型丢弃了闭标记：样式内容延伸到下一个样式标记或结尾。
+                    java.util.regex.Matcher next = ANY_STYLE_MARKER.matcher(plain);
+                    end = next.find(contentStart) ? next.start() : plain.length();
+                    nextCursor = end;
+                } else {
+                    nextCursor = end + close.length();
+                }
+                String styled = plain.substring(contentStart, end).trim();
                 if (styled.isEmpty()) throw reject(RejectionReason.STYLE_EMPTY);
                 parts.set(t.segIndex, styled);
-                cursor = end + close.length();
+                cursor = nextCursor;
             } else {
                 pending.add(t.segIndex);
             }
@@ -467,14 +543,17 @@ public final class ContentNodes {
         }
     }
 
-    /** Verify multiplicity without ever emitting the anchor itself. */
+    /** Verify multiplicity without ever emitting the anchor itself.
+     *  emoji 锚点允许被模型丢弃（{@code allowMissing}）：只拦截重复/增多。 */
     private static void requireAnchorCounts(String plain, List<String> anchors,
-                                             RejectionReason reason) {
+                                             RejectionReason reason, boolean allowMissing) {
         java.util.Map<String, Integer> expected = new java.util.LinkedHashMap<>();
         for (String anchor : anchors) expected.merge(anchor, 1, Integer::sum);
         for (java.util.Map.Entry<String, Integer> entry : expected.entrySet()) {
             int actual = countOccurrences(plain, entry.getKey());
-            if (actual != entry.getValue()) throw new Rejection(reason, entry.getValue(), actual);
+            if (actual != entry.getValue() && !(allowMissing && actual < entry.getValue())) {
+                throw new Rejection(reason, entry.getValue(), actual);
+            }
         }
     }
 
@@ -501,7 +580,12 @@ public final class ContentNodes {
             }
             String anchor = t.anchor;
             int at = plain.indexOf(anchor, from);
-            if (at < 0) throw reject(RejectionReason.ANCHOR_ORDER);
+            if (at < 0) {
+                if (t.emoji) {
+                    continue; // emoji 锚点被模型丢弃：两侧片段按合并回填处理。
+                }
+                throw reject(RejectionReason.ANCHOR_ORDER);
+            }
             int segEnd = t.segIndex;
             String prefix = itemPrefix(plain.substring(from, at), t);
             List<String> spanParts = alignInterval(prefix, plan, segStart, segEnd);
@@ -533,7 +617,7 @@ public final class ContentNodes {
         try {
             return alignSpanToParts(span, plan.groupIds.subList(start, end),
                     plan.listPrefixesIn(start, end), plan.lineBreakFlagsIn(start, end),
-                    plan.sourceLinesIn(start, end));
+                    plan.sourceLinesIn(start, end), plan.opaqueFlagsIn(start, end));
         } catch (Rejection rejection) {
             if (rejection.reason == RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS) {
                 int right = start + rejection.boundary;
@@ -580,6 +664,15 @@ public final class ContentNodes {
                                          @Nullable List<Boolean> listPrefixes,
                                          @Nullable List<Boolean> lineBreakBefore,
                                          List<Integer> sourceLineCounts) {
+        return alignSpanToParts(span, groups, listPrefixes, lineBreakBefore,
+                sourceLineCounts, null);
+    }
+
+    static List<String> alignSpanToParts(String span, List<Integer> groups,
+                                         @Nullable List<Boolean> listPrefixes,
+                                         @Nullable List<Boolean> lineBreakBefore,
+                                         List<Integer> sourceLineCounts,
+                                         @Nullable List<Boolean> opaqueBefore) {
         int segments = groups.size();
         if (segments == 0) {
             if (!span.trim().isEmpty()) throw reject(RejectionReason.UNASSIGNED_TEXT);
@@ -595,8 +688,15 @@ public final class ContentNodes {
                 throw new Rejection(RejectionReason.PARAGRAPH_MISSING, chunk + 1, chunks.size());
             }
             int end = segment + 1;
+            boolean mergedByOpaque = false;
             while (end < segments) {
                 if (isLineBreakBefore(lineBreakBefore, end)) {
+                    end++;
+                } else if (isOpaqueBefore(opaqueBefore, end)
+                        && groups.get(end).equals(groups.get(end - 1))) {
+                    // 相邻片段之间只隔着 emoji 等不透明节点，且其定位标记被模型
+                    // 丢弃：两侧译文会在响应里连成一块，按合并处理而不是拒绝。
+                    mergedByOpaque = true;
                     end++;
                 } else if (groups.get(end).equals(groups.get(end - 1))) {
                     Rejection rejection = reject(RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
@@ -608,7 +708,17 @@ public final class ContentNodes {
             }
 
             String block = chunks.get(chunk++);
-            if (end - segment > 1) {
+            if (end - segment > 1 && mergedByOpaque && block.indexOf('\n') < 0) {
+                // 模型丢弃了夹在片段之间的不透明节点锚点，两侧译文连成一行：
+                // 整行归属首个片段，其余片段留空；不透明节点仍由原节点按
+                // 节点树位置原样渲染，文本不会被重排或丢失。
+                String value = block;
+                if (isListPrefix(listPrefixes, segment)) value = stripListMarker(value);
+                parts.set(segment, value);
+                for (int i = segment + 1; i < end; i++) {
+                    parts.set(i, "");
+                }
+            } else if (end - segment > 1) {
                 String[] lines = block.split("\n", -1);
                 int expectedLines = 0;
                 for (int i = segment; i < end; i++) expectedLines += sourceLineCounts.get(i);
@@ -643,6 +753,10 @@ public final class ContentNodes {
         return parts;
     }
 
+    private static boolean isOpaqueBefore(@Nullable List<Boolean> flags, int index) {
+        return flags != null && index < flags.size() && Boolean.TRUE.equals(flags.get(index));
+    }
+
     private static boolean isListPrefix(@Nullable List<Boolean> listPrefixes, int index) {
         return listPrefixes != null && index < listPrefixes.size()
                 && Boolean.TRUE.equals(listPrefixes.get(index));
@@ -652,10 +766,15 @@ public final class ContentNodes {
         return flags != null && index < flags.size() && Boolean.TRUE.equals(flags.get(index));
     }
 
-    /** 行首项目符号：{@code • }、{@code - }、{@code 1. } 等（需有分隔空白）。 */
+    /**
+     * 行首项目符号：{@code • }、{@code - }、{@code 1. } 等。
+     * 圆点类符号后允许无空白（小模型常把请求里的 {@code • } 回显成
+     * {@code •文字}，如 “•使用hashtag”）；{@code -}/{@code *}/{@code +}
+     * 与数字编号仍要求后随空白，避免吞掉 “-5°C” 这类正文。
+     */
     private static final java.util.regex.Pattern LIST_MARKER =
             java.util.regex.Pattern.compile(
-                    "^\\s*(?:[-*+•◦·▪▫]\\s+|\\d+[.)]\\s+)");
+                    "^\\s*(?:[•◦·▪▫]\\s*|[-*+]\\s+|\\d+[.)]\\s+)");
 
     /**
      * 剔除行首项目符号。若剥除后为空，拒绝本次回填。
@@ -697,6 +816,8 @@ public final class ContentNodes {
         final List<Boolean> listPrefixes = new ArrayList<>();
         /** 与片段平行：当前片段前是否有已捕获的源换行（文本空白或 BREAK）。 */
         final List<Boolean> lineBreakBefore = new ArrayList<>();
+        /** 与片段平行：当前片段前是否只隔着 emoji 等不透明节点（其锚点可能被模型丢弃）。 */
+        final List<Boolean> opaqueBefore = new ArrayList<>();
         /** 与片段平行：该片段的源文本内部行数，不能假定每个槽只占一行。 */
         final List<Integer> sourceLineCounts = new ArrayList<>();
         /** Source-only structural diagnostics for each slot; discarded with this alignment plan. */
@@ -718,6 +839,11 @@ public final class ContentNodes {
 
         List<Boolean> lineBreakFlagsIn(int segStart, int segEnd) {
             return lineBreakBefore.subList(segStart, segEnd);
+        }
+
+        /** [segStart, segEnd) 范围片段的不透明节点边界标记子列表。 */
+        List<Boolean> opaqueFlagsIn(int segStart, int segEnd) {
+            return new ArrayList<>(opaqueBefore.subList(segStart, segEnd));
         }
 
         List<Integer> sourceLinesIn(int segStart, int segEnd) {
@@ -798,12 +924,19 @@ public final class ContentNodes {
         final int styleId;
         /** True only for the first anchor or translatable slot after captured ITEM_START. */
         final boolean listPrefix;
+        /** emoji 定位标记：允许被模型丢弃，丢弃时相邻片段按合并回填处理。 */
+        final boolean emoji;
 
         PlanToken(String anchor, int segIndex, boolean listPrefix) {
+            this(anchor, segIndex, listPrefix, false);
+        }
+
+        PlanToken(String anchor, int segIndex, boolean listPrefix, boolean emoji) {
             this.anchor = anchor;
             this.segIndex = segIndex;
             this.styleId = 0;
             this.listPrefix = listPrefix;
+            this.emoji = emoji;
         }
 
         PlanToken(int segIndex, int styleId, boolean listPrefix) {
@@ -811,6 +944,7 @@ public final class ContentNodes {
             this.segIndex = segIndex;
             this.styleId = styleId;
             this.listPrefix = listPrefix;
+            this.emoji = false;
         }
     }
 
@@ -893,7 +1027,11 @@ public final class ContentNodes {
                     addAnchor(w, event.retainedMarker);
                     break;
                 case URL: addUrlToken(w, node.text); break;
-                case EMOJI: addEmojiToken(w, node.text); break;
+                case EMOJI:
+                    addEmojiToken(w, node.text);
+                    // 锚点被模型丢弃时，相邻片段需要按合并回填处理（见 alignSpanToParts）。
+                    w.opaqueBefore = true;
+                    break;
                 case BREAK: w.separatorNewlines++; break;
                 default: throw new IllegalStateException("Non-leaf content event");
             }
@@ -909,6 +1047,8 @@ public final class ContentNodes {
         int listLevel;
         boolean forceNewGroup;
         boolean pendingListPrefix;
+        /** 当前片段前是否只隔着 emoji 等不透明节点（其锚点可能被模型丢弃）。 */
+        boolean opaqueBefore;
         final int[] gapKinds = new int[ContentTree.Kind.values().length];
         int whitespaceNodes;
         int itemStarts;
@@ -935,7 +1075,8 @@ public final class ContentNodes {
      */
     private static void addEmojiToken(PlanWalk w, String emoji) {
         w.plan.emojiAnchors.add(emoji);
-        addAnchor(w, emoji);
+        w.plan.tokens.add(new PlanToken(emoji, w.plan.groupIds.size(), w.pendingListPrefix, true));
+        w.pendingListPrefix = false;
     }
 
     private static void addUrlToken(PlanWalk w, String url) {
@@ -971,7 +1112,9 @@ public final class ContentNodes {
         }
         w.plan.groupIds.add(w.group);
         w.plan.lineBreakBefore.add(lineBoundary);
+        w.plan.opaqueBefore.add(w.opaqueBefore);
         w.plan.sourceLineCounts.add(sourceLines);
+        w.opaqueBefore = false;
         w.separatorNewlines = 0;
         w.headingBreaks = 0;
         java.util.Arrays.fill(w.gapKinds, 0);

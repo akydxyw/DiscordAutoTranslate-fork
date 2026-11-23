@@ -297,7 +297,9 @@ public class SourceNewlineAlignmentTest {
         String translated = anchorIntervalTranslation();
         rejected(tree, translated.replaceFirst("IJYuv3wZ", "lJYuv3wZ"),
                 ContentNodes.RejectionReason.URL_COUNT);
-        rejected(tree, translated.replace(EMOJI, ""), ContentNodes.RejectionReason.EMOJI_COUNT);
+        // emoji 被模型丢弃后两侧译文在多行结构里合并：行数对不上仍拒绝，
+        // 但原因从 EMOJI_COUNT 变为 LINE_COUNT（2026-11-23 放宽锚点容忍后）。
+        rejected(tree, translated.replace(EMOJI, ""), ContentNodes.RejectionReason.LINE_COUNT);
         rejected(tree, translated.replace(EMOJI, EMOJI + EMOJI), ContentNodes.RejectionReason.EMOJI_COUNT);
     }
 

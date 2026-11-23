@@ -207,36 +207,47 @@ public class EmojiAnchorTest {
         assertTrue("emoji 右侧必须有译文，实际=" + right, right.contains("回归了"));
     }
 
-    /** 锚点丢失且译文只剩一行，缺少精确边界时整条拒绝。 */
+    /**
+     * 锚点丢失且译文只剩一行：整行归属首个片段，其余片段留空，
+     * emoji 节点仍按原位置渲染（实测 "lmao i see a very flat? penguin
+     * :penguin: look like…" 这类消息不再因模型丢锚点而永远显示英文）。
+     */
     @Test
-    public void droppedEmojiWithMergedSingleLineKeepsOriginalNodes() {
+    public void droppedEmojiWithMergedSingleLineFillsFirstSegment() {
         TextContentNode first = new TextContentNode("Lower Rates");
         UnicodeEmojiContentNode emoji =
                 new UnicodeEmojiContentNode("\uD83D\uDCE2", "x", false);
         TextContentNode second = new TextContentNode("Are Back");
         List<Object> nodes = list(first, emoji, second);
 
-        // 两个片段只拿到一行译文：行结构对不上，整条保留原文。
-        assertEquals(null, ContentPlanTestSupport.replace(nodes, "费率下调 回归了"));
-        assertEquals("Lower Rates", first.getContent());
-        assertEquals("Are Back", second.getContent());
-        assertSame(emoji, nodes.get(1));
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "费率下调 回归了");
+        assertNotNull("丢锚点的合并译文必须回填，而不是整条保留原文", out);
+        assertSame("emoji 节点原样保留", emoji, out.get(1));
+        assertEquals("费率下调 回归了", ((TextContentNode) out.get(0)).getContent());
+        assertEquals("", ((TextContentNode) out.get(2)).getContent());
+        assertEquals("原节点未被改动", "Lower Rates", first.getContent());
+        assertEquals("原节点未被改动", "Are Back", second.getContent());
     }
 
-    /** 锚点丢失时严格拒绝，不按行结构猜测回填。 */
+    /**
+     * 锚点丢失但模型按行给出两侧译文：逐行填回，emoji 仍按原位置渲染。
+     * （旧逻辑整条拒绝，导致 emoji 消息永远显示英文。）
+     */
     @Test
-    public void droppedEmojiWithLinePerSegmentKeepsOriginalNodes() {
+    public void droppedEmojiWithLinePerSegmentFillsBothSides() {
         TextContentNode first = new TextContentNode("Lower Rates");
         UnicodeEmojiContentNode emoji =
                 new UnicodeEmojiContentNode("\uD83D\uDCE2", "x", false);
         TextContentNode second = new TextContentNode("Are Back");
         List<Object> nodes = list(first, emoji, second);
 
-        assertNull("缺少 emoji 锚点时不能按行猜测位置",
-                ContentPlanTestSupport.replace(nodes, "费率下调\n回归了"));
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "费率下调\n回归了");
+        assertNotNull("逐行译文必须回填", out);
+        assertSame(emoji, out.get(1));
+        assertEquals("费率下调", ((TextContentNode) out.get(0)).getContent().trim());
+        assertEquals("回归了", ((TextContentNode) out.get(2)).getContent().trim());
         assertEquals("Lower Rates", first.getContent());
         assertEquals("Are Back", second.getContent());
-        assertSame(emoji, nodes.get(1));
     }
 
     /** 重复回显的锚点被剥离后照常回填，不得在文本里留下重复 emoji。 */

@@ -567,7 +567,9 @@ public class ContentNodesTest {
 
     @Test
     public void splitsAcrossTextNodesWhenTranslationHasNewlines() {
-        // 各节点分别承载一个片段，保持段落结构
+        // 各节点分别承载一个片段，保持段落结构。中间的未知可见节点是保留
+        // 标记（严格校验），其定位标记被模型丢弃时整条拒绝，由上层降级为
+        // 纯文本回填（emoji 锚点另有合并回填容忍，见 EmojiAnchorTest）。
         List<Object> nodes = list(
                 new TextContentNode("para one"),
                 new EmojiContentNode("9"),

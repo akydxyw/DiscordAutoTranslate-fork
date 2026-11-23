@@ -410,7 +410,8 @@ public class LongTextRegressionTest {
 
     @Test
     public void emojiWithoutAnchorCannotAlignFollowingText() {
-        // 缺少 emoji 锚点时不通过位置猜测回填，原文与 emoji 节点保持不变。
+        // 缺少 emoji 锚点（此处为保留标记型节点）时不通过位置猜测回填，
+        // 原文与节点保持不变；上层会降级为纯文本回填保证译文可见。
         io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.EmojiContentNode emoji =
                 new io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.EmojiContentNode("1");
         List<Object> nodes = list(

@@ -47,13 +47,13 @@ public class ContentRejectionTest {
         assertFalse(rejection.toString().contains("secret"));
     }
 
-    @Test public void customEmojiMultiplicityIsNotConfusedWithUrlMismatch() {
+    @Test public void droppedCustomEmojiStillFillsTranslation() {
         List<?> source = Arrays.asList(new TextContentNode("Title"),
                 new EmojiAnchorTest.CustomEmojiContentNode(123L, ":private_name:"));
-        ContentNodes.Rejection rejection = rejected(source, "标题", EMOJI_COUNT);
-        assertEquals(1, rejection.expected);
-        assertEquals(0, rejection.actual);
-        assertFalse(rejection.toString().contains("private_name"));
+        // emoji 锚点被模型丢弃：按合并回填处理，不再整条拒绝（2026-11-23 放宽）。
+        List<Object> out = ContentNodes.replaceChecked(ContentTree.compile(source), "标题");
+        assertEquals("标题", ((TextContentNode) out.get(0)).getContent());
+        assertSame(source.get(1), out.get(1));
     }
 
     @Test public void preservedCountsWithReorderedAnchorsReportOrderFailure() {
@@ -68,7 +68,9 @@ public class ContentRejectionTest {
     @Test public void styleOpeningClosingAndEmptyContentHaveDistinctReasons() {
         List<?> source = Arrays.asList(new StrongContentNode(Arrays.asList(new TextContentNode("Title"))));
         rejected(source, "标题", STYLE_OPEN);
-        rejected(source, "<x1>标题", STYLE_CLOSE);
+        // 闭标记被模型丢弃：样式内容延伸到结尾，仍可回填（2026-11-23 放宽）。
+        List<Object> repaired = ContentNodes.replaceChecked(ContentTree.compile(source), "<x1>标题");
+        assertNotNull(repaired);
         rejected(source, "<x1> </x1>", STYLE_EMPTY);
     }
 

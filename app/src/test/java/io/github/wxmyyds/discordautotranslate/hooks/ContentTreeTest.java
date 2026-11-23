@@ -429,7 +429,8 @@ public class ContentTreeTest {
         assertEquals(" 尾部", ((ContentNodesTest.TextContentNode) children.get(2)).getContent());
         assertEquals(translated, extracted(compiled(rebuilt)).text);
         assertEquals(original, extracted(tree).text);
-        assertNull(ContentNodes.replacePlanned(tree, translated.replace("<x2>", "")));
+        // 开标记被模型丢弃：闭标记前的文本整体归该样式片段（2026-11-23 放宽）。
+        assertNotNull(ContentNodes.replacePlanned(tree, translated.replace("<x2>", "")));
         assertNull(ContentNodes.replacePlanned(tree,
                 translated.replace("<x2>", "<x3>").replace("</x2>", "</x3>")));
     }
@@ -520,7 +521,8 @@ public class ContentTreeTest {
         assertNull(ContentNodes.replacePlanned(tree, translated.replace("<keep1/>", "")));
         assertNull(ContentNodes.replacePlanned(tree, translated.replace("<keep2/>", "")));
         assertNull(ContentNodes.replacePlanned(tree, translated.replace("ExactId", "Exactld")));
-        assertNull(ContentNodes.replacePlanned(tree, translated.replace("\uD83D\uDE42", "")));
+        // emoji 锚点被模型丢弃：按合并回填处理，不再整条拒绝（2026-11-23 放宽）。
+        assertNotNull(ContentNodes.replacePlanned(tree, translated.replace("\uD83D\uDE42", "")));
         assertNull(ContentNodes.replacePlanned(tree, translated + " \uD83D\uDE42"));
         assertNull(ContentNodes.replacePlanned(tree,
                 "第一<keep1/><keep2/> :wave: 第二 https://example.com/ExactId \uD83D\uDE42 第三"));

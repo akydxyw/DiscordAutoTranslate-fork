@@ -53,6 +53,13 @@ public class ConfigTest {
         assertEquals(Config.DEF_MAX_CONCURRENCY, s.maxConcurrency);
     }
 
+    /** 提示词必须同时保护自定义 emoji 与 Unicode emoji（keycap 等符号）。 */
+    @Test
+    public void defaultPromptCoversUnicodeEmojiAnchors() {
+        assertTrue(Config.DEF_SYSTEM_PROMPT.contains(":emoji_name:"));
+        assertTrue(Config.DEF_SYSTEM_PROMPT.contains("Unicode emoji"));
+    }
+
     @Test
     public void loggingAcceptsExplicitBooleansWithoutChangingRequestVersion() {
         Config.Snapshot defaults = Config.read(new MemoryPrefs());

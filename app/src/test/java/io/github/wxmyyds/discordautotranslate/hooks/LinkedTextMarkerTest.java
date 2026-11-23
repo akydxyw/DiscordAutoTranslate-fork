@@ -143,10 +143,12 @@ public class LinkedTextMarkerTest {
         reject(tree, "第一\n最后", ContentNodes.RejectionReason.SOURCE_BOUNDARY_AMBIGUOUS);
     }
 
-    @Test public void labelMarkerDamageRemainsWholeTreeRejection() {
+    @Test public void labelMarkerDamageIsRepairedOrRejected() {
         ContentTree tree = tree(text("See "), link(new Object(), text("guide")));
         reject(tree, "参阅<x2>指南</x2>", ContentNodes.RejectionReason.STYLE_OPEN);
-        reject(tree, "参阅<x1>指南", ContentNodes.RejectionReason.STYLE_CLOSE);
+        // 闭标记被模型丢弃：样式内容延伸到结尾，仍可回填（2026-11-23 放宽）。
+        List<Object> repaired = ContentNodes.replaceChecked(tree, "参阅<x1>指南");
+        assertEquals("指南", label(repaired.get(1)));
         reject(tree, "参阅<x1></x1>", ContentNodes.RejectionReason.STYLE_EMPTY);
     }
 
@@ -190,11 +192,8 @@ public class LinkedTextMarkerTest {
                 "参阅 <x01>第一</x01> 和 <x2>第二</x2> 现在",
                 "参阅 <x0>第一</x0> 和 <x2>第二</x2> 现在",
                 "参阅 <X1>第一</X1> 和 <x2>第二</x2> 现在",
-                "参阅 < x1>第一</ x1> 和 <x2>第二</x2> 现在",
-                "参阅 <x1 >第一</x1> 和 <x2>第二</x2> 现在",
                 "参阅 <x1/>第一</x1> 和 <x2>第二</x2> 现在",
                 "参阅 <x1 attr='bad'>第一</x1> 和 <x2>第二</x2> 现在",
-                "参阅 <x1>第一</x1 > 和 <x2>第二</x2> 现在",
                 "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在<x3",
                 "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在</x",
                 "参阅 <x1>第一</x1> 和 <x2>第二</x2> 现在<x3/>"
@@ -208,6 +207,16 @@ public class LinkedTextMarkerTest {
         assertEquals(valid, extract(ContentTree.compile(out)));
         assertEquals("第一", label(out.get(1)));
         assertEquals("第二", content(((StrongContentNode) out.get(3)).getContent().get(0)));
+        // 标记内的多余空白做无损修复后照常回填（2026-11-23 放宽）。
+        String sloppy = "参阅 < x1>第一</ x1> 和 <x2>第二</x2> 现在";
+        List<Object> repaired = ContentNodes.replaceChecked(tree, sloppy);
+        assertEquals("第一", label(repaired.get(1)));
+        String sloppyClose = "参阅 <x1>第一</x1 > 和 <x2>第二</x2> 现在";
+        List<Object> repairedClose = ContentNodes.replaceChecked(tree, sloppyClose);
+        assertEquals("第一", label(repairedClose.get(1)));
+        String spaced = "参阅 <x1 >第一</x1> 和 <x2>第二</x2> 现在";
+        List<Object> repairedSpaced = ContentNodes.replaceChecked(tree, spaced);
+        assertEquals("第一", label(repairedSpaced.get(1)));
     }
 
     @Test public void unexpectedStyleTagsAreRejectedWhenThePlanHasNoStyledSlots() {

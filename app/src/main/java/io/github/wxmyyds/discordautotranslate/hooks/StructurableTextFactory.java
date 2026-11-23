@@ -21,7 +21,10 @@ import java.util.List;
  *   <li>其他类型 → 抛 {@code RuntimeException}。</li>
  * </ul>
  *
- * <p>为译文优先保留 Annotated 结构；若构造失败，调用方继续使用原始正文。</p>
+ * <p>为译文优先保留 Annotated 结构；严格对齐失败时降级为
+ * {@code PrimitiveStructurableText} 纯文本（译文必显示，代价是丢
+ * emoji/提及/样式，用户拍板 2026-11-23）；仅当构造器缺失或调用失败时
+ * 返回 null，调用方继续使用原始正文。</p>
  */
 public final class StructurableTextFactory {
 
@@ -107,7 +110,13 @@ public final class StructurableTextFactory {
         if (ContentNodes.isAnnotated(original)) {
             if (extracted.tree == null) return rejectFactory("MISSING_TREE");
             List<Object> replaced = ContentNodes.replacePlanned(extracted.tree, translated);
-            if (replaced == null) return null; // Already classified at the content replacement boundary.
+            if (replaced == null) {
+                // 严格对齐失败（锚点被模型丢弃/写坏、段落结构对不上等）：
+                // 降级为纯文本回填——丢失 emoji/提及/样式，但译文能显示出来，
+                // 不再整条保留英文（用户拍板 2026-11-23）。
+                Object fallback = primitive(translated);
+                return fallback == null ? rejectFactory("PRIMITIVE_FALLBACK") : fallback;
+            }
             Object out = annotated(replaced);
             return out == null ? rejectFactory("ANNOTATED_CONSTRUCTOR") : out;
         }

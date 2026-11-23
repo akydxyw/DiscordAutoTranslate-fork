@@ -6,9 +6,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 /** Zero-dependency HTTP transport. Protocol completion belongs to the selected decoder. */
 public final class Http {
@@ -43,15 +45,25 @@ public final class Http {
         private boolean used;
         private int responseStatus;
         private HttpURLConnection connection;
+        @Nullable private Socket socket;
 
         public void cancel() {
             HttpURLConnection attached;
+            Socket attachedSocket;
             synchronized (this) {
                 cancelled = true;
                 attached = connection;
+                attachedSocket = socket;
             }
             if (attached != null) {
                 attached.disconnect();
+            }
+            if (attachedSocket != null) {
+                try {
+                    attachedSocket.close();
+                } catch (IOException ignored) {
+                    // 已关闭。
+                }
             }
         }
 
@@ -86,6 +98,29 @@ public final class Http {
         synchronized void detach(HttpURLConnection candidate) {
             if (connection == candidate) {
                 connection = null;
+            }
+        }
+
+        /** 同包的明文兜底传输登记 Socket，取消时一并关闭。 */
+        synchronized void attachSocket(Socket candidate) throws TranslationException {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                try {
+                    candidate.close();
+                } catch (IOException ignored) {
+                    // 已关闭。
+                }
+                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
+            }
+            if (used) {
+                throw new IllegalStateException("Request handles cannot be reused");
+            }
+            used = true;
+            socket = candidate;
+        }
+
+        synchronized void detachSocket(Socket candidate) {
+            if (socket == candidate) {
+                socket = null;
             }
         }
     }
@@ -147,6 +182,11 @@ public final class Http {
             }
             return null;
         }
+
+        /** 供同包的兜底传输复用同一组请求头；只读遍历，不暴露可变集合。 */
+        java.util.List<String[]> pairs() {
+            return java.util.Collections.unmodifiableList(pairs);
+        }
     }
 
     @FunctionalInterface
@@ -173,6 +213,13 @@ public final class Http {
         int status = 0;
         try {
             request.checkCancelled();
+            // 宿主 Discord 用 networkSecurityConfig 禁掉明文 HTTP。Android 明确说明
+            // java.net.Socket 不受该策略约束，因此检测到明文被禁时直接走裸 Socket
+            // 兜底，不依赖 CleartextHooks 是否安装成功（Hook 可能因内联或隐藏 API
+            // 限制失效，且失败是静默的）。
+            if (isHttpUrl(url) && !cleartextPermitted(url)) {
+                return postCleartextDirect(url, jsonBody, headers, request, decoder, null);
+            }
             conn = connections.open(new URL(url));
             request.attach(conn);
             request.checkCancelled();
@@ -222,8 +269,13 @@ public final class Http {
                     "请求超时（" + timeoutMs + "ms）", status, e);
         } catch (IOException e) {
             request.checkCancelled();
+            // 若 Hook 让「策略查询」误判为允许、实际连接仍被明文过滤器拒绝，
+            // 这里按异常特征再兜一次。
+            if (isHttpUrl(url) && isCleartextRejection(e)) {
+                return postCleartextDirect(url, jsonBody, headers, request, decoder, e);
+            }
             throw new TranslationException(TranslationException.Kind.NETWORK,
-                    "网络错误：" + e.getClass().getSimpleName(), status, e);
+                    "网络错误：" + e.getClass().getSimpleName() + "：" + messageOf(e), status, e);
         } catch (RuntimeException e) {
             request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.UNKNOWN,
@@ -234,6 +286,71 @@ public final class Http {
                 conn.disconnect();
             }
         }
+    }
+
+    /** 明文直连兜底；两次都失败时把两条错误串起来，避免界面只剩「请求失败」。 */
+    private Response postCleartextDirect(String url, String jsonBody, Headers headers,
+                                         Request request, ResponseDecoder decoder,
+                                         @Nullable IOException primary) throws TranslationException {
+        try {
+            return CleartextHttp.post(url, jsonBody, timeoutMs, headers, request, decoder);
+        } catch (IOException e) {
+            String detail = "明文直连失败：" + e.getClass().getSimpleName() + "：" + messageOf(e);
+            if (primary != null) {
+                detail = "网络错误：" + primary.getClass().getSimpleName()
+                        + "：" + messageOf(primary) + "；" + detail;
+            }
+            throw new TranslationException(TranslationException.Kind.NETWORK, detail, 0, e);
+        } catch (RuntimeException e) {
+            throw new TranslationException(TranslationException.Kind.UNKNOWN,
+                    "明文直连失败：" + e.getClass().getSimpleName() + "：" + messageOf(e), 0, e);
+        }
+    }
+
+    private static boolean isHttpUrl(String url) {
+        return url != null && url.trim().toLowerCase(Locale.US).startsWith("http://");
+    }
+
+    /**
+     * 当前进程是否允许访问该明文主机。用公开 SDK 的反射调用，避免纯逻辑层
+     * 编译期依赖 Android；非 Android（JVM 单测）回落到原有路径，由异常兜底。
+     */
+    private static boolean cleartextPermitted(String url) {
+        try {
+            String host = new URL(url).getHost();
+            Class<?> policy = Class.forName("android.security.NetworkSecurityPolicy");
+            Object instance = policy.getMethod("getInstance").invoke(null);
+            Object permitted = policy.getMethod("isCleartextTrafficPermitted", String.class)
+                    .invoke(instance, host);
+            return Boolean.TRUE.equals(permitted);
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
+    /** AOSP 的明文拒绝是 IOException("Cleartext HTTP traffic to ... not permitted")。 */
+    private static boolean isCleartextRejection(Throwable error) {
+        Throwable current = error;
+        for (int i = 0; current != null && i < 5; i++) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.US);
+                if (lower.contains("cleartext") || lower.contains("not permitted")) {
+                    return true;
+                }
+            }
+            Throwable cause = current.getCause();
+            if (cause == current || cause == null) {
+                break;
+            }
+            current = cause;
+        }
+        return false;
+    }
+
+    private static String messageOf(Throwable t) {
+        String message = t == null ? null : t.getMessage();
+        return message == null || message.isEmpty() ? "无错误信息" : message;
     }
 
     /** No buffered read-ahead: a completed event must not consume trailing keep-alive bytes. */
@@ -263,7 +380,7 @@ public final class Http {
     }
 
     /** Raw non-2xx bodies never pass through a successful-response protocol decoder. */
-    private static final class RawDecoder implements ResponseDecoder {
+    static final class RawDecoder implements ResponseDecoder {
         private final StringBuilder body = new StringBuilder();
         public String acceptType() { return "application/json"; }
         public void accept(char value) { body.append(value); }

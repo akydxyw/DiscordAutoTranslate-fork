@@ -103,15 +103,16 @@ public class RetainedNodeMarkersTest {
         }
     }
 
-    @Test public void lengthRatioThresholdAndBoundsStayUnchanged() {
+    @Test public void lengthRatioThresholdsAreDirectionAware() {
         String marker = "<keep1/>";
         String source = String.join("", Collections.nCopies(40, "a")) + marker;
-        String minimum = String.join("", Collections.nCopies(10, "中")) + marker;
-        String tooShort = String.join("", Collections.nCopies(9, "中")) + marker;
+        // 英→中长度天然缩到两三成：丢失线从 1/4 放宽到 1/8（2026-11-23）。
+        String minimum = String.join("", Collections.nCopies(5, "中")) + marker;
+        String tooShort = String.join("", Collections.nCopies(4, "中")) + marker;
         String maximum = String.join("", Collections.nCopies(120, "中")) + marker;
         String tooLong = String.join("", Collections.nCopies(121, "中")) + marker;
         assertNull(Segments.plainTextViolation(minimum, source));
-        assertEquals("译文长度异常（9/40）：疑似内容丢失", Segments.plainTextViolation(tooShort, source));
+        assertEquals("译文长度异常（4/40）：疑似内容丢失", Segments.plainTextViolation(tooShort, source));
         assertNull(Segments.plainTextViolation(maximum, source));
         assertEquals("译文长度异常（121/40）：疑似复读", Segments.plainTextViolation(tooLong, source));
         String shortSource = String.join("", Collections.nCopies(39, "a")) + marker;

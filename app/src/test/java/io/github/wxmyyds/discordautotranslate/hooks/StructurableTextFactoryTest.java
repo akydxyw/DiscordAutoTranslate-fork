@@ -134,8 +134,11 @@ public class StructurableTextFactoryTest {
                 list(new TextContentNode("first"))), text, emoji);
         AnnotatedStructurableText original = new AnnotatedStructurableText(nodes);
 
-        // 返回 null 是计划重建的“不替换”协议，所有 Hook 调用方保留 original。
-        assertNull(planned(original, "第一\n你好<keep1/>"));
+        // 严格对齐失败时降级为纯文本回填（2026-11-23 放宽）：译文必显示，
+        // 原始结构不被改动。
+        Object out = planned(original, "第一\n你好<keep1/>");
+        assertNotNull(out);
+        assertEquals("PrimitiveStructurableText", out.getClass().getSimpleName());
         assertSame(nodes, original.getContent());
         assertSame(emoji, original.getContent().get(2));
         assertEquals("hello", text.getContent());
@@ -153,11 +156,14 @@ public class StructurableTextFactoryTest {
     }
 
     @Test
-    public void emojiOnlyStructureIsNotOverwrittenByUnrelatedTranslation() {
+    public void emojiOnlyStructureFallsBackToPrimitiveText() {
         EmojiContentNode emoji = new EmojiContentNode("1");
         AnnotatedStructurableText original = new AnnotatedStructurableText(list(emoji));
 
-        assertNull(planned(original, "你好"));
+        // 纯 emoji 消息配不上译文时也降级为纯文本回填（2026-11-23 放宽）。
+        Object out = planned(original, "你好");
+        assertNotNull(out);
+        assertEquals("PrimitiveStructurableText", out.getClass().getSimpleName());
         assertSame(emoji, original.getContent().get(0));
     }
 

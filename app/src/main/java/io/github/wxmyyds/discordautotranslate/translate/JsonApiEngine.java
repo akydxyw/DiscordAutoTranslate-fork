@@ -2,6 +2,8 @@ package io.github.wxmyyds.discordautotranslate.translate;
 
 import java.util.concurrent.ConcurrentHashMap;
 
+import androidx.annotation.Nullable;
+
 import io.github.wxmyyds.discordautotranslate.core.Config;
 import io.github.wxmyyds.discordautotranslate.core.Http;
 import io.github.wxmyyds.discordautotranslate.core.Protocols;
@@ -9,6 +11,8 @@ import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
 import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 import io.github.wxmyyds.discordautotranslate.core.Segments;
 import io.github.wxmyyds.discordautotranslate.core.TranslationException;
+
+import org.json.JSONObject;
 
 /**
  * JSON 翻译引擎（需求 §5.5）。
@@ -210,12 +214,21 @@ public final class JsonApiEngine implements Scheduler.Engine {
         }
     }
 
-    /** Classifies HTTP status, logs its exact error body under the saved gate, and retains it for UI. */
+    /**
+     * Classifies HTTP status, logs its exact error body under the saved gate, and retains it for UI.
+     *
+     * <p>完整响应正文仍随异常保留（见 {@link UpstreamHttpException}），但标准
+     * OpenAI/Anthropic 风格的 {@code error.message} / {@code message} 字段会被
+     * 截取出来放进消息：400 模型名写错、404 端点重复、密钥无效等「请求失败」
+     * 以前只能看到状态码，无法定位。</p>
+     */
     private TranslationException classifyHttpError(Http.Response resp) {
         int status = resp.status;
         if (resp.body != null && !resp.body.isEmpty()) {
             ProjectLog.warn("api.upstream.error httpStatus=" + status + " body=" + resp.body);
         }
+        String detail = briefServerError(resp.body);
+        String suffix = detail == null ? "" : "：" + detail;
         TranslationException.Kind kind = status == 429
                 ? TranslationException.Kind.RATE_LIMIT : TranslationException.Kind.HTTP;
         TranslationException.Reason reason = status == 429
@@ -223,7 +236,38 @@ public final class JsonApiEngine implements Scheduler.Engine {
         String message = status == 429 ? "限流"
                 : status == 401 || status == 403 ? "认证失败（请检查 API 密钥）"
                 : status >= 500 ? "服务端错误" : "请求失败";
-        return new UpstreamHttpException(kind, reason, message, status,
+        return new UpstreamHttpException(kind, reason, message + suffix, status,
                 resp.body == null ? "" : resp.body);
+    }
+
+    /** 只提取标准错误结构里的简短 message；其余正文一律不返回。 */
+    private static String briefServerError(@Nullable String body) {
+        if (body == null || body.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            JSONObject root = new JSONObject(body.trim());
+            String message = null;
+            Object error = root.opt("error");
+            if (error instanceof JSONObject) {
+                message = ((JSONObject) error).optString("message", null);
+            } else if (error instanceof String) {
+                message = (String) error;
+            }
+            if (message == null || message.isEmpty()) {
+                message = root.optString("message", null);
+            }
+            if (message == null) {
+                return null;
+            }
+            message = message.replaceAll("[\\r\\n\\t]+", " ").trim();
+            if (message.length() > 200) {
+                message = message.substring(0, 200) + "…";
+            }
+            return message.isEmpty() ? null : message;
+        } catch (Throwable ignored) {
+            // SSE 帧、HTML 错误页、非 JSON 正文：保持原来的「只有状态码」行为。
+            return null;
+        }
     }
 }

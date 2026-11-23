@@ -39,9 +39,12 @@ public final class Segments {
      * 暴涨）、内容大面积丢失（长度骤减）、标记泄漏与模板占位符都在这里
      * 拦下，判失败由用户手动重试。</p>
      *
-     * <p>长度比例只对较长的原文（≥40 字符）生效：正常中英互译长度在
-     * 0.25×～3× 之间，复读刷屏会明显超出，内容丢失会明显不足；
-     * 过短的文本比例噪声太大，不做校验。</p>
+     * <p>长度比例只对较长的原文（≥40 字符）生效。比例阈值按翻译方向
+     * 区分：跨语系时长度天然不对称——英→中译文常缩到原文的两三成
+     * （实测 91 字符英文 → 22 字中文被判“疑似丢失”），中→英则膨胀数倍。
+     * 因此同语系仍按 1/4 与 3 倍把关；源文无 CJK 而译文有 CJK 时丢失线
+     * 放宽到 1/8，源文有 CJK 而译文无 CJK 时复读线放宽到 6 倍。过短的
+     * 文本比例噪声太大，不做校验。</p>
      *
      * @return 违规描述；合格返回 null
      */
@@ -69,13 +72,31 @@ public final class Segments {
         int n = sourceWithoutKeep.length();
         if (n >= 40) {
             int m = translationWithoutKeep.length();
-            if (m * 4 < n) {
+            boolean sourceCjk = containsCjk(sourceWithoutKeep);
+            boolean translatedCjk = containsCjk(translationWithoutKeep);
+            int lossFactor = !sourceCjk && translatedCjk ? 8 : 4;
+            int spamFactor = sourceCjk && !translatedCjk ? 6 : 3;
+            if (m * lossFactor < n) {
                 return "译文长度异常（" + m + "/" + n + "）：疑似内容丢失";
             }
-            if (m > n * 3) {
+            if (m > n * spamFactor) {
                 return "译文长度异常（" + m + "/" + n + "）：疑似复读";
             }
         }
         return null;
+    }
+
+    /** 是否含 CJK 统一表意文字（含扩展 A），用于判定翻译方向。 */
+    private static boolean containsCjk(String s) {
+        if (s == null) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

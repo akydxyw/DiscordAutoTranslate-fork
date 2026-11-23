@@ -104,12 +104,13 @@ public class EmojiHeadingMentionRegressionTest {
     }
 
     /**
-     * 上报现象回归：模型丢弃自定义 emoji 锚点时必须拒绝回填，不按行猜测。
+     * 上报现象回归：模型丢弃自定义 emoji 锚点时按合并回填处理，译文仍逐行填回
+     * （2026-11-23 放宽，不再整条拒绝导致消息永远显示英文）。
      */
     @Test
-    public void modelDroppingEmojiAnchorsRejectsLinewiseTranslation() {
+    public void modelDroppingEmojiAnchorsStillFillsLinewiseTranslation() {
         List<Object> nodes = reportedTree();
-        assertNull("emoji 锚点丢失时必须保持原消息",
+        assertNotNull("emoji 锚点丢失时也必须回填译文",
                 ContentPlanTestSupport.replace(nodes,
                         "<keep1/>\n宣布 2 款新的 abliterated 模型：\nQwen 3 27b\nDeepseek V4.1 Flash"));
         assertEquals("Announcing 2 new abliterated models:",

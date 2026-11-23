@@ -106,7 +106,8 @@ public final class Config {
             + "4. Preserve the original tone, person, proper nouns, code, and formatting; return parts already in Simplified Chinese unchanged.\n"
             + "5. Keep the original line structure exactly: the output must have the same paragraphs separated by the same blank lines, and the same line breaks within each paragraph. Never merge, split, reorder, add, or drop paragraphs or lines. The source may contain repeated or identical paragraphs (e.g. lists, spam, ads); translate every occurrence and keep the repetition exactly.\n"
             + "6. Keep every bare link exactly as it appears in the input and in its original position: never modify, translate, merge, reorder, or drop links. Return other untranslatable content (garbled text, bare symbols) unchanged.\n"
-            + "7. Some input text is wrapped in marker tags like <x1>...</x1> marking styled spans. Keep every marker tag exactly as it is, in its original position, and translate only the text between the tags.";
+            + "7. Some input text is wrapped in marker tags like <x1>...</x1> marking styled spans. Keep every marker tag exactly as it is, in its original position, and translate only the text between the tags.\n"
+            + "8. Emoji are positional markers: copy each emoji verbatim, in its original position — both :emoji_name: tokens and Unicode emoji such as 1️⃣ ❌ ✅ 🔥. Never translate, rename, merge, reorder, or drop them.";
 
     // ---- 超时与并发 ----
     public static final String KEY_TIMEOUT_MS = "timeout_ms";
