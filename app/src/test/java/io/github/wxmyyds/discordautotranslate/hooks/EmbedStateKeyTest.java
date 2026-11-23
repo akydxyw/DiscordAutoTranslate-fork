@@ -1,105 +1,150 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
-/**
- * Embed 状态键的口径一致性。
- *
- * <p>登记侧（{@code EmbedViewHolder.bind}）对 StructurableText 用
- * {@link HookBridge#embedStateKey}；替换侧（{@code setPostPreviewEmbed}）对
- * 裸 String 用 {@link HookBridge#embedTextStateKey}。同一段纯文本两者必须产出
- * 同一个键，否则帖子预览的标题译文永远查不到。本测试锁定该不变量。</p>
- */
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+/** Complete Embed captures own card identity; segment hashes still share the normal cache. */
 public class EmbedStateKeyTest {
-
     private static final String ROW = "123456789012345678";
+    private final HookBridge bridge = HookBridge.get();
 
-    @Test
-    public void structurableAndRawTextProduceSameKey() {
-        Object text = new ContentNodesTest.PrimitiveStructurableText("Hello, world!");
-        assertEquals(
-                HookBridge.get().embedStateKey(ROW, text),
-                HookBridge.get().embedTextStateKey(ROW, "Hello, world!"));
+    @Before
+    public void activateFixtureProfile() { ContentNodeTestProfile.activate(ContentNodesTest.class); }
+
+    @After
+    public void clearFixtureProfile() { ContentNodeTestProfile.clear(); }
+
+    private static Object text(String value) {
+        return new ContentNodesTest.PrimitiveStructurableText(value);
+    }
+
+    private String keyFor(String row, Object text) {
+        return bridge.embedStateKeys(row, Collections.singletonList(text)).get(0);
+    }
+
+    private static String contentHash(String key) {
+        return key.substring(key.lastIndexOf('\u0000') + 1);
     }
 
     @Test
-    public void keysAreStableAndDistinctPerContent() {
-        Object a1 = new ContentNodesTest.PrimitiveStructurableText("first post");
-        Object a2 = new ContentNodesTest.PrimitiveStructurableText("first post");
-        Object b = new ContentNodesTest.PrimitiveStructurableText("second post");
-        // 不同实例、相同内容 → 同键（译文按内容复用）。
-        assertEquals(HookBridge.get().embedStateKey(ROW, a1), HookBridge.get().embedStateKey(ROW, a2));
-        // 不同内容 → 不同键（标题/描述/字段互不覆盖）。
-        assertNotEquals(HookBridge.get().embedStateKey(ROW, a1), HookBridge.get().embedStateKey(ROW, b));
-        // 不同行 → 不同键（不同消息的同名文本互不覆盖）。
-        assertNotEquals(HookBridge.get().embedStateKey(ROW, a1),
-                HookBridge.get().embedStateKey("987654321098765432", a1));
+    public void completeCaptureIsStableAcrossEquivalentNativeInstances() {
+        List<String> first = bridge.embedStateKeys(ROW, Arrays.asList(text("title"), text("description")));
+        List<String> repeated = bridge.embedStateKeys(ROW, Arrays.asList(text("title"), text("description")));
+        assertEquals(first, repeated);
+        assertNotEquals(first.get(0), first.get(1));
+        assertEquals(HookBridge.cardIdentityOf(first.get(0)), HookBridge.cardIdentityOf(first.get(1)));
+        assertNotEquals(first, bridge.embedStateKeys("987654321098765432",
+                Arrays.asList(text("title"), text("description"))));
     }
 
     @Test
-    public void emptyTextYieldsNullKey() {
-        assertNull(HookBridge.get().embedStateKey(ROW,
-                new ContentNodesTest.PrimitiveStructurableText("")));
-        assertNull(HookBridge.get().embedStateKey(ROW, null));
-        assertNull(HookBridge.get().embedTextStateKey(ROW, "  "));
+    public void equalPrimaryTextsInDifferentSameRowCardsKeepIndependentKeysAndOwners() {
+        List<String> first = bridge.embedStateKeys(ROW,
+                Arrays.asList(text("shared title"), text("first description")));
+        List<String> second = bridge.embedStateKeys(ROW,
+                Arrays.asList(text("shared title"), text("second description")));
+        assertNotEquals(first.get(0), second.get(0));
+        assertNotEquals(HookBridge.cardIdentityOf(first.get(0)), HookBridge.cardIdentityOf(second.get(0)));
+        assertEquals(contentHash(first.get(0)), contentHash(second.get(0)));
+        for (String key : Arrays.asList(first.get(0), first.get(1), second.get(0), second.get(1))) {
+            assertTrue(HookBridge.isCardKey(key));
+            assertEquals(ROW, HookBridge.cardRowOf(key));
+            String[] components = key.split("\u0000", -1);
+            assertEquals(4, components.length);
+            assertEquals(ROW, components[0]);
+            assertEquals("embed", components[1]);
+            assertEquals(64, components[2].length());
+            assertEquals(64, components[3].length());
+        }
+    }
+
+    @Test
+    public void sequenceOrderLengthAndEmptyPositionsParticipateInCardIdentity() {
+        Object first = text("first");
+        Object second = text("second");
+        List<String> ordered = bridge.embedStateKeys(ROW, Arrays.asList(first, second));
+        List<String> reversed = bridge.embedStateKeys(ROW, Arrays.asList(second, first));
+        List<String> extended = bridge.embedStateKeys(ROW, Arrays.asList(first, second, first));
+        List<String> withEmpty = bridge.embedStateKeys(ROW, Arrays.asList(first, null, second));
+        List<String> trailingEmpty = bridge.embedStateKeys(ROW, Arrays.asList(first, second, null));
+        for (List<String> changed : Arrays.asList(reversed, extended, withEmpty, trailingEmpty)) {
+            assertNotEquals(HookBridge.cardIdentityOf(ordered.get(0)),
+                    HookBridge.cardIdentityOf(changed.get(0)));
+        }
+        assertEquals(contentHash(ordered.get(0)), contentHash(reversed.get(1)));
+        assertNull(withEmpty.get(1));
+        assertEquals(3, withEmpty.size());
+        assertNotEquals(HookBridge.cardIdentityOf(withEmpty.get(0)),
+                HookBridge.cardIdentityOf(trailingEmpty.get(0)));
+    }
+
+    @Test
+    public void duplicateTextWithinOneCardSharesOneSegmentKey() {
+        List<String> keys = bridge.embedStateKeys(ROW,
+                Arrays.asList(text("same text"), text("same text"), text("different text")));
+        assertEquals(keys.get(0), keys.get(1));
+        assertNotEquals(keys.get(0), keys.get(2));
+        assertEquals(HookBridge.cardIdentityOf(keys.get(0)), HookBridge.cardIdentityOf(keys.get(2)));
+    }
+
+    @Test
+    public void emptyTextPreservesNullSlotsWithoutProducingKeys() {
+        assertEquals(Arrays.asList(null, null, null, null), bridge.embedStateKeys(ROW,
+                Arrays.asList(text(""), null, text(" \n\t "), new Object())));
+        assertTrue(bridge.embedStateKeys(ROW, Collections.emptyList()).isEmpty());
+        assertNull(keyFor(ROW, null));
     }
 
     @Test
     public void embedKeyIsRecognizableAndCarriesRowId() {
-        String key = HookBridge.get().embedTextStateKey(ROW, "Hello");
-        assertTrue(HookBridge.isEmbedKey(key));
-        assertFalse(HookBridge.isEmbedKey(ROW));
-        assertFalse(HookBridge.isEmbedKey(null));
-        // 行 ID 提取：复用校验按行比较，行必须可还原。
-        assertEquals(ROW, HookBridge.embedRowOf(key));
-        assertEquals(ROW, HookBridge.embedRowOf(ROW));
-        assertNull(HookBridge.embedRowOf(null));
+        String key = keyFor(ROW, text("Hello"));
+        assertTrue(HookBridge.isCardKey(key));
+        assertFalse(HookBridge.isCardKey(ROW));
+        assertFalse(HookBridge.isCardKey(null));
+        assertEquals(ROW, HookBridge.cardRowOf(key));
+        assertEquals(ROW, HookBridge.cardRowOf(ROW));
+        assertNull(HookBridge.cardRowOf(null));
     }
 
     @Test
-    public void sameRowEmbedKeysAreStillBoundWhileOtherRowsAreNot() {
-        String title = HookBridge.get().embedTextStateKey(ROW, "title text");
-        String description = HookBridge.get().embedTextStateKey(ROW, "description text");
-        String otherRow = HookBridge.get().embedTextStateKey("987654321098765432", "title text");
-        // 同一 Embed 视图按段登记多个键，视图绑定只留最后一个：同行必须互视为有效。
-        assertTrue(RerenderRegistry.stillBound(title, description));
-        assertTrue(RerenderRegistry.stillBound(description, title));
-        // 行变了（视图复用到其他消息）：拒绝。
-        assertFalse(RerenderRegistry.stillBound(title, otherRow));
-        // Embed 键与普通正文键相邻也不能放行：正文视图与 Embed 视图是不同视图。
-        assertFalse(RerenderRegistry.stillBound(title, ROW));
-        assertFalse(RerenderRegistry.stillBound(ROW, title));
+    public void sameRowEmbedSegmentsRemainEligibleForNativeReplay() {
+        List<String> keys = bridge.embedStateKeys(ROW, Arrays.asList(text("title"), text("description")));
+        String otherRow = keyFor("987654321098765432", text("title"));
+        assertTrue(RerenderRegistry.stillBound(keys.get(0), keys.get(1)));
+        assertTrue(RerenderRegistry.stillBound(keys.get(1), keys.get(0)));
+        assertFalse(RerenderRegistry.stillBound(keys.get(0), otherRow));
+        assertFalse(RerenderRegistry.stillBound(keys.get(0), ROW));
+        assertFalse(RerenderRegistry.stillBound(ROW, keys.get(0)));
     }
 
     @Test
     public void iconKeyMarkingIsExplicitPerCard() {
-        HookBridge bridge = HookBridge.get();
-        String key = bridge.embedTextStateKey(ROW, "icon marker text");
-        // 未标记的 Embed 键不允许注入（每张卡片只挂一个图标）。
-        assertFalse(bridge.isEmbedIconKey(key));
-        bridge.markEmbedIconKey(key);
-        assertTrue(bridge.isEmbedIconKey(key));
-        assertFalse(bridge.isEmbedIconKey(null));
-    }
-
-    @Test
-    public void iconOnlyIdentityIsSeparateFromSubstitutionIdentity() {
-        HookBridge bridge = HookBridge.get();
-        String key = bridge.embedTextStateKey(ROW, "icon only probe");
-        Object footer = new Object();
-        assertNull(bridge.resolveIconOnlyKey(footer));
-        bridge.rememberIconOnlyContent(key, footer);
-        assertEquals(key, bridge.resolveIconOnlyKey(footer));
-        // 仅图标映射不得泄漏进替换身份，否则译文会写进 footer。
-        assertNull(bridge.resolveMessageId(footer));
-        // null 容错。
-        bridge.rememberIconOnlyContent(key, null);
-        assertNull(bridge.resolveIconOnlyKey(null));
+        List<String> keys = bridge.embedStateKeys(ROW, Arrays.asList(text("primary"), text("secondary")));
+        String key = keys.get(0);
+        String other = keys.get(1);
+        try (InlineIconInjector.HostScope first = InlineIconInjector.enterHost(null, key)) {
+            assertTrue(first.allows(key));
+            assertFalse(first.allows(other));
+            assertFalse(first.allows(null));
+            try (InlineIconInjector.HostScope second = InlineIconInjector.enterHost(null, other)) {
+                assertTrue(second.allows(other));
+                assertFalse(second.allows(key));
+            }
+            assertSame(first, InlineIconInjector.currentHost());
+            first.recordInjection(key);
+            assertFalse(first.allows(key));
+        }
+        assertNull(InlineIconInjector.currentHost());
+        try (InlineIconInjector.HostScope body = InlineIconInjector.enterHost(null, null)) {
+            assertTrue(body.allows(ROW));
+            assertFalse(body.allows(key));
+        }
     }
 }

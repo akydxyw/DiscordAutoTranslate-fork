@@ -25,6 +25,12 @@ import java.util.List;
  */
 public class EmojiAnchorTest {
 
+    @org.junit.Before
+    public void activateFixtureProfile() { ContentNodeTestProfile.activate(EmojiAnchorTest.class); }
+
+    @org.junit.After
+    public void clearFixtureProfile() { ContentNodeTestProfile.clear(); }
+
     /** 文本 emoji 节点：与宿主同名的 getContent()。 */
     public static final class UnicodeEmojiContentNode {
         private final String content;
@@ -106,10 +112,22 @@ public class EmojiAnchorTest {
     }
 
     @Test
-    public void unicodeEmojiFallsBackToSurrogateField() {
-        // 部分构造路径把字符放在 surrogate 字段。
-        assertEquals("\uD83D\uDCE2", TextExtractor.nodeEmojiText(
+    public void unicodeEmojiDoesNotSwitchMembersAfterEmptyConfiguredAnchor() {
+        assertNull(TextExtractor.nodeEmojiText(
                 new UnicodeEmojiContentNode("", "\uD83D\uDCE2", false)));
+    }
+
+    @Test
+    public void unicodeEmojiReadsOnlyProfileSelectedSurrogate() throws Exception {
+        org.json.JSONObject root = new org.json.JSONObject(
+                io.github.wxmyyds.discordautotranslate.core.HookConfiguration.activeConfiguration().rawJson());
+        root.getJSONObject("members").put("getEmojiAnchor", "getSurrogate");
+        io.github.wxmyyds.discordautotranslate.core.HookConfiguration.activate(
+                io.github.wxmyyds.discordautotranslate.core.HookConfiguration.parse(root.toString(), 352017));
+        assertEquals("\uD83D\uDCE2", TextExtractor.nodeEmojiText(
+                new UnicodeEmojiContentNode("wrong-member", "\uD83D\uDCE2", false)));
+        assertNull(TextExtractor.nodeEmojiText(
+                new UnicodeEmojiContentNode("\uD83D\uDCE2", "", false)));
     }
 
     @Test
@@ -178,7 +196,7 @@ public class EmojiAnchorTest {
         List<Object> nodes = list(first, emoji, second);
 
         // 模型按提示词保留了 emoji 的位置。
-        List<Object> out = ContentNodes.replaceText(nodes,
+        List<Object> out = ContentPlanTestSupport.replace(nodes,
                 "费率下调 \uD83D\uDCE2 回归了");
 
         assertNotNull("emoji 位置正确时必须对齐成功", out);
@@ -199,7 +217,7 @@ public class EmojiAnchorTest {
         List<Object> nodes = list(first, emoji, second);
 
         // 两个片段只拿到一行译文：行结构对不上，整条保留原文。
-        assertEquals(null, ContentNodes.replaceText(nodes, "费率下调 回归了"));
+        assertEquals(null, ContentPlanTestSupport.replace(nodes, "费率下调 回归了"));
         assertEquals("Lower Rates", first.getContent());
         assertEquals("Are Back", second.getContent());
         assertSame(emoji, nodes.get(1));
@@ -215,7 +233,7 @@ public class EmojiAnchorTest {
         List<Object> nodes = list(first, emoji, second);
 
         assertNull("缺少 emoji 锚点时不能按行猜测位置",
-                ContentNodes.replaceText(nodes, "费率下调\n回归了"));
+                ContentPlanTestSupport.replace(nodes, "费率下调\n回归了"));
         assertEquals("Lower Rates", first.getContent());
         assertEquals("Are Back", second.getContent());
         assertSame(emoji, nodes.get(1));
@@ -230,7 +248,7 @@ public class EmojiAnchorTest {
         List<Object> nodes = list(text, emoji);
 
         assertNull("锚点数量不符时整条拒绝",
-                ContentNodes.replaceText(nodes, "你好 \uD83D\uDCE2 \uD83D\uDCE2"));
+                ContentPlanTestSupport.replace(nodes, "你好 \uD83D\uDCE2 \uD83D\uDCE2"));
         assertEquals("hello", text.getContent());
         assertSame(emoji, nodes.get(1));
     }
@@ -242,59 +260,12 @@ public class EmojiAnchorTest {
                 new UnicodeEmojiContentNode("\uD83D\uDCE2", "x", false);
         List<Object> nodes = list(first, emoji);
 
-        List<Object> out = ContentNodes.replaceText(nodes, "你好 \uD83D\uDCE2");
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "你好 \uD83D\uDCE2");
 
         assertNotNull(out);
         assertSame(emoji, out.get(1));
         String rendered = ((TextContentNode) out.get(0)).getContent();
         assertTrue("emoji 由原节点绘制，不能同时出现在文本里，实际=" + rendered,
                 !rendered.contains("\uD83D\uDCE2"));
-    }
-
-    /**
-     * 方案 A：模型丢弃装饰性 emoji 时仍可回填——只要保留的锚点顺序正确。
-     * 旧行为要求每个锚点严格出现一次，模型改写装饰段时整条拒绝。
-     */
-    @Test
-    public void droppedDecorativeEmojiStillAlignsByOrder() {
-        TextContentNode first = new TextContentNode("hello");
-        UnicodeEmojiContentNode decorative =
-                new UnicodeEmojiContentNode("☄️", "x", false);
-        UnicodeEmojiContentNode kept =
-                new UnicodeEmojiContentNode("\uD83D\uDCE2", "y", false);
-        TextContentNode second = new TextContentNode("world");
-        List<Object> nodes = list(first, decorative, kept, second);
-
-        // 模型丢掉了 ☄️，但保留了 📢 且顺序正确。
-        List<Object> out = ContentNodes.replaceText(nodes,
-                "你好 \uD83D\uDCE2 世界");
-
-        assertNotNull("保留的锚点顺序正确时必须对齐成功", out);
-        assertSame(decorative, out.get(1));
-        assertSame(kept, out.get(2));
-        String left = ((TextContentNode) out.get(0)).getContent();
-        String right = ((TextContentNode) out.get(3)).getContent();
-        assertEquals("你好", left);
-        assertEquals("世界", right);
-    }
-
-    /** 锚点顺序颠倒时仍拒绝：顺序错误意味着无法安全切割间隔。 */
-    @Test
-    public void reorderedEmojiAnchorIsRejected() {
-        TextContentNode first = new TextContentNode("hello");
-        UnicodeEmojiContentNode a =
-                new UnicodeEmojiContentNode("☄️", "x", false);
-        UnicodeEmojiContentNode b =
-                new UnicodeEmojiContentNode("\uD83D\uDCE2", "y", false);
-        TextContentNode second = new TextContentNode("world");
-        List<Object> nodes = list(first, a, b, second);
-
-        // 📢 出现在 ☄之前：顺序不对，拒绝。
-        assertNull("锚点顺序颠倒时整条拒绝",
-                ContentNodes.replaceText(nodes, "你好 \uD83D\uDCE2 \u2604\uFE0F 世界"));
-        assertEquals("hello", first.getContent());
-        assertEquals("world", second.getContent());
-        assertSame(a, nodes.get(1));
-        assertSame(b, nodes.get(2));
     }
 }

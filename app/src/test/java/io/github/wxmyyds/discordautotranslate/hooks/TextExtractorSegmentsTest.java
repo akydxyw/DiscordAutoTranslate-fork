@@ -17,11 +17,18 @@ import java.util.List;
  * {@link TextExtractor} 产出的「纯文本请求正文」与「可翻译片段计数」。
  *
  * <p>约束：纯文本必须保持既有形态（语言检测、内容哈希与单链路请求都
- * 依赖它）；URL 定位标记与样式标记只出现在纯文本里。片段计数必须与
- * 回填消费口径（{@code ContentNodes.countTextNodes}/rebuild 的
- * countSegments）严格一致，否则片段会串位。</p>
+ * 依赖它）；URL、保留叶节点定位标记与样式标记只出现在纯文本里。片段计数必须与
+ * 回填消费口径（{@code ContentTree.segmentCount} 与捕获节点的分块）
+ * 严格一致；提取、对齐与重建共享同一
+ * 出现位置快照，否则片段会串位。</p>
  */
 public class TextExtractorSegmentsTest {
+
+    @org.junit.Before
+    public void activateFixtureProfile() { ContentNodeTestProfile.activate(TextExtractorSegmentsTest.class); }
+
+    @org.junit.After
+    public void clearFixtureProfile() { ContentNodeTestProfile.clear(); }
 
     // ---------------------------------------------------------------- 假节点模型
 
@@ -108,6 +115,14 @@ public class TextExtractorSegmentsTest {
         }
     }
 
+    public static final class UnknownContentNode {
+        private final List<Object> content;
+
+        public UnknownContentNode(List<Object> content) {
+            this.content = content;
+        }
+    }
+
     public static final class AnnotatedStructurableText {
         private final List<Object> content;
 
@@ -137,6 +152,19 @@ public class TextExtractorSegmentsTest {
     }
 
     // ---------------------------------------------------------------- 测试
+
+    @Test
+    public void unmappedNodeIsOpaqueAndDoesNotAbortSiblingExtraction() {
+        TextExtractor.Result result = TextExtractor.extract(new AnnotatedStructurableText(
+                list(new UnknownContentNode(list(new TextContentNode("hidden"))),
+                        new TextContentNode("visible English text"))));
+
+        assertNotNull(result);
+        assertEquals("<keep1/>visible English text", result.text);
+        assertTrue(result.text.contains("visible English text"));
+        assertFalse(result.text.contains("hidden"));
+        assertEquals(1, result.opaqueNodeCount);
+    }
 
     @Test
     public void singleTextNodeCountsOneSegment() {
@@ -184,7 +212,11 @@ public class TextExtractorSegmentsTest {
         assertNotNull(r);
         assertFalse("代码不得进入请求正文", r.text.contains("npm install"));
         assertTrue("两侧文本必须仍在请求里", r.text.contains("run"));
+        assertEquals("代码与 opaque 叶节点仅输出连续定位标记，不新增空格",
+                "run<keep1/><keep2/>now", r.text);
         assertEquals("代码与 emoji 不占片段", 2, r.segmentCount);
+        assertEquals(2, r.textNodeCount);
+        assertEquals(2, r.opaqueNodeCount);
     }
 
     @Test
@@ -298,14 +330,20 @@ public class TextExtractorSegmentsTest {
 
     @Test
     public void nonUrlLinkTextTranslatesLikeOtherText() {
-        // 掩码链接的显示文本是自然语言，照常作为片段翻译。
+        // 掩码链接的自然语言显示文本仍占片段，并用范围标记与普通文本精确区分。
         TextExtractor.Result r = TextExtractor.extract(new AnnotatedStructurableText(list(
-                new LinkContentNode(list(new TextContentNode("this guide"))),
-                new TextContentNode(" is good"))));
+                new TextContentNode("see "),
+                new LinkContentNode(list(new TextContentNode("this guide"))))));
 
         assertNotNull(r);
-        assertEquals("this guide is good", r.text);
+        assertEquals("see <x1>this guide</x1>", r.text);
         assertEquals(2, r.segmentCount);
+        TextExtractor.Result after = TextExtractor.extract(new AnnotatedStructurableText(list(
+                new LinkContentNode(list(new TextContentNode("this guide"))),
+                new TextContentNode(" is good"))));
+        assertNotNull(after);
+        assertEquals("<x1>this guide</x1> is good", after.text);
+        assertEquals(2, after.segmentCount);
     }
 
     @Test

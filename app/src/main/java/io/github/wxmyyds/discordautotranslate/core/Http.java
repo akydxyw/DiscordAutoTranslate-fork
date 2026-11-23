@@ -2,30 +2,19 @@ package io.github.wxmyyds.discordautotranslate.core;
 
 import androidx.annotation.Nullable;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
-/**
- * 极简 HTTP 客户端。
- *
- * <p>不用 OkHttp 的原因：本模块代码运行在 Discord 进程内，Discord 自身已打包
- * {@code okhttp3}（见 smali/okhttp3/），模块再打包一份会造成类冲突与版本错配。
- * 用 JDK 自带的 {@link HttpURLConnection}，零依赖、零冲突。
- * 阶段 3 如需更精细的 TLS/连接池控制再评估。</p>
- *
- * <p>超时由 {@link #timeoutMs} 控制，同时作用于连接与读取（需求 §5.5 超时时间）。</p>
- */
+/** Zero-dependency HTTP transport. Protocol completion belongs to the selected decoder. */
 public final class Http {
+    public static final int MAX_RESPONSE_BYTES = 1024 * 1024;
 
-    /** HTTP 响应。 */
+    /** Success bodies are decoded translations; error bodies remain bounded raw text. */
     public static final class Response {
         public final int status;
         public final String body;
@@ -40,7 +29,67 @@ public final class Http {
         }
     }
 
-    /** 请求头。 */
+    /** One mutable decoder per request; accept receives UTF-16 characters, never raw bytes. */
+    public interface ResponseDecoder {
+        String acceptType();
+        void accept(char value) throws TranslationException;
+        boolean isComplete();
+        String finish() throws TranslationException;
+    }
+
+    /** Cancellation and connection attachment share one lock, including the pre-attach gap. */
+    public static final class Request {
+        private boolean cancelled;
+        private boolean used;
+        private int responseStatus;
+        private HttpURLConnection connection;
+
+        public void cancel() {
+            HttpURLConnection attached;
+            synchronized (this) {
+                cancelled = true;
+                attached = connection;
+            }
+            if (attached != null) {
+                attached.disconnect();
+            }
+        }
+
+        public synchronized boolean isCancelled() {
+            return cancelled;
+        }
+
+        public synchronized void checkCancelled() throws TranslationException {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                throw new TranslationException(TranslationException.Kind.CANCELLED,
+                        "任务已取消", responseStatus, null);
+            }
+        }
+
+        synchronized void responseReceived(int status) {
+            responseStatus = status;
+        }
+
+        synchronized void attach(HttpURLConnection candidate) throws TranslationException {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                candidate.disconnect();
+                throw new TranslationException(TranslationException.Kind.CANCELLED, "任务已取消");
+            }
+            if (used) {
+                candidate.disconnect();
+                throw new IllegalStateException("Request handles cannot be reused");
+            }
+            used = true;
+            connection = candidate;
+        }
+
+        synchronized void detach(HttpURLConnection candidate) {
+            if (connection == candidate) {
+                connection = null;
+            }
+        }
+    }
+
     public static final class Headers {
         private final java.util.List<String[]> pairs = new java.util.ArrayList<>();
 
@@ -51,15 +100,12 @@ public final class Http {
             return this;
         }
 
-        /**
-         * 解析“每行一条 Name: Value”的多行文本。空行和注释行忽略；非法行作为配置错误拒绝。
-         */
+        /** Parse configured headers, rejecting malformed lines rather than ignoring them. */
         public static Headers parse(@Nullable String multiLine) throws TranslationException {
             if (multiLine == null) {
-                throw new TranslationException(TranslationException.Kind.CONFIG,
-                        "额外请求头为空");
+                throw new TranslationException(TranslationException.Kind.CONFIG, "额外请求头为空");
             }
-            Headers h = new Headers();
+            Headers headers = new Headers();
             int lineNo = 0;
             for (String raw : multiLine.split("\r?\n")) {
                 lineNo++;
@@ -77,9 +123,9 @@ public final class Http {
                     throw new TranslationException(TranslationException.Kind.CONFIG,
                             "额外请求头名称无效（第 " + lineNo + " 行）");
                 }
-                h.add(name, line.substring(idx + 1).trim());
+                headers.add(name, line.substring(idx + 1).trim());
             }
-            return h;
+            return headers;
         }
 
         private static boolean validHeaderName(String name) {
@@ -92,175 +138,194 @@ public final class Http {
             return !name.isEmpty();
         }
 
-        /** 查找已设置的请求头（大小写不敏感）。 */
         @Nullable
         public String get(String name) {
-            for (String[] p : pairs) {
-                if (p[0].equalsIgnoreCase(name)) {
-                    return p[1];
+            for (String[] pair : pairs) {
+                if (pair[0].equalsIgnoreCase(name)) {
+                    return pair[1];
                 }
             }
             return null;
         }
     }
 
-    private final int timeoutMs;
+    @FunctionalInterface
+    interface ConnectionFactory {
+        HttpURLConnection open(URL url) throws IOException;
+    }
 
-    /**
-     * 正在执行中的请求连接，按执行线程索引。
-     *
-     * <p>{@link HttpURLConnection} 在读取阻塞期间并不会因为线程中断而立即返回，
-     * 因此取消时必须由另一个线程关闭连接。热重载/关闭需要尽快停止在途请求，
-     * 否则旧代次会继续占用线程与网络。</p>
-     */
-    private static final java.util.concurrent.ConcurrentHashMap<Thread, HttpURLConnection> ACTIVE =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private final int timeoutMs;
+    private final ConnectionFactory connections;
 
     public Http(int timeoutMs) {
-        // 下限 1s，避免误配置成 0 导致立即超时。
+        this(timeoutMs, url -> (HttpURLConnection) url.openConnection());
+    }
+
+    /** JVM tests inject fake connections into the same production transport. */
+    Http(int timeoutMs, ConnectionFactory connections) {
         this.timeoutMs = Math.max(1000, timeoutMs);
+        this.connections = connections;
     }
 
-    /**
-     * 中断某个执行线程上正在进行的请求：先关闭连接使阻塞读立即返回，再请求中断。
-     *
-     * <p>连接关闭只影响该线程自己的请求；已结束或不存在时无副作用。</p>
-     *
-     * @return true 表示存在并已关闭一个在途连接
-     */
-    public static boolean cancelRequestOn(Thread worker) {
-        if (worker == null) {
-            return false;
-        }
-        HttpURLConnection conn = ACTIVE.remove(worker);
-        boolean closed = false;
-        if (conn != null) {
-            try {
-                conn.disconnect();
-                closed = true;
-            } catch (Throwable ignored) {
-                // 连接可能已被对端关闭。
-            }
-        }
-        worker.interrupt();
-        return closed;
-    }
-
-    /**
-     * 发送 JSON POST 请求。
-     *
-     * @param sse 请求体含 {@code stream:true} 时为 true：按行读取并在
-     *            {@code data: [DONE]} 处停止（不依赖服务端关流）。响应体
-     *            原样返回（SSE 帧文本），由协议层解析累积 delta。
-     * <p>流式响应必须符合 SSE 格式；读到 EOF 的内容仍由协议解析器严格校验。
-     * 读超时按字节间隔计算，token 持续到达就不会触发；非流式接口生成完成前零字节返回，
-     * 长生成会被总时长超时掐断。</p>
-     * @throws TranslationException 网络或超时错误（已归类）
-     */
-    public Response postJson(String url, String jsonBody, Headers headers, boolean sse)
-            throws TranslationException {
+    public Response postJson(String url, String jsonBody, Headers headers, Request request,
+                             ResponseDecoder decoder) throws TranslationException {
         HttpURLConnection conn = null;
-        final Thread worker = Thread.currentThread();
+        int status = 0;
         try {
-            conn = (HttpURLConnection) new URL(url).openConnection();
-            ACTIVE.put(worker, conn);
+            request.checkCancelled();
+            conn = connections.open(new URL(url));
+            request.attach(conn);
+            request.checkCancelled();
             conn.setRequestMethod("POST");
             conn.setConnectTimeout(timeoutMs);
             conn.setReadTimeout(timeoutMs);
             conn.setDoOutput(true);
             conn.setUseCaches(false);
+            conn.setInstanceFollowRedirects(false);
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            conn.setRequestProperty("Accept", sse ? "text/event-stream" : "application/json");
-
+            conn.setRequestProperty("Accept", decoder.acceptType());
             if (headers != null) {
-                for (String[] p : headers.pairs) {
-                    conn.setRequestProperty(p[0], p[1]);
+                for (String[] pair : headers.pairs) {
+                    conn.setRequestProperty(pair[0], pair[1]);
                 }
             }
-
             byte[] payload = jsonBody.getBytes(StandardCharsets.UTF_8);
             conn.setFixedLengthStreamingMode(payload.length);
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(payload);
-                os.flush();
+            request.checkCancelled();
+            try (OutputStream out = conn.getOutputStream()) {
+                request.checkCancelled();
+                out.write(payload);
+                request.checkCancelled();
+                out.flush();
             }
-
-            int status = conn.getResponseCode();
-            InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
-            String body = sse ? readUntilDone(in) : readAll(in);
+            request.checkCancelled();
+            status = conn.getResponseCode();
+            request.responseReceived(status);
+            request.checkCancelled();
+            ProjectLog.info("api.http.response httpStatus=" + status);
+            boolean success = status >= 200 && status < 300;
+            InputStream input = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            request.checkCancelled();
+            String body = readResponse(input, request, success ? decoder : new RawDecoder());
+            request.checkCancelled();
             return new Response(status, body);
-
+        } catch (TranslationException e) {
+            request.checkCancelled();
+            if (status != 0 && e.httpStatus() == 0) {
+                throw new TranslationException(e.kind(), e.reason(), e.getMessage(), status,
+                        e.getCause());
+            }
+            throw e;
         } catch (SocketTimeoutException e) {
-            // 区分连接阶段与读阶段：读超时=服务端在预算内未回完响应
-            //（非流式接口生成完成前不回字节，长生成会表现为读超时）。
-            String phase = e.getMessage(); // "connect timed out" / "Read timed out"
+            request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.TIMEOUT,
-                    "请求超时（" + timeoutMs + "ms，" + (phase == null ? "未知阶段" : phase) + "）", e);
+                    "请求超时（" + timeoutMs + "ms）", status, e);
         } catch (IOException e) {
+            request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.NETWORK,
-                    "网络错误：" + e.getClass().getSimpleName(), e);
-        } catch (Throwable t) {
+                    "网络错误：" + e.getClass().getSimpleName(), status, e);
+        } catch (RuntimeException e) {
+            request.checkCancelled();
             throw new TranslationException(TranslationException.Kind.UNKNOWN,
-                    "请求失败：" + t.getClass().getSimpleName(), t);
+                    "请求失败：" + e.getClass().getSimpleName(), status, e);
         } finally {
             if (conn != null) {
-                ACTIVE.remove(worker, conn);
-                try {
-                    conn.disconnect();
-                } catch (Throwable ignored) {
-                }
+                request.detach(conn);
+                conn.disconnect();
             }
         }
     }
 
-    @Nullable
-    private static String readAll(@Nullable InputStream in) throws IOException {
-        if (in == null) {
-            return null;
+    /** No buffered read-ahead: a completed event must not consume trailing keep-alive bytes. */
+    static String readResponse(@Nullable InputStream input, Request request,
+                               ResponseDecoder decoder) throws IOException, TranslationException {
+        request.checkCancelled();
+        if (input == null) {
+            return decoder.finish();
         }
-        try (InputStream is = in) {
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[4096];
-            int n;
-            // 上限 1MB，避免异常响应导致内存问题。
-            int total = 0;
-            while ((n = is.read(buf)) > 0) {
-                total += n;
-                if (total > 1024 * 1024) {
-                    throw new IOException("HTTP response exceeds 1 MiB limit");
-                }
-                bos.write(buf, 0, n);
+        // HttpURLConnection.disconnect() owns response cleanup in postJson's finally.
+        // Closing its input stream first can drain unread bytes and block on keep-alives.
+        Utf8Reader reader = new Utf8Reader(input, request);
+        while (!decoder.isComplete()) {
+            int point = reader.read();
+            if (point == -1) {
+                break;
             }
-            return bos.toString("UTF-8");
+            if (point <= 0xffff) {
+                decoder.accept((char) point);
+            } else {
+                decoder.accept(Character.highSurrogate(point));
+                decoder.accept(Character.lowSurrogate(point));
+            }
+            request.checkCancelled();
         }
+        return decoder.finish();
     }
 
-    /**
-     * 按行读取 SSE 响应体，读到 {@code data: [DONE]} 帧即停止。
-     *
-     * <p>流式请求要求服务端返回 SSE；如在 {@code [DONE]} 前关闭，
-     * 协议解析器会将缺少结束事件的响应判为不完整。</p>
-     */
-    @Nullable
-    private static String readUntilDone(@Nullable InputStream in) throws IOException {
-        if (in == null) {
-            return null;
-        }
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line).append('\n');
-                if (sb.length() > 1024 * 1024) {
-                    throw new IOException("HTTP response exceeds 1 MiB limit");
-                }
-                if ("data: [DONE]".equals(line.trim())) {
-                    break;
-                }
-            }
-            return sb.toString();
-        }
+    /** Raw non-2xx bodies never pass through a successful-response protocol decoder. */
+    private static final class RawDecoder implements ResponseDecoder {
+        private final StringBuilder body = new StringBuilder();
+        public String acceptType() { return "application/json"; }
+        public void accept(char value) { body.append(value); }
+        public boolean isComplete() { return false; }
+        public String finish() { return body.toString(); }
     }
 
+    /** Strict UTF-8 with an explicit cumulative byte cap, checked during every read. */
+    private static final class Utf8Reader {
+        private final InputStream input;
+        private final Request request;
+        private int bytes;
+
+        Utf8Reader(InputStream input, Request request) {
+            this.input = input;
+            this.request = request;
+        }
+
+        private int next() throws IOException, TranslationException {
+            request.checkCancelled();
+            int value = input.read();
+            request.checkCancelled();
+            if (value != -1 && ++bytes > MAX_RESPONSE_BYTES) {
+                throw new TranslationException(TranslationException.Kind.PARSE,
+                        "HTTP response exceeds 1 MiB byte limit");
+            }
+            return value;
+        }
+
+        int read() throws IOException, TranslationException {
+            int first = next();
+            if (first < 0x80) {
+                return first;
+            }
+            int remaining;
+            int point;
+            int minimum;
+            if (first >= 0xc2 && first <= 0xdf) {
+                remaining = 1; point = first & 0x1f; minimum = 0x80;
+            } else if (first >= 0xe0 && first <= 0xef) {
+                remaining = 2; point = first & 0x0f; minimum = 0x800;
+            } else if (first >= 0xf0 && first <= 0xf4) {
+                remaining = 3; point = first & 7; minimum = 0x10000;
+            } else {
+                throw invalidUtf8();
+            }
+            for (int i = 0; i < remaining; i++) {
+                int next = next();
+                if (next < 0x80 || next > 0xbf) {
+                    throw invalidUtf8();
+                }
+                point = (point << 6) | (next & 0x3f);
+            }
+            if (point < minimum || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) {
+                throw invalidUtf8();
+            }
+            return point;
+        }
+
+        private TranslationException invalidUtf8() {
+            return new TranslationException(TranslationException.Kind.PARSE,
+                    "响应不是合法 UTF-8");
+        }
+    }
 }

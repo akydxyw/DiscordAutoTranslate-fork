@@ -7,10 +7,13 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import io.github.wxmyyds.discordautotranslate.core.ContentTree;
 import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.AnnotatedStructurableText;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.BulletListContentNode;
+import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.InlineCodeContentNode;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.LinkContentNode;
+import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.StrongContentNode;
 import io.github.wxmyyds.discordautotranslate.hooks.ContentNodesTest.TextContentNode;
 
 import org.junit.Test;
@@ -27,6 +30,12 @@ import java.util.List;
  * 仍是必须保留的定位标记。</p>
  */
 public class BulletListAlignmentTest {
+
+    @org.junit.Before
+    public void activateFixtureProfile() { ContentNodeTestProfile.activate(ContentNodesTest.class); }
+
+    @org.junit.After
+    public void clearFixtureProfile() { ContentNodeTestProfile.clear(); }
 
     private static final String URL = "https://codex-relay.codes/register?aff=QlIz";
 
@@ -95,7 +104,7 @@ public class BulletListAlignmentTest {
         t.append("\n你可以在花任何钱之前先用免费额度试用。\n\n")
                 .append("在此注册：").append(URL);
 
-        List<Object> out = ContentNodes.replaceText(reportedTree(), t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(reportedTree(), t.toString());
 
         assertNotNull("结构完整的列表译文必须能回填", out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(6);
@@ -122,7 +131,7 @@ public class BulletListAlignmentTest {
         t.append("\n你可以在花任何钱之前先用免费额度试用。\n\n")
                 .append("在此注册：").append(URL);
 
-        List<Object> out = ContentNodes.replaceText(reportedTree(), t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(reportedTree(), t.toString());
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(6);
@@ -146,7 +155,7 @@ public class BulletListAlignmentTest {
                 .append("在此注册：").append(URL);
 
         assertNull("源树中的段落边界缺失时不得重新猜测分段",
-                ContentNodes.replaceText(reportedTree(), t.toString()));
+                ContentPlanTestSupport.replace(reportedTree(), t.toString()));
     }
 
     @Test
@@ -161,7 +170,7 @@ public class BulletListAlignmentTest {
         for (String b : ZH_BULLETS) {
             t.append(b).append('\n');
         }
-        List<Object> out = ContentNodes.replaceText(nodes, t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, t.toString());
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(0);
@@ -185,7 +194,7 @@ public class BulletListAlignmentTest {
                 .append("在此注册：").append(URL);
 
         List<Object> nodes = reportedTree();
-        assertNull(ContentNodes.replaceText(nodes, t.toString()));
+        assertNull(ContentPlanTestSupport.replace(nodes, t.toString()));
 
         BulletListContentNode bullets = (BulletListContentNode) nodes.get(6);
         assertEquals("原文列表项不得被清空", BULLETS[0],
@@ -208,7 +217,7 @@ public class BulletListAlignmentTest {
 
         List<Object> nodes = reportedTree();
         Object link = nodes.get(11);
-        List<Object> out = ContentNodes.replaceText(nodes, t.toString());
+        List<Object> out = ContentPlanTestSupport.replace(nodes, t.toString());
 
         assertNotNull(out);
         assertSame("URL 链接节点必须原样保留", link, out.get(11));
@@ -232,7 +241,7 @@ public class BulletListAlignmentTest {
                 .append("在此注册：").append(URL);
 
         assertNull("原始列表项之间是单换行，模型插入空段落后不再逐项对应",
-                ContentNodes.replaceText(reportedTree(), t.toString()));
+                ContentPlanTestSupport.replace(reportedTree(), t.toString()));
     }
 
     @Test
@@ -244,7 +253,7 @@ public class BulletListAlignmentTest {
         items.add(list(new TextContentNode("second")));
         List<Object> nodes = list(new BulletListContentNode(null, false, items));
 
-        List<Object> out = ContentNodes.replaceText(nodes, "1. 第一\n2. 第二");
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "1. 第一\n2. 第二");
 
         assertNotNull(out);
         BulletListContentNode bullets = (BulletListContentNode) out.get(0);
@@ -262,11 +271,142 @@ public class BulletListAlignmentTest {
                 new TextContentNode("\n\n"),
                 new TextContentNode("second paragraph"));
 
-        List<Object> out = ContentNodes.replaceText(nodes, "- 第一段\n\n第二段");
+        List<Object> out = ContentPlanTestSupport.replace(nodes, "- 第一段\n\n第二段");
 
         assertNotNull(out);
         assertEquals("- 第一段", ((TextContentNode) out.get(0)).getContent());
         assertEquals("第二段", ((TextContentNode) out.get(2)).getContent());
+    }
+
+    private static TextExtractor.Result capture(List<Object> nodes, String expectedSource) {
+        TextExtractor.Result source = TextExtractor.extract(new AnnotatedStructurableText(nodes));
+        assertNotNull(source);
+        assertNotNull(source.tree);
+        assertEquals(expectedSource, source.text);
+        return source;
+    }
+
+    private static String extracted(List<Object> nodes) {
+        TextExtractor.Result result = TextExtractor.extractTree(ContentTree.compile(nodes));
+        assertNotNull(result);
+        return result.text;
+    }
+
+    @Test
+    public void styledFirstItemConsumesItsBulletBeforeTheOpeningTag() {
+        StrongContentNode strong = new StrongContentNode(list(new TextContentNode("Read the guide")));
+        BulletListContentNode original = new BulletListContentNode(7L, true,
+                Arrays.asList(list(strong)));
+        TextExtractor.Result source = capture(list(original), "\n• <x1>Read the guide</x1>");
+
+        List<Object> out = ContentNodes.replacePlanned(source.tree, "• <x1>阅读指南</x1>");
+
+        assertNotNull(out);
+        BulletListContentNode rebuilt = (BulletListContentNode) out.get(0);
+        assertEquals(Long.valueOf(7L), rebuilt.component1());
+        assertTrue(rebuilt.component2());
+        StrongContentNode rebuiltStrong = (StrongContentNode) rebuilt.getItems().get(0).get(0);
+        assertEquals("阅读指南", ((TextContentNode) rebuiltStrong.getContent().get(0)).getContent());
+        assertEquals("\n• <x1>阅读指南</x1>", extracted(out));
+        assertSame(strong, original.getItems().get(0).get(0));
+        assertEquals("Read the guide", ((TextContentNode) strong.getContent().get(0)).getContent());
+        assertNull(ContentNodes.replacePlanned(source.tree, "• 多余正文<x1>阅读指南</x1>"));
+    }
+
+    @Test
+    public void laterStyledFragmentKeepsLiteralNumberingAfterPlainItemStart() {
+        StrongContentNode strong = new StrongContentNode(list(new TextContentNode("1. important thing")));
+        TextExtractor.Result source = capture(list(new BulletListContentNode(null, false,
+                Arrays.asList(list(new TextContentNode("Read "), strong)))),
+                "\n• Read <x1>1. important thing</x1>");
+
+        List<Object> out = ContentNodes.replacePlanned(source.tree,
+                "• 阅读 <x1>1. 重要事项</x1>");
+
+        assertNotNull(out);
+        List<Object> item = ((BulletListContentNode) out.get(0)).getItems().get(0);
+        assertEquals("阅读 ", ((TextContentNode) item.get(0)).getContent());
+        assertEquals("1. 重要事项", ((TextContentNode)
+                ((StrongContentNode) item.get(1)).getContent().get(0)).getContent());
+        assertEquals("\n• 阅读 <x1>1. 重要事项</x1>", extracted(out));
+    }
+
+    @Test
+    public void styledFirstItemsPreserveSourceWhitespaceParagraphsAndLaterPlainNumbering() {
+        TextContentNode lf = new TextContentNode("\n");
+        TextContentNode blank = new TextContentNode("\n\n");
+        BulletListContentNode original = new BulletListContentNode(null, false, Arrays.asList(
+                list(lf, new StrongContentNode(list(new TextContentNode("  Read\n\n1. guide  ")))),
+                list(new StrongContentNode(list(new TextContentNode("Next"))),
+                        new TextContentNode(" 1. literal continuation"))));
+        List<Object> nodes = list(original, blank, new TextContentNode("After"));
+        TextExtractor.Result source = capture(nodes,
+                "\n• \n  <x1>Read</x1>\n\n<x2>1. guide</x2>  \n• <x3>Next</x3>"
+                        + " 1. literal continuation\n\nAfter");
+
+        List<Object> out = ContentNodes.replacePlanned(source.tree,
+                "• \n<x1>阅读</x1>\n\n<x2>1. 指南</x2>\n• <x3>接着</x3>"
+                        + " 1. 字面编号\n\n之后");
+
+        assertNotNull(out);
+        BulletListContentNode rebuilt = (BulletListContentNode) out.get(0);
+        assertSame(lf, rebuilt.getItems().get(0).get(0));
+        assertEquals("  阅读\n\n1. 指南  ", ((TextContentNode)
+                ((StrongContentNode) rebuilt.getItems().get(0).get(1)).getContent().get(0)).getContent());
+        assertEquals(" 1. 字面编号", ((TextContentNode) rebuilt.getItems().get(1).get(1)).getContent());
+        assertSame(blank, out.get(1));
+        assertEquals("之后", ((TextContentNode) out.get(2)).getContent());
+        assertEquals("\n• \n  <x1>阅读</x1>\n\n<x2>1. 指南</x2>  \n• <x3>接着</x3>"
+                + " 1. 字面编号\n\n之后", extracted(out));
+    }
+
+    @Test
+    public void laterPlainLineAndParagraphKeepLiteralNumberingWithinTheSameItem() {
+        TextContentNode lf = new TextContentNode("\n");
+        TextExtractor.Result source = capture(list(new BulletListContentNode(null, false,
+                Arrays.asList(list(new TextContentNode("Read"), lf,
+                        new TextContentNode("1. important\n\n2. still literal")),
+                        list(new TextContentNode("Next"))))),
+                "\n• Read\n1. important\n\n2. still literal\n• Next");
+
+        List<Object> out = ContentNodes.replacePlanned(source.tree,
+                "1. 阅读\n1. 重要事项\n\n2. 仍是正文\n2. 接着");
+
+        assertNotNull(out);
+        BulletListContentNode rebuilt = (BulletListContentNode) out.get(0);
+        assertEquals("阅读", ((TextContentNode) rebuilt.getItems().get(0).get(0)).getContent());
+        assertSame(lf, rebuilt.getItems().get(0).get(1));
+        assertEquals("1. 重要事项\n\n2. 仍是正文",
+                ((TextContentNode) rebuilt.getItems().get(0).get(2)).getContent());
+        assertEquals("接着", ((TextContentNode) rebuilt.getItems().get(1).get(0)).getContent());
+        assertEquals("\n• 阅读\n1. 重要事项\n\n2. 仍是正文\n• 接着", extracted(out));
+    }
+
+    @Test
+    public void retainedFirstItemsConsumePrefixOnceAndKeepLaterLiteralNumbering() {
+        for (boolean styled : new boolean[]{false, true}) {
+            InlineCodeContentNode code = new InlineCodeContentNode("native-code");
+            TextContentNode body = new TextContentNode(" 1. important thing");
+            Object last = styled ? new StrongContentNode(list(body)) : body;
+            TextExtractor.Result source = capture(list(new BulletListContentNode(null, false,
+                    Arrays.asList(list(new TextContentNode("Earlier")), list(code, last)))),
+                    "\n• Earlier\n• <keep1/> "
+                            + (styled ? "<x1>1. important thing</x1>" : "1. important thing"));
+
+            List<Object> out = ContentNodes.replacePlanned(source.tree,
+                    "• 前项\n• <keep1/> " + (styled ? "<x1>1. 重要事项</x1>" : "1. 重要事项"));
+
+            assertNotNull(out);
+            BulletListContentNode rebuilt = (BulletListContentNode) out.get(0);
+            assertEquals("前项", ((TextContentNode) rebuilt.getItems().get(0).get(0)).getContent());
+            assertSame(code, rebuilt.getItems().get(1).get(0));
+            Object translated = rebuilt.getItems().get(1).get(1);
+            if (styled) translated = ((StrongContentNode) translated).getContent().get(0);
+            assertEquals(" 1. 重要事项", ((TextContentNode) translated).getContent());
+            assertEquals("\n• 前项\n• <keep1/> "
+                    + (styled ? "<x1>1. 重要事项</x1>" : "1. 重要事项"), extracted(out));
+            assertEquals(" 1. important thing", body.getContent());
+        }
     }
 
     @Test
@@ -277,6 +417,6 @@ public class BulletListAlignmentTest {
                 new TextContentNode("\n\n"),
                 new TextContentNode("second paragraph"));
 
-        assertNull(ContentNodes.replaceText(nodes, "一\n二\n三\n四"));
+        assertNull(ContentPlanTestSupport.replace(nodes, "一\n二\n三\n四"));
     }
 }

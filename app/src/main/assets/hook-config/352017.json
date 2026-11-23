@@ -1,0 +1,642 @@
+{
+  "schemaVersion": 1,
+  "versionCode": 352017,
+  "requiredHooks": [
+    "message.bind",
+    "message.render",
+    "message.textConversion",
+    "embed.bind",
+    "poll.bind",
+    "poll.answerBind",
+    "poll.textSet",
+    "poll.accessibilitySet"
+  ],
+  "iconClick": {
+    "enabled": true,
+    "protocol": "constructorProxy",
+    "spanClass": "lh.d",
+    "requiredSuperclass": "android.text.style.ClickableSpan",
+    "interfaces": ["zf.b"],
+    "constructor": {
+      "parameterTypes": [
+        "java.lang.Integer",
+        "java.lang.Integer",
+        "java.lang.Integer",
+        "java.lang.Boolean",
+        "kotlin.jvm.functions.Function1",
+        "kotlin.jvm.functions.Function1",
+        "int"
+      ],
+      "arguments": [
+        {"kind": "null"},
+        {"kind": "null"},
+        {"kind": "null"},
+        {"kind": "null"},
+        {"kind": "null"},
+        {
+          "kind": "callback",
+          "interface": "kotlin.jvm.functions.Function1",
+          "method": "invoke",
+          "action": "toggleTranslation"
+        },
+        {"kind": "integer", "value": 255}
+      ]
+    }
+  },
+  "hooks": {
+    "message.bind": {
+      "target": {
+        "class": "com.discord.chat.presentation.message.MessageView",
+        "name": "f",
+        "static": false,
+        "parameterCount": 7,
+        "parameterTypes": {
+          "0": "com.discord.chat.bridge.Message"
+        }
+      },
+      "modelArgument": 0,
+      "messageIdGetter": "getId",
+      "contentGetter": "getContent",
+      "editedTimestampGetter": "getEditedTimestamp",
+      "referencedMessage": {
+        "accessor": "getReferencedMessage",
+        "loadedClass": "c8.c",
+        "messageField": "a",
+        "messageIdGetter": "getId",
+        "contentField": "b",
+        "messageContentGetter": "getContent",
+        "editedTimestampGetter": "getEditedTimestamp"
+      },
+      "replyPreviewField": "v",
+      "replyPreviewBindingField": "P",
+      "replyPreviewTextField": "H"
+    },
+    "message.render": {
+      "shadowViewGetter": "getShadowView",
+      "target": {
+        "class": "com.discord.chat.presentation.message.view.MessageContentView",
+        "name": "c",
+        "static": true,
+        "parameterCount": 38,
+        "parameterTypes": {
+          "0": "com.discord.chat.presentation.message.view.MessageContentView",
+          "1": "m9.f0",
+          "2": "l8.h"
+        }
+      },
+      "identitySource": "argument",
+      "viewArgument": 0,
+      "contentArgument": 2,
+      "messageIdArgument": 3
+    },
+    "message.textConversion": {
+      "target": {
+        "class": "kl.b",
+        "name": "B0",
+        "static": true,
+        "parameterCount": 30,
+        "returnType": "oj.c",
+        "parameterTypes": {
+          "0": "l8.h",
+          "1": "android.content.Context"
+        }
+      },
+      "contentArgument": 0,
+      "contextArgument": 1,
+      "messageIdArgument": 2
+    },
+    "poll.bind": {
+      "enabled": true,
+      "target": {
+        "class": "ea.r0",
+        "name": "v",
+        "static": false,
+        "parameterCount": 4,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "m9.g0",
+          "1": "ea.n",
+          "2": "ea.n",
+          "3": "k9.l"
+        }
+      },
+      "accessoryArgument": 0,
+      "optionsPath": ["h"],
+      "messageIdPath": ["e"],
+      "textPath": ["g", "b", "a"],
+      "hostPath": ["u"],
+      "textViewPath": ["u", "P", "w"]
+    },
+    "poll.answerBind": {
+      "enabled": true,
+      "target": {
+        "class": "ba.h",
+        "name": "f",
+        "static": false,
+        "parameterCount": 2,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "k3.k1",
+          "1": "int"
+        }
+      },
+      "holderArgument": 0,
+      "positionArgument": 1,
+      "itemsPath": ["d"],
+      "messageIdPath": ["a"],
+      "answerIdPath": ["c", "a"],
+      "textPath": ["c", "b", "a"],
+      "holderBindingPath": ["u"],
+      "textBindingClass": "q8.f0",
+      "textViewPath": ["v"],
+      "imageBindingClass": "q8.d0",
+      "imageViewPath": ["i"]
+    },
+    "poll.textSet": {
+      "enabled": true,
+      "target": {
+        "class": "android.widget.TextView",
+        "name": "setText",
+        "static": false,
+        "parameterCount": 1,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "java.lang.CharSequence"
+        }
+      },
+      "contentArgument": 0
+    },
+    "poll.accessibilitySet": {
+      "enabled": true,
+      "target": {
+        "class": "android.view.View",
+        "name": "setContentDescription",
+        "static": false,
+        "parameterCount": 1,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "java.lang.CharSequence"
+        }
+      },
+      "contentArgument": 0
+    },
+    "embed.bind": {
+      "enabled": true,
+      "target": {
+        "class": "q9.q",
+        "name": "b",
+        "static": false,
+        "parameterCount": 34,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "m9.f0",
+          "1": "n7.c",
+          "2": "long",
+          "3": "java.lang.String",
+          "4": "int",
+          "5": "int",
+          "6": "int",
+          "7": "boolean",
+          "8": "boolean",
+          "9": "boolean",
+          "10": "boolean",
+          "11": "boolean",
+          "12": "boolean",
+          "13": "ea.n",
+          "14": "ea.n",
+          "15": "cb.i0",
+          "16": "ag.c",
+          "17": "android.view.View$OnLongClickListener",
+          "18": "a50.r",
+          "19": "af.m",
+          "20": "af.m",
+          "21": "k9.g",
+          "22": "af.m",
+          "23": "ea.b",
+          "24": "ea.c",
+          "25": "af.m",
+          "26": "af.m",
+          "27": "af.m",
+          "28": "j8.c",
+          "29": "double",
+          "30": "boolean",
+          "31": "boolean",
+          "32": "boolean",
+          "33": "boolean"
+        }
+      },
+      "inputSource": "arguments",
+      "modelArgument": 1,
+      "messageIdArgument": 3,
+      "host": {
+        "source": "this"
+      }
+    }
+  },
+  "types": {
+    "StructurableText": "l8.h",
+    "PrimitiveStructurableText": "l8.e",
+    "AnnotatedStructurableText": "l8.b",
+    "TextContentNode": "j7.e5",
+    "UserOrRoleMentionContentNode": "j7.q5",
+    "StrongContentNode": "j7.y4",
+    "LHeadingContentNode": "j7.w0",
+    "StrikethroughContentNode": "j7.v4",
+    "InlineCodeContentNode": "j7.t0",
+    "CodeBlockContentNode": "j7.r",
+    "SubtextContentNode": "j7.b5",
+    "LinkContentNode": "j7.c1",
+    "BulletListContentNode": "j7.i",
+    "HeadingContentNode": "j7.q0",
+    "SpoilerContentNode": "j7.m4",
+    "UnicodeEmojiContentNode": "j7.n5",
+    "CustomEmojiContentNode": "j7.b0",
+    "ParagraphContentNode": "j7.g4",
+    "EmphasisContentNode": "j7.g0",
+    "BlockQuoteContentNode": "j7.f",
+    "UnderlineContentNode": "j7.k5",
+    "RecyclerViewViewHolder": "k3.k1",
+    "RecyclerViewLayoutParams": "k3.u0",
+    "RecyclerViewAdapter": "k3.m0",
+    "RecyclerViewAdapterObservable": "k3.n0",
+    "MessageContentViewHolder": "ea.p0",
+    "Message": "com.discord.chat.bridge.Message",
+    "GuildId": "com.discord.primitives.GuildId",
+    "Embed": "n7.c",
+    "EmbedField": "n7.o",
+    "RecyclerView": "androidx.recyclerview.widget.RecyclerView",
+    "MessageAccessoriesView": "com.discord.chat.presentation.message.MessageAccessoriesView",
+    "MessageView": "com.discord.chat.presentation.message.MessageView"
+  },
+  "nodeConstructors": {
+    "StrongContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "StrikethroughContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "SubtextContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "ParagraphContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "EmphasisContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "BlockQuoteContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "UnderlineContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "LHeadingContentNode": {
+      "parameterTypes": [
+        "int",
+        "int",
+        "java.lang.String",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 7
+        },
+        {
+          "kind": "field",
+          "name": "a"
+        },
+        {
+          "kind": "field",
+          "name": "b"
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "LinkContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List",
+        "j7.x3",
+        "java.lang.Integer",
+        "e8.c",
+        "java.lang.Integer",
+        "java.lang.Boolean",
+        "java.lang.Integer",
+        "java.lang.Boolean",
+        "java.lang.String",
+        "boolean"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 1023
+        },
+        {
+          "kind": "children"
+        },
+        {
+          "kind": "field",
+          "name": "b"
+        },
+        {
+          "kind": "field",
+          "name": "c"
+        },
+        {
+          "kind": "field",
+          "name": "d"
+        },
+        {
+          "kind": "field",
+          "name": "e"
+        },
+        {
+          "kind": "field",
+          "name": "f"
+        },
+        {
+          "kind": "field",
+          "name": "g"
+        },
+        {
+          "kind": "field",
+          "name": "h"
+        },
+        {
+          "kind": "field",
+          "name": "i"
+        },
+        {
+          "kind": "field",
+          "name": "j"
+        }
+      ]
+    },
+    "BulletListContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.lang.Long",
+        "boolean",
+        "java.util.List"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 7
+        },
+        {
+          "kind": "field",
+          "name": "a"
+        },
+        {
+          "kind": "field",
+          "name": "b"
+        },
+        {
+          "kind": "children"
+        }
+      ]
+    },
+    "HeadingContentNode": {
+      "parameterTypes": [
+        "java.util.List",
+        "int",
+        "int"
+      ],
+      "arguments": [
+        {
+          "kind": "children"
+        },
+        {
+          "kind": "integer",
+          "value": 3
+        },
+        {
+          "kind": "field",
+          "name": "a"
+        }
+      ]
+    },
+    "SpoilerContentNode": {
+      "parameterTypes": [
+        "int",
+        "java.util.List",
+        "java.lang.Integer",
+        "java.lang.String",
+        "java.lang.String"
+      ],
+      "arguments": [
+        {
+          "kind": "integer",
+          "value": 15
+        },
+        {
+          "kind": "children"
+        },
+        {
+          "kind": "field",
+          "name": "b"
+        },
+        {
+          "kind": "field",
+          "name": "c"
+        },
+        {
+          "kind": "field",
+          "name": "d"
+        }
+      ]
+    }
+  },
+  "accessors": {
+    "Message": {
+      "getId": "getId-3Eiw7ao",
+      "getChannelId": "getChannelId-o4g7jtM",
+      "getGuildId": "getGuildId-qOKuAAo"
+    },
+    "GuildId": {
+      "asString": "toString"
+    },
+    "RecyclerViewViewHolder": {
+      "getBindingAdapterPosition": "f",
+      "getAbsoluteAdapterPosition": "e"
+    },
+    "RecyclerViewAdapterObservable": {
+      "notifyItemChanged": "d"
+    },
+    "RecyclerView": {
+      "isComputingLayout": "R",
+      "consumePendingUpdates": "o",
+      "getAdapter": "getAdapter",
+      "getChildCount": "getChildCount",
+      "getChildAt": "getChildAt"
+    }
+  },
+  "fields": {
+    "Embed": {
+      "getDescription": "j",
+      "getTitle": "f",
+      "getFields": "g"
+    },
+    "EmbedField": {
+      "getName": "c",
+      "getValue": "d"
+    },
+    "RecyclerViewViewHolder": {
+      "itemView": "a",
+      "bindingAdapter": "s",
+      "recyclerView": "r"
+    },
+    "RecyclerViewLayoutParams": {
+      "viewHolder": "d"
+    },
+    "RecyclerViewAdapter": {
+      "observable": "a"
+    },
+    "RecyclerView": {
+      "layoutSuppressed": "U",
+      "interceptRequestLayoutDepth": "S"
+    },
+    "MessageContentViewHolder": {
+      "bindCache": "v"
+    },
+    "PrimitiveStructurableText": {
+      "getContent": "a"
+    },
+    "AnnotatedStructurableText": {
+      "getContent": "a"
+    },
+    "TextContentNode": {
+      "getContent": "a"
+    },
+    "StrongContentNode": {
+      "getContent": "a"
+    },
+    "LHeadingContentNode": {
+      "getContent": "c"
+    },
+    "StrikethroughContentNode": {
+      "getContent": "a"
+    },
+    "SubtextContentNode": {
+      "getContent": "a"
+    },
+    "LinkContentNode": {
+      "getContent": "a"
+    },
+    "BulletListContentNode": {
+      "getItems": "c"
+    },
+    "HeadingContentNode": {
+      "getContent": "b"
+    },
+    "SpoilerContentNode": {
+      "getContent": "a"
+    },
+    "UnicodeEmojiContentNode": {
+      "getEmojiAnchor": "c"
+    },
+    "CustomEmojiContentNode": {
+      "getAlt": "c"
+    },
+    "ParagraphContentNode": {
+      "getContent": "a"
+    },
+    "EmphasisContentNode": {
+      "getContent": "a"
+    },
+    "BlockQuoteContentNode": {
+      "getContent": "a"
+    },
+    "UnderlineContentNode": {
+      "getContent": "a"
+    }
+  }
+}

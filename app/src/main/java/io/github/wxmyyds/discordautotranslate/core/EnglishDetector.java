@@ -7,12 +7,18 @@ import java.util.Locale;
 /** 判断消息是否包含足量的非目标语言自然语言文本。 */
 public final class EnglishDetector {
 
+    /** 固定判定依据，不包含正文、计数或目标语言配置。 */
+    public enum Reason {
+        EMPTY, NO_VISIBLE_CONTENT, TOO_FEW_LETTERS, LOW_LETTER_RATIO,
+        NO_TEXT_NODE, TARGET_LANGUAGE_SCRIPT, TRANSLATABLE
+    }
+
     /** 判定结果与依据，便于诊断。 */
     public static final class Verdict {
         public final boolean shouldTranslate;
-        public final String reason;
+        public final Reason reason;
 
-        Verdict(boolean shouldTranslate, String reason) {
+        Verdict(boolean shouldTranslate, Reason reason) {
             this.shouldTranslate = shouldTranslate;
             this.reason = reason;
         }
@@ -25,24 +31,13 @@ public final class EnglishDetector {
     private EnglishDetector() {
     }
 
-    /** 与旧调用方兼容；默认目标语言为简体中文。 */
+    /** Evaluate extractable prose; retained native nodes never veto surrounding text. */
     public static Verdict evaluate(@Nullable String rawText, int textNodeCount,
-                                   int opaqueNodeCount, boolean codeHeavy) {
-        return evaluate(rawText, textNodeCount, opaqueNodeCount, codeHeavy,
-                Config.DEF_TARGET_LANG);
-    }
-
-    public static Verdict evaluate(@Nullable String rawText, int textNodeCount,
-                                   int opaqueNodeCount, boolean codeHeavy,
                                    @Nullable String targetLanguage) {
         if (rawText == null || rawText.trim().isEmpty()) {
-            return new Verdict(false, "empty");
+            return new Verdict(false, Reason.EMPTY);
         }
-        if (codeHeavy) {
-            return new Verdict(false, "code-block");
-        }
-
-        String text = rawText.replaceAll("https?://\\S+", " ")
+        String text = RetainedNodeMarkers.maskedForDetection(rawText).replaceAll("https?://\\S+", " ")
                 .replaceAll("`[^`]*`", " ")
                 .replaceAll(":([A-Za-z0-9_]+):", " ");
 
@@ -80,39 +75,34 @@ public final class EnglishDetector {
         }
 
         if (nonSpace == 0) {
-            return new Verdict(false, "no-visible-content");
+            return new Verdict(false, Reason.NO_VISIBLE_CONTENT);
         }
         if (letters < MIN_LETTERS) {
-            return new Verdict(false, "too-few-letters(" + letters + ")");
+            return new Verdict(false, Reason.TOO_FEW_LETTERS);
         }
         float letterRatio = (float) letters / nonSpace;
         if (letterRatio < MIN_LETTER_RATIO) {
-            return new Verdict(false, "low-letter-ratio(" + round(letterRatio) + ")");
+            return new Verdict(false, Reason.LOW_LETTER_RATIO);
         }
         if (textNodeCount == 0) {
-            return new Verdict(false, "no-text-node");
+            return new Verdict(false, Reason.NO_TEXT_NODE);
         }
-        if (opaqueNodeCount > textNodeCount * 3) {
-            return new Verdict(false, "mostly-structure");
-        }
-
         // Han-only text is treated as Chinese for the default target. Japanese kana
         // and Korean Hangul disambiguate their scripts from Chinese.
         if (targetScript == TargetScript.HAN
                 && kana == 0 && hangul == 0
                 && (float) han / letters >= MIN_TARGET_SCRIPT_RATIO) {
-            return new Verdict(false, "target-language-script(chinese)");
+            return new Verdict(false, Reason.TARGET_LANGUAGE_SCRIPT);
         }
         if (targetScript == TargetScript.JAPANESE && kana > 0) {
-            return new Verdict(false, "target-language-script(japanese)");
+            return new Verdict(false, Reason.TARGET_LANGUAGE_SCRIPT);
         }
         if (targetScript != TargetScript.HAN && targetScript != TargetScript.JAPANESE
                 && targetScript != TargetScript.NONE
                 && (float) targetLetters / letters >= MIN_TARGET_SCRIPT_RATIO) {
-            return new Verdict(false, "target-language-script(" + targetLanguage + ")");
+            return new Verdict(false, Reason.TARGET_LANGUAGE_SCRIPT);
         }
-        return new Verdict(true, "translatable(letters=" + letters
-                + ",ratio=" + round(letterRatio) + ")");
+        return new Verdict(true, Reason.TRANSLATABLE);
     }
 
     private enum TargetScript {
@@ -197,9 +187,5 @@ public final class EnglishDetector {
             }
         }
         return false;
-    }
-
-    private static String round(float f) {
-        return String.valueOf(Math.round(f * 100) / 100.0f);
     }
 }

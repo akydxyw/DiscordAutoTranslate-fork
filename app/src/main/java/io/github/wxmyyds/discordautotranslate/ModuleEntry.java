@@ -1,13 +1,21 @@
 package io.github.wxmyyds.discordautotranslate;
 
+import android.app.Application;
+import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.os.Bundle;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import io.github.wxmyyds.discordautotranslate.core.CleartextHosts;
 import io.github.wxmyyds.discordautotranslate.core.Config;
+import io.github.wxmyyds.discordautotranslate.core.HookCleanup;
+import io.github.wxmyyds.discordautotranslate.core.HookConfiguration;
+import io.github.wxmyyds.discordautotranslate.core.HookConfigurationLoader;
 import io.github.wxmyyds.discordautotranslate.core.ModuleResources;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
 import io.github.wxmyyds.discordautotranslate.core.Scheduler;
 import io.github.wxmyyds.discordautotranslate.core.StateStore;
 import io.github.wxmyyds.discordautotranslate.core.TranslationCache;
@@ -15,12 +23,17 @@ import io.github.wxmyyds.discordautotranslate.hooks.CleartextHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.EmbedHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.HookBridge;
 import io.github.wxmyyds.discordautotranslate.hooks.InlineIconSpan;
-import io.github.wxmyyds.discordautotranslate.hooks.PollHooks;
 import io.github.wxmyyds.discordautotranslate.hooks.RerenderRegistry;
 import io.github.wxmyyds.discordautotranslate.hooks.StructurableTextFactory;
 import io.github.wxmyyds.discordautotranslate.hooks.MessageHooks;
+import io.github.wxmyyds.discordautotranslate.hooks.PollHooks;
+import io.github.wxmyyds.discordautotranslate.hooks.RenderDispatcher;
+import io.github.wxmyyds.discordautotranslate.hooks.HookRuntime;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -48,15 +61,21 @@ public class ModuleEntry extends XposedModule {
     private static final String TARGET_PACKAGE = "com.discord";
 
     /** 当前代次持有的 hook 句柄，热重载时用于清理。 */
-    private final List<XposedInterface.HookHandle> hooks = new java.util.ArrayList<>();
+    private final List<XposedInterface.HookHandle> hooks = new ArrayList<>();
 
     private volatile boolean installed;
-    private volatile ClassLoader targetClassLoader;
+    /** Incomplete lifecycle operations require a host restart, never automatic reinstallation. */
+    private volatile boolean restartRequired;
+    private volatile boolean bootstrapInstalled;
+    private volatile HookConfiguration hookConfiguration;
 
     // ------------------------------------------------------------ 生命周期
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
+        ProjectLog.attach(this::log);
+        configureLogging();
+        ProjectLog.info("onModuleLoaded lifecycle callback received");
         ModuleResources.attach(this);
         // 目标进程才需要初始化；其他进程立即停止接收回调，减少无谓开销。
         if (param.isSystemServer()) {
@@ -69,19 +88,12 @@ public class ModuleEntry extends XposedModule {
         if (!TARGET_PACKAGE.equals(param.getPackageName())) {
             return;
         }
-        if (installed) {
-            // 防止重复安装（需求 §风险 6：不得重复注册 Hook）。
+        ProjectLog.info("onPackageReady received for Discord");
+        if (installed || bootstrapInstalled || restartRequired) {
+            // 防止重复注册启动钩子。
             return;
         }
-        targetClassLoader = param.getClassLoader();
-
-        try {
-            install(param.getClassLoader());
-            installed = true;
-        } catch (Throwable ignored) {
-            // Hook 失败不能导致 Discord 崩溃（需求 §5.1）：模块保持不激活，宿主正常渲染。
-            installed = false;
-        }
+        installBootstrapHook();
     }
 
     /**
@@ -91,10 +103,20 @@ public class ModuleEntry extends XposedModule {
     @Override
     public boolean onHotReloading(@NonNull XposedModuleInterface.HotReloadingParam param) {
         try {
+            if (!installed) {
+                ProjectLog.info("hot reload rejected: no successfully installed runtime; restart Discord required");
+                return false;
+            }
+            Bundle state = new Bundle();
+            if (hookConfiguration != null) {
+                state.putInt("hookVersionCode", hookConfiguration.versionCode());
+            }
+            param.setSavedInstanceState(state);
             release();
             return true;
-        } catch (Throwable ignored) {
-            // 释放失败：拒绝本次热重载，让框架保留旧代次。
+        } catch (Throwable failure) {
+            ProjectLog.info("hot reload teardown incomplete error="
+                    + failure.getClass().getSimpleName() + "; restart Discord required");
             return false;
         }
     }
@@ -105,138 +127,250 @@ public class ModuleEntry extends XposedModule {
      */
     @Override
     public void onHotReloaded(@NonNull XposedModuleInterface.HotReloadedParam param) {
-        // 先移除框架记录的旧 Hook（默认实现即如此，这里显式执行以免句柄泄漏）。
-        for (XposedInterface.HookHandle h : param.getOldHookHandles()) {
-            try {
-                h.unhook();
-            } catch (Throwable ignored) {
-                // 单个 unhook 失败不影响其余清理。
+        ProjectLog.attach(this::log);
+        configureLogging();
+        HookRuntime.suspend();
+        // Recover profile and loader while the old handles still describe their targets.
+        // Snapshot once; removal mutates only the sole ownership list, never this metadata view.
+        List<XposedInterface.HookHandle> oldHandles = new ArrayList<>(param.getOldHookHandles());
+        hooks.addAll(oldHandles);
+        Object savedState = param.getSavedInstanceState();
+        HookConfiguration restored = null;
+        int restoredVersionCode = -1;
+        if (savedState instanceof Bundle) {
+            Bundle bundle = (Bundle) savedState;
+            restoredVersionCode = bundle.getInt("hookVersionCode", -1);
+            if (restoredVersionCode >= 0) {
+                try {
+                    // Reload from the new APK, never reactivate the old generation's
+                    // serialized profile after selectors/constructor metadata changed.
+                    restored = HookConfigurationLoader.load(
+                            getModuleApplicationInfo().sourceDir, restoredVersionCode);
+                } catch (Throwable t) {
+                    ProjectLog.info("hot reload profile restoration failed error="
+                            + t.getClass().getSimpleName());
+                }
             }
         }
 
-        // 热重载不会重放 onPackageReady，因此必须从旧 Hook 目标反推宿主 ClassLoader，
-        // 否则新代次无法重新安装 Hook（旧实例的 targetClassLoader 已经不存在）。
-        ClassLoader recovered = targetClassLoader;
-        if (recovered == null) {
-            recovered = classLoaderFromOldHooks(param.getOldHookHandles());
-        }
-        if (recovered != null) {
-            targetClassLoader = recovered;
-        }
-
-        // Drop old state and the old thread pool so stale results cannot leak in.
-        Scheduler.MainThread.clear();
-        Scheduler.reset();
-        StateStore.get().onNewGeneration();
-        HookBridge.get().reset();
-        TranslationCache.reset();
-        RerenderRegistry.clear();
-        StructurableTextFactory.reset();
-        // 图标 Drawable 缓存在模块资源加载器里，热重载后必须重新解析：
-        // 否则旧代次持有的 Drawable 会被继续使用。
-        InlineIconSpan.resetAll();
-        ModuleResources.reset();
-        // reset() 会把框架引用置空；必须重新绑定，否则图标资源全部解析失败。
-        ModuleResources.attach(this);
-
-        hooks.clear();
-        installed = false;
-
-        // 重新读取配置（需求 §5.1：热重载后必须重新读取有效配置）。
-        reloadConfig();
-
-        // 重新安装 Hook。
-        ClassLoader cl = targetClassLoader;
-        if (cl == null) {
+        ClassLoader recovered = restored == null ? null
+                : classLoaderFromOldHooks(oldHandles, restored);
+        try {
+            clearRuntime();
+        } catch (Throwable failure) {
+            ProjectLog.info("hot reload old runtime cleanup failed error="
+                    + failure.getClass().getSimpleName() + "; restart Discord required");
             return;
         }
-        try {
-            install(cl);
-            installed = true;
-        } catch (Throwable ignored) {
-            // 重装失败：模块保持不激活，等待下次 onPackageReady 或重启。
+        ModuleResources.attach(this);
+        reloadConfig();
+        if (restored != null && recovered != null) {
+            try {
+                install(recovered, restored);
+                installed = true;
+            } catch (Throwable t) {
+                installed = false;
+                restartRequired = true;
+                ProjectLog.info("hot reload hook installation failed error="
+                        + t.getClass().getSimpleName() + "; restart Discord required");
+            }
+        } else {
+            restartRequired = true;
+            ProjectLog.info("hot reload restoration unavailable; restart Discord required");
         }
     }
 
     // ------------------------------------------------------------ 安装与卸载
 
-    private void install(ClassLoader cl) {
-        StructurableTextFactory.init(cl);
-        Scheduler.MainThread.install();
-        reloadConfig();
-        // 行内图标所需的 Drawable 由 ModuleResources 按需解析（内部已缓存），
-        // 不再需要在安装阶段预加载到某个视图类。
-
-        // 明文放行：修复回环/局域网明文 AI 端点请求失败（可选安装，失败不影响翻译管线）。
-        hooks.addAll(CleartextHooks.install(this, cl));
-
-        List<XposedInterface.HookHandle> created = MessageHooks.install(this, cl);
-        if (created.size() < MessageHooks.MIN_REQUIRED_HOOKS) {
-            // 半安装状态会让模块“看似已启用、实际不工作”；回滚并等待重启。
-            for (XposedInterface.HookHandle handle : created) {
-                try {
-                    handle.unhook();
-                } catch (Throwable ignored) {
-                    // 回滚尽力而为。
-                }
-            }
-            throw new IllegalStateException("incomplete hook installation: "
-                    + created.size() + "/" + MessageHooks.MIN_REQUIRED_HOOKS);
+    private void installBootstrapHook() {
+        if (bootstrapInstalled || restartRequired) {
+            return;
         }
-        hooks.addAll(created);
-        // Embed 翻译为可选功能；目标版本缺少对应类时不安装该 Hook。
-        hooks.addAll(EmbedHooks.install(this, cl));
-        // 投票翻译为可选功能；目标版本缺少对应类时不安装该 Hook。
-        hooks.addAll(PollHooks.install(this, cl));
+        try {
+            java.lang.reflect.Method attach = Application.class.getDeclaredMethod(
+                    "attach", Context.class);
+            attach.setAccessible(true);
+            XposedInterface.HookHandle handle = hook(attach)
+                    .setId("dat.applicationAttach")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            Object contextObject = chain.getArg(0);
+                            if (contextObject instanceof Context) {
+                                Context context = (Context) contextObject;
+                                if (TARGET_PACKAGE.equals(context.getPackageName())) {
+                                    ProjectLog.info("Application.attach reached for Discord");
+                                    installForApplication(context, context.getClassLoader());
+                                }
+                            }
+                        } catch (Throwable t) {
+                            ProjectLog.info("hook profile selection failed errorClass="
+                                    + t.getClass().getSimpleName());
+                        }
+                        return result;
+                    });
+            hooks.add(handle);
+            bootstrapInstalled = true;
+            ProjectLog.info("Application.attach bootstrap hook installed");
+        } catch (Throwable t) {
+            ProjectLog.info("bootstrap hook installation failed errorClass="
+                    + t.getClass().getSimpleName());
+            installed = false;
+        }
+    }
+
+    private void installForApplication(Context context, ClassLoader cl) {
+        if (installed || restartRequired) {
+            return;
+        }
+        try {
+            PackageInfo packageInfo = context.getPackageManager().getPackageInfo(
+                    TARGET_PACKAGE, 0);
+            int versionCode = packageInfo.versionCode;
+            ProjectLog.info("selecting hook profile for versionCode=" + versionCode);
+            HookConfiguration config = HookConfigurationLoader.load(
+                    getModuleApplicationInfo().sourceDir, versionCode);
+            if (config == null) {
+                ProjectLog.warn("no hook profile for Discord versionCode=" + versionCode);
+                return;
+            }
+            install(cl, config);
+            installed = true;
+        } catch (Throwable t) {
+            ProjectLog.info("configured hook installation failed errorClass="
+                    + t.getClass().getSimpleName() + "; restart Discord required");
+            installed = false;
+            restartRequired = true;
+        }
+    }
+
+    private void install(ClassLoader cl, HookConfiguration config) {
+        if (restartRequired) {
+            throw new IllegalStateException("Runtime lifecycle incomplete; restart Discord required");
+        }
+        if (!config.hasAllRequiredTargets(cl)) {
+            throw new IllegalStateException("configured required hook target is unavailable");
+        }
+        HookRuntime.suspend();
+        Set<String> installedHookIds = new HashSet<>();
+        try {
+            ModuleResources.attach(this);
+            ProjectLog.attach(this::log);
+            HookConfiguration.activate(config);
+            StructurableTextFactory.init(cl, config);
+            Scheduler.MainThread.install();
+            RenderDispatcher.install();
+            reloadConfig();
+            MessageHooks.install(this, cl, config, installedHookIds, hooks);
+            EmbedHooks.install(this, cl, config, installedHookIds, hooks);
+            PollHooks.install(this, cl, config, installedHookIds, hooks);
+            // 本地保留：放行回环 / 自建明文 AI 端点（上游无此修复，目标方法缺失时自动跳过）。
+            hooks.addAll(CleartextHooks.install(this, cl));
+            if (!config.hasAllRequiredHooks(installedHookIds)) {
+                throw new IllegalStateException("incomplete configured hook installation");
+            }
+            hookConfiguration = config;
+            HookRuntime.activate();
+        } catch (Throwable failure) {
+            restartRequired = true;
+            try {
+                clearRuntime();
+            } catch (Throwable cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+                ProjectLog.info("hook installation cleanup incomplete error="
+                        + cleanupFailure.getClass().getSimpleName() + "; restart Discord required");
+            }
+            throw new IllegalStateException("configured hook installation failed", failure);
+        }
+        ProjectLog.info("installed hook profile versionCode=" + config.versionCode()
+                + " requiredHookIds=" + installedHookIds);
     }
 
     /** 从旧 Hook 的目标方法反推宿主 ClassLoader（热重载后包回调不会重放）。 */
     @Nullable
-    private static ClassLoader classLoaderFromOldHooks(
-            @NonNull List<XposedInterface.HookHandle> oldHandles) {
+    private ClassLoader classLoaderFromOldHooks(
+            @NonNull List<XposedInterface.HookHandle> oldHandles, HookConfiguration profile) {
         for (XposedInterface.HookHandle handle : oldHandles) {
             try {
                 java.lang.reflect.Executable target = handle.getExecutable();
                 Class<?> declaring = target == null ? null : target.getDeclaringClass();
-                ClassLoader loader = declaring == null ? null : declaring.getClassLoader();
+                ClassLoader loader = profile.bindingClassLoader(declaring);
                 if (loader != null) {
                     return loader;
                 }
-            } catch (Throwable ignored) {
-                // 反推失败按 null 处理，走下一次 onPackageReady 的正常路径。
+            } catch (Throwable t) {
+                ProjectLog.info("hot reload class loader inspection failed error="
+                        + t.getClass().getSimpleName());
             }
         }
         return null;
     }
 
-    /** 停止线程、解绑 Hook、清理引用。 */
+    /** Drain calls, workers and UI before removing hooks and clearing their supporting state. */
     private void release() {
-        for (XposedInterface.HookHandle h : hooks) {
-            try {
-                h.unhook();
-            } catch (Throwable ignored) {
-                // 尽力解绑，不中断后续清理。
+        clearRuntime();
+        ProjectLog.attach(null);
+    }
+
+    /** Successful teardown and partial installation cleanup use the same ordered lifecycle. */
+    private void clearRuntime() {
+        try {
+            if (!HookRuntime.suspendAndAwait(2000L)) {
+                throw new IllegalStateException("Runtime calls have not drained; restart Discord required");
             }
+            // No admitted caller can now recreate a scheduler after this termination check.
+            if (!Scheduler.resetAndAwait(2000L)) {
+                throw new IllegalStateException("Translation workers have not stopped; restart Discord required");
+            }
+            // Native rebind needs inactive hooks, captured registrations and the owned UI handler.
+            // A fresh generation with no spans must confirm success even before handler installation.
+            if (!InlineIconSpan.resetAll(2000L)) {
+                throw new IllegalStateException("Inline icon cleanup incomplete; restart Discord required");
+            }
+            int failures = HookCleanup.remove(hooks, XposedInterface.HookHandle::unhook);
+            if (failures != 0) {
+                throw new IllegalStateException("Hook removal incomplete count=" + failures
+                        + "; restart Discord required");
+            }
+            Scheduler.MainThread.clear();
+            RenderDispatcher.reset();
+            StateStore.get().onNewGeneration();
+            HookBridge.get().reset();
+            TranslationCache.reset();
+            RerenderRegistry.clear();
+            StructurableTextFactory.reset();
+            ModuleResources.reset();
+            bootstrapInstalled = false;
+            hookConfiguration = null;
+            HookConfiguration.activate(null);
+        } catch (Throwable failure) {
+            restartRequired = true;
+            throw new IllegalStateException("Runtime cleanup incomplete; restart Discord required", failure);
+        } finally {
+            installed = false;
         }
-        hooks.clear();
-        Scheduler.MainThread.clear();
-        // 等待线程真正结束再返回 true，否则旧代次线程会继续存活（需求 §5.1）。
-        Scheduler.resetAndAwait(2000L);
-        HookBridge.get().reset();
-        TranslationCache.reset();
-        RerenderRegistry.clear();
-        ModuleResources.reset();
-        installed = false;
+    }
+
+    /** Read the log gate before any startup diagnostics, including unsupported versions. */
+    private void configureLogging() {
+        try {
+            ProjectLog.configure(Config.read(getRemotePreferences(Config.GROUP)));
+        } catch (Throwable failure) {
+            ProjectLog.configure(Config.invalidSnapshot());
+        }
     }
 
     private void reloadConfig() {
         try {
             final SharedPreferences prefs = getRemotePreferences(Config.GROUP);
             Config.Snapshot snapshot = Config.read(prefs);
+            ProjectLog.configure(snapshot);
             HookBridge.get().updateConfig(snapshot);
             // 明文放行名单跟随用户配置的 API 端点（仅回环与该主机，见 CleartextHosts）。
             CleartextHosts.updateConfiguredUrl(snapshot.apiUrl);
         } catch (Throwable t) {
+            ProjectLog.configure(Config.invalidSnapshot());
             HookBridge.get().updateConfig(Config.invalidSnapshot());
             CleartextHosts.updateConfiguredUrl(null);
         }

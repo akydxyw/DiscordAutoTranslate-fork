@@ -7,6 +7,9 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * 配置读取与显式无效配置行为。
  *
@@ -15,12 +18,32 @@ import org.junit.Test;
  */
 public class ConfigTest {
 
+    @Test
+    public void scopeDefaultsOnlyWhenAbsentAndDoesNotChangeApiVersion() {
+        Config.Snapshot defaults = Config.read(new MemoryPrefs());
+        assertEquals(TranslationScope.ALL, defaults.translationScope);
+        TranslationScope rules = new TranslationScope(false, java.util.Collections.emptyList(),
+                java.util.Collections.singletonList(new TranslationScope.Rule("123456789012345678", "notes", true)));
+        Config.Snapshot saved = Config.read(new MemoryPrefs().put(Config.KEY_TRANSLATION_SCOPE, rules.toJson()));
+        assertEquals(rules, saved.translationScope);
+        assertEquals(defaults.version(), saved.version());
+        for (Object value : new Object[]{"", "{}", false, 1, "null"}) {
+            MemoryPrefs prefs = new MemoryPrefs().put(Config.KEY_TRANSLATION_SCOPE, value);
+            Map<String, ?> before = new HashMap<>(prefs.getAll());
+            assertTrue(Config.read(prefs).configError != null);
+            assertEquals(before, prefs.getAll());
+        }
+    }
+
     /** 空配置（什么都没存）应全部使用默认值。 */
     @Test
     public void emptyPrefsUseAllDefaults() {
         Config.Snapshot s = Config.read(new MemoryPrefs());
         assertTrue(s.configError == null);
         assertEquals(Config.DEF_ENABLED, s.enabled);
+        assertEquals("logging_enabled", Config.KEY_LOGGING_ENABLED);
+        assertFalse(Config.DEF_LOGGING_ENABLED);
+        assertFalse(s.loggingEnabled);
         assertEquals(Config.DEF_API_URL, s.apiUrl);
         assertEquals(Config.DEF_MODEL, s.model);
         assertEquals(Config.DEF_TARGET_LANG, s.targetLang);
@@ -28,6 +51,36 @@ public class ConfigTest {
         assertEquals(Config.DEF_PROTOCOL, s.protocol);
         assertEquals(Config.DEF_TIMEOUT_MS, s.timeoutMs);
         assertEquals(Config.DEF_MAX_CONCURRENCY, s.maxConcurrency);
+    }
+
+    @Test
+    public void loggingAcceptsExplicitBooleansWithoutChangingRequestVersion() {
+        Config.Snapshot defaults = Config.read(new MemoryPrefs());
+        for (boolean enabled : new boolean[]{false, true}) {
+            Config.Snapshot snapshot = Config.read(new MemoryPrefs()
+                    .put(Config.KEY_LOGGING_ENABLED, enabled));
+            assertTrue(snapshot.isUsable());
+            assertEquals(enabled, snapshot.loggingEnabled);
+            assertEquals(defaults.version(), snapshot.version());
+        }
+    }
+
+    @Test
+    public void loggingRejectsWrongTypesAndInvalidSnapshotsDisableLogging() {
+        for (Object value : new Object[]{"true", "false", 1, 0}) {
+            MemoryPrefs prefs = new MemoryPrefs().put(Config.KEY_LOGGING_ENABLED, value);
+            Map<String, ?> before = new HashMap<>(prefs.getAll());
+            Config.Snapshot snapshot = Config.read(prefs);
+            assertTrue(snapshot.configError != null);
+            assertFalse(snapshot.isUsable());
+            assertFalse(snapshot.loggingEnabled);
+            assertEquals(before, prefs.getAll());
+        }
+        Config.Snapshot invalid = Config.read(new MemoryPrefs()
+                .put(Config.KEY_LOGGING_ENABLED, true)
+                .put(Config.KEY_PROTOCOL, "invalid"));
+        assertFalse(invalid.loggingEnabled);
+        assertFalse(Config.invalidSnapshot().loggingEnabled);
     }
 
     @Test
@@ -51,6 +104,34 @@ public class ConfigTest {
 
         assertTrue(s.configError != null);
         assertFalse(s.isUsable());
+    }
+
+    /** 无效字段不能使同一份配置中的有效 URL、密钥等被删除或替换。 */
+    @Test
+    public void readingInvalidPrefsDoesNotMutateSavedSettings() {
+        MemoryPrefs prefs = new MemoryPrefs()
+                .put(Config.KEY_ENABLED, false)
+                .put(Config.KEY_API_URL, "https://translator.example/v1")
+                .put(Config.KEY_API_KEY, "saved-secret")
+                .put(Config.KEY_MODEL, "saved-model")
+                .put(Config.KEY_TARGET_LANG, "日本語")
+                .put(Config.KEY_EXTRA_HEADERS, "X-Tenant: saved-tenant")
+                .put(Config.KEY_SYSTEM_PROMPT, "Saved instructions")
+                .put(Config.KEY_PROTOCOL, "invalid-protocol")
+                .put(Config.KEY_STREAMING, false)
+                .put(Config.KEY_TIMEOUT_MS, 45000)
+                .put(Config.KEY_MAX_CONCURRENCY, 6);
+        Map<String, ?> before = new HashMap<>(prefs.getAll());
+
+        Config.Snapshot snapshot = Config.read(prefs);
+
+        assertTrue(snapshot.configError != null);
+        assertFalse(snapshot.isUsable());
+        assertEquals(before, prefs.getAll());
+        assertEquals("invalid-protocol", prefs.getString(Config.KEY_PROTOCOL, null));
+        assertEquals("saved-secret", prefs.getString(Config.KEY_API_KEY, null));
+        assertFalse(Config.read(prefs).isUsable());
+        assertEquals(before, prefs.getAll());
     }
 
     @Test

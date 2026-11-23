@@ -1,7 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
-import android.os.Handler;
-import android.os.Looper;
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.view.View;
 
 import androidx.annotation.Nullable;
@@ -13,9 +13,9 @@ import io.github.wxmyyds.discordautotranslate.core.StateStore;
 import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 import io.github.wxmyyds.discordautotranslate.core.TranslationCache;
 import io.github.wxmyyds.discordautotranslate.core.TranslationException;
+import io.github.wxmyyds.discordautotranslate.core.TranslationTaskId;
 import io.github.wxmyyds.discordautotranslate.translate.JsonApiEngine;
 
-import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -28,7 +28,7 @@ import java.util.Map;
  *   <li>维护「正文视图 → 消息 ID」与「内容对象 → 消息 ID」两张映射：
  *       RecyclerView 会复用 {@code MessageContentView} 实例，
  *       译文状态绝不能存在 View 上（需求 §风险 2）。</li>
- *   <li>保存每条消息最近一次的原始渲染参数，用于翻译完成后重新渲染。</li>
+ *   <li>协调唯一翻译生产入口；原生重放由 RenderDispatcher 与订阅表负责。</li>
  *   <li>提供“原文/译文”切换与失败重试入口，供图标点击调用。</li>
  * </ol>
  */
@@ -37,9 +37,6 @@ public final class HookBridge {
     /** Discord 消息 ID 是雪花 ID：纯数字，长度约 17–20。 */
     private static final int SNOWFLAKE_MIN = 15;
     private static final int SNOWFLAKE_MAX = 21;
-
-    /** 重渲染期间的标记：避免重渲染调用再次被 Hook 拦截并覆盖已保存的“原文”。 */
-    private static final ThreadLocal<Boolean> RERENDERING = new ThreadLocal<>();
 
     private static final HookBridge INSTANCE = new HookBridge();
 
@@ -50,27 +47,82 @@ public final class HookBridge {
     /** 正文视图 → 消息 ID（有界，避免列表回收后无限增长）。 */
     private final Map<View, String> viewToMessageId = boundedMap(512);
 
-    /** 消息 ID → 原始 StructurableText（有界，供失败重试使用）。 */
-    private final Map<String, Object> rawContent = boundedMap(512);
+    /** Bounded server/channel locations; only native message row bindings own these records. */
+    private final Map<String, MessageLocation> messageLocations = boundedMap(512);
 
-    /** 消息 ID → 最近承载它的视图（弱引用，避免消息状态反向固定 View）。 */
-    private final Map<String, java.lang.ref.WeakReference<View>> lastView = boundedMap(512);
+    void rememberMessageLocation(String messageId, MessageLocation location) {
+        messageLocations.put(messageId, location);
+    }
+
+    void forgetMessageLocation(String messageId) {
+        messageLocations.remove(messageId);
+    }
+
+    /** One gate for bodies, Embed/Poll slots, retries and async ownership. Unknown location is denied. */
+    boolean translationAllowed(String key, Config.Snapshot snapshot) {
+        if (!snapshot.enabled || snapshot.configError != null) return false;
+        MessageLocation location = messageLocations.get(cardRowOf(key));
+        return location != null && snapshot.translationScope.allows(location.guildId, location.channelId);
+    }
+
+    /** Only native row bindings own edit metadata; source snapshots live with state. */
+    private final Map<String, MessageRevision> messageRevisions = boundedMap(512);
+
+    private static final class MessageRevision {
+        final String editedTimestamp;
+
+        MessageRevision(@Nullable String editedTimestamp) {
+            this.editedTimestamp = editedTimestamp;
+        }
+    }
+
+    static final class ReferencedTranslation {
+        final StateStore.Entry state;
+        final Object originalContent;
+        final TextExtractor.Result extracted;
+
+        ReferencedTranslation(StateStore.Entry state, Object originalContent, TextExtractor.Result extracted) {
+            this.state = state;
+            this.originalContent = originalContent;
+            this.extracted = extracted;
+        }
+    }
+
+    /** Only the containing message's own bind may record its edit revision. */
+    void rememberMessageRevision(String messageId, @Nullable String editedTimestamp) {
+        if (messageId != null) {
+            messageRevisions.put(messageId, new MessageRevision(editedTimestamp));
+        }
+    }
+
+    void rememberCanonicalContent(String messageId, Object content) {
+        MessageRevision revision = messageRevisions.get(messageId);
+        StateStore.get().rememberSource(messageId, new StateStore.Source(content,
+                revision != null, revision == null ? null : revision.editedTimestamp));
+    }
+
+    /**
+     * A reply is a projection, not a second body. Select the canonical source by
+     * message identity and edit revision, then verify that source against state.
+     * Never hash the preview text or mutate/create state from it.
+     */
+    @Nullable
+    ReferencedTranslation referencedTranslation(String messageId, @Nullable String editedTimestamp) {
+        if (messageId == null) {
+            return null;
+        }
+        StateStore.Source original = StateStore.get().source(messageId);
+        MessageRevision current = messageRevisions.get(messageId);
+        if (original == null || !original.revisionKnown || current == null
+                || !java.util.Objects.equals(original.editedTimestamp, editedTimestamp)
+                || !java.util.Objects.equals(current.editedTimestamp, editedTimestamp)) {
+            return null;
+        }
+        return currentTranslation(messageId, original.content);
+    }
 
     /** 按引用身份反查消息 ID；Discord StructurableText 的 equals() 是按内容比较。 */
     private final IdentityMessageMap contentIdentityToMessageId = new IdentityMessageMap();
-
-    /**
-     * 仅用于图标注入的内容身份映射（键 ← 内容实例）。
-     *
-     * <p>帖子预览的标题是普通 String、不经 toSpannable；图标改挂在卡片内唯一走
-     * toSpannable 的 footer 上。footer 不能进入替换身份映射（否则译文会错误地
-     * 写进 footer），因此单独一张表，只被图标注入器读取。</p>
-     */
-    private final IdentityMessageMap iconOnlyContentToKey = new IdentityMessageMap();
-
-    /** 允许注入行内图标的 Embed 状态键：每张卡片只标一段，避免逐段各挂一个图标。 */
-    private final java.util.Set<String> embedIconKeys =
-            java.util.Collections.newSetFromMap(boundedMap(1024));
 
     private volatile Config.Snapshot config = Config.read(null);
     private volatile Scheduler.Engine engine = new JsonApiEngine(config);
@@ -82,7 +134,8 @@ public final class HookBridge {
 
     /**
      * 更新配置。会影响翻译结果的配置变化（URL/模型/目标语言/协议/提示词/凭据）
-     * 发生后，递增状态代次使旧译文与在途任务失效（需求 §5.6、§5.7）。
+     * 或范围匹配策略变化后，递增状态代次使旧译文与在途任务失效。
+     * 纯范围备注或规则顺序变化保留状态与任务所有权（需求 §5.6、§5.7）。
      */
     public void updateConfig(Config.Snapshot c) {
         if (c == null) {
@@ -95,9 +148,11 @@ public final class HookBridge {
         Scheduler.get().setMaxConcurrency(c.maxConcurrency);
 
         // version() 已包含密钥/额外请求头指纹：凭据变更同样会使缓存与在途结果失效。
-        if (old == null || !old.version().equals(c.version())) {
+        if (old == null || !old.version().equals(c.version())
+                || !old.translationScope.sameMatchingPolicy(c.translationScope)) {
             StateStore.get().onNewGeneration();
             TranslationCache.get().clear();
+            CardState.clear();
         }
         // 引擎随配置重建，保证下一次请求使用最新配置。
         this.engine = new JsonApiEngine(c);
@@ -110,29 +165,44 @@ public final class HookBridge {
         if (contentView == null || messageId == null) {
             return;
         }
-        String prev = viewToMessageId.put(contentView, messageId);
-        if (prev != null && !prev.equals(messageId)) {
-            java.lang.ref.WeakReference<View> last = lastView.get(prev);
-            if (last != null && last.get() == contentView) {
-                lastView.remove(prev);
-            }
+        viewToMessageId.put(contentView, messageId);
+    }
+
+    /** Remove a stale direct binding when a recycled preview has no resolvable message ID. */
+    public void unbindView(@Nullable View contentView) {
+        if (contentView == null) {
+            return;
         }
-        lastView.put(messageId, new java.lang.ref.WeakReference<>(contentView));
+        viewToMessageId.remove(contentView);
     }
 
     @Nullable
-    public String messageIdOf(@Nullable View contentView) {
+    public String directMessageIdOf(@Nullable View contentView) {
         return contentView == null ? null : viewToMessageId.get(contentView);
+    }
+
+    /** Resolve a content child through its enclosing message row when no direct mapping exists. */
+    @Nullable
+    public String messageIdOf(@Nullable View contentView) {
+        View current = contentView;
+        while (current != null) {
+            String messageId = viewToMessageId.get(current);
+            if (messageId != null) {
+                return messageId;
+            }
+            android.view.ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+        return null;
     }
 
     /** 清空全部映射。热重载与配置重置时调用。 */
     public void reset() {
         viewToMessageId.clear();
-        rawContent.clear();
-        lastView.clear();
+        messageRevisions.clear();
+        messageLocations.clear();
         contentIdentityToMessageId.clear();
-        iconOnlyContentToKey.clear();
-        embedIconKeys.clear();
+        CardState.clear();
     }
 
     private static <K, V> Map<K, V> boundedMap(int maxEntries) {
@@ -148,7 +218,7 @@ public final class HookBridge {
 
     /**
      * 记录“内容对象 → 消息 ID”。只能在能拿到权威消息 ID 的地方调用
-     * （目前是 {@code MessageContentViewHolder.bind} 与 {@code configureReply}）。
+     * （由版本配置选择的消息绑定与回复绑定 Hook）。
      */
     public void rememberContent(String messageId, @Nullable Object structurableText) {
         if (messageId == null || structurableText == null) {
@@ -160,112 +230,142 @@ public final class HookBridge {
     /**
      * 反查某个 {@code StructurableText} 属于哪条消息。
      *
-     * <p>只按对象身份映射反查。不得按正文哈希兜底：不同消息完全可能有相同正文，
-     * 将哈希映射到单个 ID 会把译文错误地套用到另一条消息。</p>
+     * <p>按当前对象身份读取；Embed 在同步绑定作用域内使用已捕获的段键，
+     * 其他消费者读取规范身份映射。不得按正文哈希反查消息 ID。</p>
      */
     @Nullable
     public String resolveMessageId(@Nullable Object structurableText) {
         if (structurableText == null) {
             return null;
         }
+        InlineIconInjector.HostScope host = InlineIconInjector.currentHost();
+        if (host != null && host.ownsCardIdentity()) return host.messageIdOf(structurableText);
         return contentIdentityToMessageId.get(structurableText);
     }
 
     // ------------------------------------------------------- Embed 状态键
 
-    /**
-     * 为 Embed 文本生成独立的状态键。
-     *
-     * <p>格式：{@code 行消息ID + "\u0000embed\u0000" + 内容哈希}。它与正文共用
-     * 同一套翻译管线（StateStore/Scheduler/缓存/重渲染/替换），但：
-     * <ul>
-     *   <li>与正文的状态条目、与同消息内不同 Embed 文本（标题/描述/字段）
-     *       互不覆盖：每段文本按内容哈希各占一条；</li>
-     *   <li>哈希与 {@link #onMessageBound} 完全同口径，保证键与条目一致；</li>
-     *   <li>分隔符含 {@code U+0000}，真实雪花 ID 不可能包含，可安全区分
-     *       Embed 键与正文键。</li>
-     * </ul>
-     *
-     * @return 状态键；文本为空或类型未知时返回 null（调用方应跳过）
-     */
+    /** Register every current Embed member before a producer/cache hit can enqueue native replay. */
+    String registerEmbed(EmbedBinding binding, java.util.List<String> keys, View view, Object target,
+                         java.lang.reflect.Method bind, Object[] args) {
+        String primary = null;
+        for (int i = 0; i < binding.texts.size(); i++) {
+            String key = keys.get(i);
+            if (key == null) continue;
+            if (primary == null) primary = key;
+            rememberContent(key, binding.texts.get(i));
+            if (!RenderDispatcher.isRerendering()) {
+                bindView(view, key);
+                RerenderRegistry.register(key, view, target, bind, args);
+            }
+        }
+        if (!RenderDispatcher.isRerendering()) {
+            if (primary != null) {
+                java.util.List<String> members = new java.util.ArrayList<>();
+                for (String key : keys) if (key != null) members.add(key);
+                CardState.bind(cardIdentityOf(primary), primary, members);
+            }
+            for (int i = 0; i < keys.size(); i++) {
+                if (keys.get(i) != null) onMessageBound(keys.get(i), binding.texts.get(i));
+            }
+        }
+        return primary;
+    }
+
+    /** Card identity includes the complete captured segment sequence, isolating same-row Embeds. */
+    java.util.List<String> embedStateKeys(String rowMessageId, java.util.List<?> texts) {
+        if (!looksLikeSnowflake(rowMessageId)) throw new IllegalArgumentException("Invalid Embed row identity");
+        java.util.List<String> hashes = new java.util.ArrayList<>(texts.size());
+        StringBuilder identity = new StringBuilder();
+        for (Object text : texts) {
+            TextExtractor.Result ex = TextExtractor.extract(text);
+            String hash = ex == null || ex.text.trim().isEmpty() ? null : contentHashOf(ex, config);
+            hashes.add(hash);
+            identity.append(hash == null ? "EMPTY" : hash).append('\u0000');
+        }
+        String cardHash = Scheduler.contentHash(
+                identity.toString(), "embed-card");
+        java.util.List<String> keys = new java.util.ArrayList<>(hashes.size());
+        for (String hash : hashes) {
+            keys.add(hash == null ? null
+                    : stateKey(rowMessageId, EMBED_KEY_PREFIX + cardHash + "\u0000", hash));
+        }
+        return keys;
+    }
+
+    /** One current capture feeds identity verification, native reconstruction and icon eligibility. */
     @Nullable
-    public String embedStateKey(String rowMessageId, @Nullable Object structurable) {
+    ReferencedTranslation currentTranslation(String key, @Nullable Object content) {
+        if (!scopeAllowsDisplay(key)) return null;
+        TextExtractor.Result extracted = TextExtractor.extract(content);
+        StateStore.Entry state = matchingState(key, extracted);
+        return state == null ? null : new ReferencedTranslation(state, content, extracted);
+    }
+
+    @Nullable
+    StateStore.Entry matchingState(String key, @Nullable TextExtractor.Result extracted) {
+        StateStore.Entry entry = StateStore.get().peek(key);
+        return entry != null && extracted != null
+                && contentHashOf(extracted, config).equals(entry.contentHash) ? entry : null;
+    }
+
+    /** Poll question/answer slots share the same hash, scheduler and state pipeline. */
+    @Nullable
+    String pollStateKey(String rowMessageId, String slot, Object structurable) {
+        if (!looksLikeSnowflake(rowMessageId) || slot == null || slot.isEmpty()
+                || slot.indexOf('\u0000') >= 0) {
+            throw new IllegalArgumentException("Invalid Poll state identity");
+        }
         TextExtractor.Result ex = TextExtractor.extract(structurable);
-        if (ex == null || ex.text.trim().isEmpty()) {
-            return null;
-        }
-        return stateKey(rowMessageId, contentHashOf(ex, config));
+        return ex == null || ex.text.trim().isEmpty() ? null
+                : stateKey(rowMessageId, POLL_KEY_PREFIX + slot + "\u0000",
+                        contentHashOf(ex, config));
+    }
+
+    static boolean isPollKey(@Nullable String key) {
+        return key != null && key.contains(POLL_KEY_PREFIX);
+    }
+
+    /** Card segment keys are isolated from canonical body IDs. */
+    public static boolean isCardKey(@Nullable String key) {
+        return key != null && (key.contains(EMBED_KEY_PREFIX) || key.contains(POLL_KEY_PREFIX));
     }
 
     /**
-     * 按裸文本生成 Embed 状态键（用于不经 StructurableText 渲染的文本，
-     * 例如原生帖子预览的标题）。
+     * 取卡片段状态键中的行消息 ID 部分；正文键原样返回。
      *
-     * <p>与 {@link #embedStateKey} 的约定：同一段纯文本两者生成的键必须相等
-     * （登记侧与替换侧各用其一），单测锁定该不变量。</p>
-     */
-    @Nullable
-    public String embedTextStateKey(String rowMessageId, @Nullable String rawText) {
-        if (rawText == null || rawText.trim().isEmpty()) {
-            return null;
-        }
-        return stateKey(rowMessageId, contentHashOf(rawText, config));
-    }
-
-    /** 是否为 Embed 状态键。 */
-    public static boolean isEmbedKey(@Nullable String key) {
-        return key != null && key.contains(EMBED_KEY_PREFIX);
-    }
-
-    /**
-     * 取 Embed 状态键中的行消息 ID 部分；非 Embed 键原样返回。
-     *
-     * <p>同一个 Embed 视图承载同一条消息的多段文本（标题/描述/字段），
+     * <p>同一张卡片承载同一条消息的多个文本段，
      * 各段键不同但行 ID 相同。复用校验按“行未变即仍有效”放宽，
      * 行 ID 变化（视图被复用到其他消息）则仍然拒绝。</p>
      */
-    public static String embedRowOf(@Nullable String key) {
+    public static String cardRowOf(@Nullable String key) {
         if (key == null) {
             return key;
         }
-        int i = key.indexOf(EMBED_KEY_PREFIX);
+        int i = isCardKey(key) ? key.indexOf('\u0000') : -1;
         return i >= 0 ? key.substring(0, i) : key;
     }
 
-    /** 标记某 Embed 状态键为所在卡片的图标承载段（每张卡片只标一段）。 */
-    public void markEmbedIconKey(String key) {
-        if (key != null) {
-            embedIconKeys.add(key);
-        }
+    static String cardIdentityOf(String key) {
+        return isPollKey(key) ? cardRowOf(key) : key.substring(0, key.lastIndexOf('\u0000'));
     }
 
-    /** 该 Embed 状态键当前是否允许注入行内图标。 */
-    public boolean isEmbedIconKey(@Nullable String key) {
-        return key != null && embedIconKeys.contains(key);
+    /** Scope also gates consuming retained/cached results; the existing global-off display contract stays. */
+    boolean scopeAllowsDisplay(String key) {
+        Config.Snapshot snapshot = config;
+        MessageLocation location = messageLocations.get(cardRowOf(key));
+        return snapshot.configError == null && location != null
+                && snapshot.translationScope.allows(location.guildId, location.channelId);
     }
 
-    /**
-     * 登记「仅用于图标」的内容身份：该内容实例反查出的键只驱动图标注入，
-     * 不参与 toSpannable 的译文替换（替换仍走 {@link #resolveMessageId}）。
-     */
-    public void rememberIconOnlyContent(String key, @Nullable Object content) {
-        if (key == null || content == null) {
-            return;
-        }
-        iconOnlyContentToKey.put(content, key);
+    boolean showingOriginal(String key, StateStore.Entry entry) {
+        if (!scopeAllowsDisplay(key)) return true;
+        CardState.Card card = isCardKey(key) ? CardState.forKey(key) : null;
+        return isCardKey(key) ? card == null || card.showingOriginal() : entry.showingOriginal;
     }
 
-    /** 反查仅图标身份映射；未登记返回 null。 */
-    @Nullable
-    public String resolveIconOnlyKey(@Nullable Object content) {
-        if (content == null) {
-            return null;
-        }
-        return iconOnlyContentToKey.get(content);
-    }
-
-    private static String stateKey(String rowMessageId, String contentHash) {
-        return rowMessageId + EMBED_KEY_PREFIX + contentHash;
+    private static String stateKey(String rowMessageId, String namespace, String contentHash) {
+        return rowMessageId + namespace + contentHash;
     }
 
     /** 与 {@link #onMessageBound} 同口径的内容哈希（含多片段缓存命名空间）。 */
@@ -274,140 +374,59 @@ public final class HookBridge {
         return Scheduler.contentHash(hashInput, cfg.version());
     }
 
-    /** 裸文本的内容哈希：与 PrimitiveStructurableText 提取出的纯文本同口径。 */
-    private static String contentHashOf(String rawText, Config.Snapshot cfg) {
-        return Scheduler.contentHash(rawText, cfg.version());
-    }
-
-    // ---------------------------------------------------------------- 渲染拦截
-
-    /** 当前是否处于“重渲染”调用中。 */
-    public boolean isRerendering() {
-        return Boolean.TRUE.equals(RERENDERING.get());
-    }
-
-    /**
-     * 记录“内容对象 → 消息 ID”身份映射。
-     *
-     * <p>阶段 3 修正：正文替换统一在渲染漏斗 {@code TextUtilsKt.toSpannable} 完成。
-     * 重渲染使用 {@link #requestRerender} 的实参，不再在此保存。
-     *
-     * @return 始终返回传入的同一数组
-     */
-    public Object[] interceptRender(View contentView, Object[] args,
-                                    @Nullable Object structurableText) {
-        if (contentView != null && args != null && structurableText != null) {
-            String id = viewToMessageId.get(contentView);
-            if (id != null) {
-                rememberContent(id, structurableText);
-            }
-        }
-        return args;
-    }
-
-    /**
-     * 投递重渲染：必须离开当前宿主布局过程再执行。
-     *
-     * <p>调用方（{@code onMessageBound}、点击回调）可能正处于 RecyclerView 的
-     * measure/layout 中，此时直接重渲染会让新的布局请求被本轮遍历丢掉，
-     * 表现为“文字变了但行高/空白行要等滚动才更新”。投递到视图消息队列后，
-     * 下一次遍历再测量，结果立即生效。</p>
-     *
-     * <p>视图是否已被复用的判定见 {@link RerenderRegistry}；投递执行时由
-     * {@code toSpannable} 按当前状态重新决定替换与否，因此不会把译文写错消息。</p>
-     *
-     * <p>排队期间视图可能已被 RecyclerView 复用到其他消息，因此执行前必须
-     * 再校验一次：绑定已变成其他消息则跳过，不能把旧译文渲染到新消息上。
-     * 绑定未知（{@code null}，通常是映射表 LRU 淘汰）不视为复用。</p>
-     *
-     * @param contentView 用于校验复用的正文视图，可为 null（不校验）
-     * @param messageId   期望绑定的消息 ID，可为 null（不校验）
-     * @param invocationTarget 调用 {@code method} 的接收者（正文视图或回复预览容器）
-     */
-    public void requestRerender(@Nullable View contentView, @Nullable String messageId,
-                                @Nullable Object invocationTarget, @Nullable Method method,
-                                @Nullable Object[] args) {
-        if (invocationTarget == null || method == null || args == null) {
-            return;
-        }
-        String bound = messageIdOf(contentView);
-        if (contentView != null && messageId != null && !RerenderRegistry.stillBound(messageId, bound)) {
-            return;
-        }
-        Runnable task = () -> {
-            String currentBound = messageIdOf(contentView);
-            if (contentView != null && messageId != null
-                    && !RerenderRegistry.stillBound(messageId, currentBound)) {
-                return;
-            }
-            invokeRerender(invocationTarget, contentView, messageId, method, args);
-        };
-        new Handler(Looper.getMainLooper()).post(task);
-    }
-
-    private void invokeRerender(Object invocationTarget, @Nullable View contentView,
-                                @Nullable String messageId, Method method, Object[] args) {
-        View view = contentView != null
-                ? contentView
-                : (invocationTarget instanceof View ? (View) invocationTarget : null);
-        RERENDERING.set(Boolean.TRUE);
-        try {
-            method.invoke(invocationTarget, args);
-        } catch (Throwable t) {
-            return;
-        } finally {
-            RERENDERING.remove();
-        }
-        // 回复引用的调用目标是容器，真正需要重新绑定的是内部正文视图。
-        RowRefresher.postInvalidateRow(this::messageIdOf, messageId, view);
-    }
-
     /**
      * 多片段消息附加到缓存键的后缀。
      *
      * <p>含 {@code U+0000} 保证不会与任何真实正文混淆；只有存在 ≥2 个可翻译
      * 片段的消息会带上它，因此单片段消息的缓存与旧版本保持兼容。</p>
      *
-     * <p>版本随回填协议的译文形态变化升级：seg2 对应「单链路无标记请求 +
-     * 渲染层结构对齐回填」的版本，同时失效 seg1 时期（可能含损坏/被拒译文）
-     * 的旧缓存。</p>
+     * <p>seg2 隔离 seg1 时期的旧缓存；当前输入继续使用统一的样式与保留叶
+     * 位置标记。此后缀只区分多片段命名空间，不改变请求或回填协议。</p>
      */
     private static final String SEGMENT_CACHE_SUFFIX = "\u0000seg2";
 
     /** Embed 状态键的分隔符；真实消息 ID（雪花 ID）不可能包含 U+0000。 */
     private static final String EMBED_KEY_PREFIX = "\u0000embed\u0000";
+    private static final String POLL_KEY_PREFIX = "\u0000poll\u0000";
 
     // ---------------------------------------------------------------- 翻译流程
 
     /**
      * 消息绑定后的处理入口：识别英文、查缓存、按需发起翻译。
      */
-    public void onMessageBound(@Nullable View contentView, String messageId,
-                               @Nullable Object structurableText) {
-        if (messageId == null || structurableText == null) {
-            return;
+    public void onMessageBound(String messageId, @Nullable Object structurableText) {
+        try (HookRuntime.Lease lease = HookRuntime.enter()) {
+            if (lease == null || messageId == null || structurableText == null) return;
+            produceTranslation(messageId, structurableText);
         }
+    }
+
+    private void produceTranslation(String messageId, Object structurableText) {
         TextExtractor.Result ex = TextExtractor.extract(structurableText);
+        String nodeTypes = TextExtractor.typeSummary(structurableText, ex);
+        ProjectLog.infoOnce("translation.nodeTypes." + nodeTypes,
+                "translation content node types=" + nodeTypes);
         if (ex == null || ex.text.trim().isEmpty()) {
+            ProjectLog.warnOnce("translation.noText", "translation skipped: extracted text is empty"
+                    + " structurableClass=" + structurableText.getClass().getName());
             return;
         }
 
         Config.Snapshot cfg = config;
-        // 单一链路（用户决策）：始终发送无标记纯文本，不做分段标记请求。
-        // 内容哈希沿用带分段后缀的键空间（仅作缓存命名空间，多段消息与
-        // 旧缓存条目隔离）。
-        String requestText = ex.text;
-        String hash = contentHashOf(ex, cfg);
-        StateStore.Entry entry = StateStore.get().obtain(messageId, hash, ex.text);
-        rawContent.put(messageId, structurableText);
-        if (contentView != null) {
-            lastView.put(messageId, new java.lang.ref.WeakReference<>(contentView));
-        }
-
         if (!cfg.enabled) {
-            // 总开关关闭：不发起新翻译，保留已有译文（需求 §2.7）。
+            ProjectLog.warnOnce("translation.disabled", "translation skipped: auto-translate is disabled");
             return;
         }
+        if (!translationAllowed(messageId, cfg)) {
+            ProjectLog.infoOnce("translation.scopeDenied", "translation skipped: translation scope denied");
+            return;
+        }
+        // The single captured request keeps style ranges and retained-node anchors.
+        // The segment suffix is only a cache namespace, not another request protocol.
+        String requestText = ex.text;
+        String hash = contentHashOf(ex, cfg);
+        StateStore.Entry entry = StateStore.get().obtain(messageId, hash);
+        rememberCanonicalContent(messageId, structurableText);
         if (entry.status == StateStore.Status.TRANSLATING
                 || entry.status == StateStore.Status.TRANSLATED) {
             return; // 已有在途任务或已有译文，不重复翻译（需求 §5.4 去重）。
@@ -421,77 +440,59 @@ public final class HookBridge {
         // 缓存命中：直接出结果，不发请求（需求 §5.6）。
         String cached = TranslationCache.get().get(hash);
         if (cached != null) {
-            entry.translatedText = cached;
-            entry.status = StateStore.Status.TRANSLATED;
-            entry.showingOriginal = false;
-            RerenderRegistry.rerender(messageId);
-            return;
-        }
-
-        if (!cfg.isUsable()) {
-            entry.status = StateStore.Status.FAILED;
-            entry.lastError = cfg.configError != null ? cfg.configError : "API 未配置";
-            RerenderRegistry.rerender(messageId);
+            if (StateStore.get().useCached(entry, cached)) refreshTranslation(messageId);
             return;
         }
 
         EnglishDetector.Verdict v = EnglishDetector.evaluate(
-                ex.text, ex.textNodeCount, ex.opaqueNodeCount, ex.codeHeavy,
-                cfg.targetLang);
+                ex.text, ex.textNodeCount, cfg.targetLang);
         if (!v.shouldTranslate) {
+            ProjectLog.infoOnce("translation.languageSkip." + v.reason.name(),
+                    "translation skipped by language detector"
+                    + " reason=" + v.reason.name() + " textNodes=" + ex.textNodeCount
+                    + " opaqueNodes=" + ex.opaqueNodeCount);
             return;
         }
 
-        entry.status = StateStore.Status.TRANSLATING;
-        // 立即重渲染，让「翻译中」旋转图标显示出来。
-        RerenderRegistry.rerender(messageId);
-
-        Scheduler.get().submit(messageId, hash, requestText, engine,
-                (generationSnapshot, contentHash) -> {
-                    if (generationSnapshot != StateStore.get().generation()) {
-                        return false; // 模块已热重载/配置已重置：丢弃（需求 §风险 6）
+        ProjectLog.infoOnce("translation.started", "translation request started"
+                + " textNodes=" + ex.textNodeCount + " segments=" + ex.segmentCount);
+        TranslationTaskId task = StateStore.get().begin(entry);
+        if (task == null) return;
+        refreshTranslation(messageId);
+        Scheduler.get().submit(task, requestText, engine,
+                identity -> HookRuntime.isActive() && translationAllowed(identity.messageId, config)
+                        && StateStore.get().owns(identity),
+                (identity, accepted, translated, error) -> {
+                    try (HookRuntime.Lease lease = HookRuntime.enter()) {
+                        if (lease != null) onTranslateResult(identity, accepted, translated, error);
                     }
-                    if (!config.enabled) {
-                        return false; // 开关已关闭：丢弃在途结果（需求 §2.7 注）
-                    }
-                    StateStore.Entry cur = StateStore.get().peek(messageId);
-                    if (cur == null || !contentHash.equals(cur.contentHash)) {
-                        return false; // 消息已被编辑：丢弃（需求 §风险 3）
-                    }
-                    return true;
-                },
-                (id, accepted, translated, error) ->
-                        onTranslateResult(id, accepted, translated, error));
+                });
     }
 
-    /** 翻译结果回写（主线程）。 */
-    private void onTranslateResult(String id, boolean accepted,
-                                   @Nullable String translated, @Nullable Throwable error) {
-        StateStore.Entry cur = StateStore.get().peek(id);
-        if (cur == null) {
-            return;
-        }
-        if (!accepted) {
-            // 被丢弃通常是过期或开关关闭：回到可重试状态，但不显示“失败”。
-            if (cur.status == StateStore.Status.TRANSLATING) {
-                cur.status = cur.translatedText != null
-                        ? StateStore.Status.TRANSLATED
-                        : StateStore.Status.IDLE;
-            }
-            RerenderRegistry.rerender(id);
-            return;
-        }
-        if (error != null || translated == null || translated.isEmpty()) {
-            cur.status = StateStore.Status.FAILED;
-            cur.lastError = describe(error);
-        } else {
-            cur.translatedText = translated;
-            cur.status = StateStore.Status.TRANSLATED;
-            cur.showingOriginal = false;
-            // 写入缓存，供同内容的其它消息复用（需求 §5.6）。
-            TranslationCache.get().put(cur.contentHash, translated);
-        }
-        RerenderRegistry.rerender(id);
+    /** Complete task ownership is validated before every transition, including discarded results. */
+    void onTranslateResult(TranslationTaskId task, boolean accepted,
+                           @Nullable String translated, @Nullable Throwable error) {
+        ProjectLog.info("translation result received accepted=" + accepted
+                + " translatedPresent=" + (translated != null && !translated.isEmpty())
+                + " errorClass=" + (error == null ? "none" : error.getClass().getSimpleName())
+                + " errorKind=" + (error instanceof TranslationException
+                        ? ((TranslationException) error).kind().name() : "none")
+                + " causeClass=" + (error == null || error.getCause() == null
+                        ? "none" : error.getCause().getClass().getSimpleName()));
+        boolean admitted = accepted && translationAllowed(task.messageId, config);
+        boolean success = admitted && error == null && translated != null && !translated.isEmpty();
+        if (!StateStore.get().complete(task, admitted, translated,
+                success ? null : admitted ? describe(error) : null)) return;
+        if (success) TranslationCache.get().put(task.contentHash, translated);
+        refreshTranslation(task.messageId);
+    }
+
+    /** A segment update also refreshes its card's aggregate progress/error icon. */
+    private static void refreshTranslation(String key) {
+        RerenderRegistry.rerender(key);
+        CardState.Card card = CardState.forKey(key);
+        if (card != null && card.titleKey != null && !key.equals(card.titleKey))
+            RerenderRegistry.rerender(card.titleKey);
     }
 
     /** 把异常转换为可读且不泄露密钥的描述。 */
@@ -502,8 +503,7 @@ public final class HookBridge {
         if (t instanceof TranslationException) {
             return ((TranslationException) t).userMessage();
         }
-        return t.getClass().getSimpleName()
-                + (t.getMessage() == null ? "" : ": " + t.getMessage());
+        return t.getClass().getSimpleName();
     }
 
     /** 富文本结构未能按严格规则重建时，将网络成功转换为可见翻译失败。 */
@@ -514,21 +514,20 @@ public final class HookBridge {
             return;
         }
         TranslationCache.get().remove(entry.contentHash);
-        entry.translatedText = null;
-        entry.showingOriginal = true;
-        entry.status = StateStore.Status.FAILED;
-        entry.lastError = "译文结构与原消息不匹配，已保留原文。";
-        RerenderRegistry.rerender(id);
+        if (StateStore.get().rejectRender(id, translated)) {
+            ProjectLog.info("translation render rejected: native structure reconstruction failed");
+            refreshTranslation(id);
+        }
     }
 
     /** 原文/译文切换：由图标点击触发，不触发新请求（需求 §2.4）。 */
     public void toggleShowingOriginal(String messageId) {
-        StateStore.Entry e = StateStore.get().peek(messageId);
-        if (e == null || e.status != StateStore.Status.TRANSLATED || e.translatedText == null) {
+        if (isCardKey(messageId)) {
+            CardState.Card card = CardState.toggle(messageId);
+            if (card != null) for (String key : card.keys) RerenderRegistry.rerender(key);
             return;
         }
-        e.showingOriginal = !e.showingOriginal;
-        RerenderRegistry.rerender(messageId);
+        if (StateStore.get().toggle(messageId)) RerenderRegistry.rerender(messageId);
     }
 
     /**
@@ -539,6 +538,17 @@ public final class HookBridge {
      */
     public void onIconClicked(String messageId) {
         if (messageId == null) {
+            return;
+        }
+        if (isCardKey(messageId)) {
+            CardState.Card card = CardState.forKey(messageId);
+            if (card == null || !messageId.equals(card.titleKey)) return;
+            toggleShowingOriginal(messageId);
+            // Switching back to translation is the sole user retry action for failed slots.
+            if (!card.showingOriginal()) for (String key : card.keys) {
+                StateStore.Entry segment = StateStore.get().peek(key);
+                if (segment != null && segment.status == StateStore.Status.FAILED) retry(key);
+            }
             return;
         }
         StateStore.Entry e = StateStore.get().peek(messageId);
@@ -562,22 +572,28 @@ public final class HookBridge {
 
     /** 失败后重试：由图标点击触发（需求 §2.6）。 */
     public void retry(String messageId) {
+        if (!HookRuntime.isActive() || !translationAllowed(messageId, config)) return;
         StateStore.Entry e = StateStore.get().peek(messageId);
         if (e == null) {
             return;
         }
-        Object structurable = rawContent.get(messageId);
-        if (structurable == null) {
+        StateStore.Source original = StateStore.get().source(messageId);
+        MessageRevision current = messageRevisions.get(messageId);
+        boolean sameRevision = original != null && (!original.revisionKnown
+                ? current == null
+                : current != null && java.util.Objects.equals(
+                        original.editedTimestamp, current.editedTimestamp));
+        if (!sameRevision || matchingState(messageId, TextExtractor.extract(original.content)) != e) {
+            // A new model may have bound before its body renderer. Do not relabel
+            // the previous body's retry with the latest model revision or reset state.
             return;
         }
+        Object structurable = original.content;
 
-        e.status = StateStore.Status.IDLE;
-        e.lastError = null;
-        RerenderRegistry.rerender(messageId);
+        if (!StateStore.get().prepareRetry(e)) return;
+        refreshTranslation(messageId);
 
-        java.lang.ref.WeakReference<View> viewRef = lastView.get(messageId);
-        View last = viewRef == null ? null : viewRef.get();
-        onMessageBound(last, messageId, structurable);
+        onMessageBound(messageId, structurable);
     }
 
     // ---------------------------------------------------------------- 工具

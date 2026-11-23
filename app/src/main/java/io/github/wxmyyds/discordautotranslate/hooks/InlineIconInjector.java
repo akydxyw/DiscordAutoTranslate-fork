@@ -1,5 +1,7 @@
 package io.github.wxmyyds.discordautotranslate.hooks;
 
+import io.github.wxmyyds.discordautotranslate.core.ProjectLog;
+
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.text.SpannableStringBuilder;
@@ -15,37 +17,86 @@ import io.github.wxmyyds.discordautotranslate.core.TextExtractor;
 /**
  * 在消息正文渲染结果末尾注入行内翻译图标。
  *
- * <p>注入点选择：{@code MessageHooks} 的 {@code toSpannable} Hook。它是所有正文渲染的
- * 唯一汇聚点，在这里拿到的 {@code DraweeSpanStringBuilder} 就是最终交给
- * {@code MessageContentView} 的对象（继承 {@code SpannableStringBuilder}，可写）。</p>
+ * <p>注入点由版本配置中的 {@code message.textConversion} 选择；该 Hook 收到宿主生成的
+ * 最终 {@code SpannableStringBuilder}，在同一对象末尾追加图标。</p>
  *
  * <h3>注入范围（需求：只处理正常消息正文的可翻译文本）</h3>
  * <ol>
- *   <li>必须有渲染宿主：{@code MessageContentView.setMessageContent} 与
- *       Embed 绑定（{@code EmbedHooks}）都会在调用链内设置 {@link #CURRENT_HOST}；
- *       回复引用（{@code MessageViewReplyPreview}）不设置宿主，天然被排除。</li>
+ *   <li>必须有渲染宿主：正文渲染入口与 Embed 绑定（{@code EmbedHooks}）会在调用链内设置
+ *       {@link #CURRENT_HOST}；回复引用不设置宿主，因此不注入。</li>
  *   <li>必须有可翻译文本：{@code TextExtractor} 的 {@code textNodeCount > 0}。
  *       纯图片、纯表情、纯提及消息的文本节点数为 0，不注入。</li>
- *   <li>Embed 每卡片只挂一个图标：只有 {@code HookBridge.markEmbedIconKey}
- *       标记的主段（富 Embed 的描述/标题/首字段）允许注入；帖子预览的标题是
- *       String，图标经「仅图标」身份映射挂在 footer 上，不参与文本替换。</li>
+ *   <li>Embed 每卡片只挂一个图标：只有当前卡片绑定作用域
+ *       指定的主段（富 Embed 的描述/标题/首字段）允许注入。</li>
  * </ol>
  *
  * <h3>宿主 View 的传递</h3>
- * <p>{@code toSpannable} 是静态方法，拿不到渲染它的 {@code TextView}；而旋转动画必须
- * 有宿主才能驱动重绘。因此 {@code setMessageContent} Hook 在调用链同步范围内把宿主放进
- * {@link #CURRENT_HOST}（ThreadLocal），注入完成后立即清理。同一线程内
- * {@code setMessageContent → toSpannable} 是同步的，因此该传递是可靠的。</p>
+ * <p>文本转换方法是静态的，拿不到渲染它的 View；旋转动画需要宿主驱动重绘。
+ * 因此正文渲染 Hook 在同步调用文本转换期间将宿主放进 {@link #CURRENT_HOST}，
+ * 注入完成后立即清理。</p>
  */
 public final class InlineIconInjector {
 
     /**
-     * 当前渲染宿主（{@code MessageContentView}）。
+     * 当前正文渲染宿主。
      *
-     * <p>仅在 {@code setMessageContent} 调用链的同步范围内有效；为 {@code null}
-     * 表示这次 {@code toSpannable} 不是正常消息正文渲染（回复引用 / Embed / 其他）。</p>
+     * <p>仅在正文或 Embed 渲染调用链的同步范围内有效；为 {@code null} 表示本次转换来自回复引用
+     * 或其他不应注入行内图标的无宿主路径。</p>
      */
-    private static final ThreadLocal<View> CURRENT_HOST = new ThreadLocal<>();
+    private static final ThreadLocal<HostScope> CURRENT_HOST = new ThreadLocal<>();
+
+    /** Synchronous native render scope, including its sole icon-bearing card segment. */
+    static final class HostScope implements AutoCloseable {
+        final View view;
+        final String cardIconKey;
+        private final HostScope previous;
+        private final java.util.List<?> cardContents;
+        private final java.util.List<String> cardKeys;
+        private boolean cardIconInjected;
+
+        HostScope(View view, String cardIconKey, HostScope previous) {
+            this(view, cardIconKey, previous, null, null);
+        }
+
+        HostScope(View view, String cardIconKey, HostScope previous,
+                  java.util.List<?> cardContents, java.util.List<String> cardKeys) {
+            this.view = view;
+            this.cardIconKey = cardIconKey;
+            this.previous = previous;
+            this.cardContents = cardContents;
+            this.cardKeys = cardKeys;
+        }
+
+        boolean ownsCardIdentity() { return cardContents != null; }
+
+        @Nullable String messageIdOf(Object content) {
+            for (int i = 0; i < cardContents.size(); i++) {
+                if (cardContents.get(i) == content) return cardKeys.get(i);
+            }
+            return null;
+        }
+
+        boolean allows(String key) {
+            return key != null && (!HookBridge.isCardKey(key)
+                    || (!cardIconInjected && key.equals(cardIconKey)));
+        }
+
+        void recordInjection(String key) {
+            if (HookBridge.isCardKey(key)) {
+                cardIconInjected = true;
+            }
+        }
+
+        @Override
+        public void close() {
+            if (view != null) InlineIconSpan.finishBinding(view);
+            if (previous == null) {
+                CURRENT_HOST.remove();
+            } else {
+                CURRENT_HOST.set(previous);
+            }
+        }
+    }
 
     /** 占位字符：不换行空格。提供一个真实字符位置供 span 附着，且自身不触发换行。 */
     private static final String PLACEHOLDER = "\u00A0";
@@ -62,16 +113,27 @@ public final class InlineIconInjector {
     private InlineIconInjector() {
     }
 
-    /** 由 {@code setMessageContent} Hook 在调用 {@code super} 前设置，调用后必须清理。 */
-    static void enterHost(@Nullable View host) {
-        if (host != null) {
-            CURRENT_HOST.set(host);
-        }
+    /** Always close the scope; null explicitly suspends any enclosing render host. */
+    static HostScope enterHost(@Nullable View host, @Nullable String cardIconKey) {
+        if (host != null) InlineIconSpan.stopForHost(host);
+        HostScope scope = new HostScope(host, cardIconKey, CURRENT_HOST.get());
+        CURRENT_HOST.set(scope);
+        return scope;
     }
 
-    /** 由 {@code setMessageContent} Hook 在返回前清理，避免宿主泄漏到后续其它渲染。 */
-    static void exitHost() {
-        CURRENT_HOST.remove();
+    /** Embed conversion identity belongs to this captured binding, even when models share instances. */
+    static HostScope enterCardHost(@Nullable View host, @Nullable String primary,
+                                   java.util.List<?> contents, java.util.List<String> keys) {
+        if (contents.size() != keys.size()) throw new IllegalArgumentException("Invalid card binding");
+        if (host != null) InlineIconSpan.stopForHost(host);
+        HostScope scope = new HostScope(host, primary, CURRENT_HOST.get(), contents, keys);
+        CURRENT_HOST.set(scope);
+        return scope;
+    }
+
+    @Nullable
+    static HostScope currentHost() {
+        return CURRENT_HOST.get();
     }
 
     /**
@@ -80,48 +142,56 @@ public final class InlineIconInjector {
      * <p>任何异常都不得影响原渲染，因此内部整体 try/catch，失败时原样返回。</p>
      *
      * @param structurable 本次渲染的 {@code StructurableText}（用于反查消息 ID 与文本量）
-     * @param rendered     {@code TextUtilsKt.toSpannable} 的返回值
+     * @param rendered     配置选定的文本转换方法返回值
      * @param rawContext   渲染上下文（运行时才知类型）
      * @param hostCl       宿主 ClassLoader，用于创建可点击 span 代理
      * @return 传入的 {@code rendered}（就地修改后仍返回同一引用）
      */
     @Nullable
     public static Object inject(@Nullable Object structurable, @Nullable Object rendered,
-                                @Nullable Object rawContext, @Nullable ClassLoader hostCl) {
+                                @Nullable Object rawContext, @Nullable ClassLoader hostCl,
+                                @Nullable TextExtractor.Result extracted) {
         try {
-            View host = CURRENT_HOST.get();
+            HostScope scope = CURRENT_HOST.get();
+            View host = scope == null ? null : scope.view;
             if (host == null) {
+                ProjectLog.warnOnce("icon.noHost", "icon injection skipped: no active render host");
                 return rendered; // 回复引用等无宿主路径：不注入
             }
             Context context = rawContext instanceof Context ? (Context) rawContext : null;
             if (!(rendered instanceof SpannableStringBuilder) || context == null) {
+                ProjectLog.warnOnce("icon.invalidResult", "icon injection skipped: invalid result/context"
+                        + " renderedClass=" + (rendered == null ? "null" : rendered.getClass().getName())
+                        + " contextValid=" + (context != null));
                 return rendered;
             }
             String messageId = HookBridge.get().resolveMessageId(structurable);
-            boolean iconAllowed = messageId != null
-                    && (!HookBridge.isEmbedKey(messageId)
-                    || HookBridge.get().isEmbedIconKey(messageId));
-            if (messageId == null) {
-                // 帖子预览：图标承载在 footer 等另一段内容上（仅图标身份，
-                // 不参与文本替换）。
-                messageId = HookBridge.get().resolveIconOnlyKey(structurable);
-                iconAllowed = messageId != null;
-            }
+            boolean iconAllowed = scope.allows(messageId)
+                    && HookBridge.get().scopeAllowsDisplay(messageId);
             if (!iconAllowed) {
+                ProjectLog.warnOnce("icon.noMessageIdentity", "icon injection skipped: message identity not resolved");
                 return rendered;
             }
             StateStore.Entry entry = StateStore.get().peek(messageId);
-            if (entry == null) {
-                return rendered; // 尚无状态（还没触发过翻译流程）：不注入
+            CardState.Card card = HookBridge.isCardKey(messageId)
+                    ? CardState.forKey(messageId) : null;
+            if (HookBridge.isCardKey(messageId)
+                    && (card == null || !messageId.equals(card.titleKey))) return rendered;
+            if (card == null && entry == null) {
+                ProjectLog.warnOnce("icon.noState", "icon injection skipped: no translation state exists");
+                return rendered;
             }
+            StateStore.Status status = card == null ? entry.status : card.status();
+            boolean showingOriginal = card == null ? entry.showingOriginal : card.showingOriginal();
             // 未翻译（IDLE）不显示图标：既符合「待翻译不显示」的要求，
             // 也使非英文消息、纯表情消息自然不出图标。
-            if (entry.status == StateStore.Status.IDLE) {
+            if (status == StateStore.Status.IDLE) {
+                ProjectLog.infoOnce("icon.idle", "icon injection skipped: translation state is IDLE");
                 return rendered;
             }
             // 需求：纯图片 / 纯表情等无可翻译正文的消息不注入。
-            TextExtractor.Result ex = TextExtractor.extract(structurable);
-            if (ex == null || ex.textNodeCount == 0) {
+            if (extracted == null || extracted.textNodeCount == 0) {
+                ProjectLog.infoOnce("icon.noTextNodes", "icon injection skipped: no extractable text nodes");
                 return rendered;
             }
 
@@ -130,42 +200,50 @@ public final class InlineIconInjector {
                 return rendered;
             }
 
-            Drawable source = iconFor(context, entry.status);
-            Drawable tinted = InlineIconSpan.tintForState(
-                    source, entry.status, entry.showingOriginal);
+            Drawable source = iconFor(context, status);
+            Drawable tinted = InlineIconSpan.tintForState(source, status, showingOriginal);
             InlineIconSpan icon = InlineIconSpan.create(
                     tinted, context.getResources().getDisplayMetrics().density,
-                    entry.status, messageId);
+                    status);
             if (icon == null) {
+                ProjectLog.warnOnce("icon.spanCreation", "icon injection skipped: icon span creation failed");
                 return rendered;
             }
 
-            // 先放点击前置字符，再放图标占位符：两者各自占一个字符格。
-            int leadStart = ssb.length();
+            Object clickSpan = IconClickSpanFactory.create(hostCl, messageId);
+            if (clickSpan == null) {
+                ProjectLog.warnOnce("icon.clickCreation", "icon injection rejected: click span unavailable");
+                return rendered;
+            }
+            if (!RerenderRegistry.hasNativeBinding(host)) {
+                ProjectLog.warnOnce("icon.nativeBinding.missing", "icon injection rejected: native binding unavailable");
+                return rendered;
+            }
+            icon.ownText(ssb, clickSpan);
+            // Both spans are ready before mutating the native builder.
             ssb.append(CLICK_LEAD);
             int start = ssb.length();
             ssb.append(PLACEHOLDER);
             int end = start + PLACEHOLDER.length();
             ssb.setSpan(icon, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
 
-            Object clickSpan = IconClickSpanFactory.create(hostCl, messageId);
-            if (clickSpan != null) {
-                // 点击 span 必须比图标往前多覆盖一个字符，否则手指落在图标靠左部分时
-                // 宿主算出的 offset 是图标前一格，getSpans 取不到任何 span，
-                // 最终退化为消息点击（详见 InlineIconGeometry.clickRange）。
-                int[] click = InlineIconGeometry.clickRange(leadStart, end);
-                ssb.setSpan(clickSpan, click[0], click[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
+            // Include only the injected lead character, never the preceding message character.
+            int[] click = InlineIconGeometry.clickRange(start, end);
+            ssb.setSpan(clickSpan, click[0], click[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             // 启动/续接旋转动画（仅翻译中状态）。
             icon.bindHost(host);
+            scope.recordInjection(messageId);
+            ProjectLog.infoOnce("icon.injected", "translation icon injected successfully");
 
             return ssb;
         } catch (Throwable t) {
+            ProjectLog.warnOnce("icon.exception", "icon injection failed with "
+                    + t.getClass().getName());
             return rendered;
         }
     }
 
-    /** 状态 → 图标 Drawable。Embed/投票路径共用。 */
+    /** 状态 → 图标 Drawable。正文/Embed 共用。 */
     @Nullable
     static Drawable iconFor(Context context, StateStore.Status status) {
         switch (status) {

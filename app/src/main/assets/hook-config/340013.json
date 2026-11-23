@@ -1,0 +1,378 @@
+{
+  "schemaVersion": 1,
+  "versionCode": 340013,
+  "requiredHooks": [
+    "message.bind",
+    "message.render",
+    "message.textConversion",
+    "embed.bind",
+    "poll.bind",
+    "poll.answerBind",
+    "poll.textSet",
+    "poll.accessibilitySet"
+  ],
+  "iconClick": {
+    "enabled": true,
+    "protocol": "constructorProxy",
+    "spanClass": "com.discord.span.utilities.spannable.ClickableSpan",
+    "requiredSuperclass": "android.text.style.ClickableSpan",
+    "interfaces": ["com.discord.react_gesture_handler.nested_touch.NestedClickableSpan"],
+    "constructor": {
+      "parameterTypes": [
+        "com.discord.react_gesture_handler.nested_touch.NestedClickableSpan$TouchPriority",
+        "java.lang.Integer",
+        "java.lang.Integer",
+        "java.lang.Integer",
+        "float",
+        "java.lang.Boolean",
+        "kotlin.jvm.functions.Function1",
+        "kotlin.jvm.functions.Function1",
+        "int",
+        "kotlin.jvm.internal.DefaultConstructorMarker"
+      ],
+      "arguments": [
+        {"kind": "null"},
+        {"kind": "null"},
+        {"kind": "null"},
+        {"kind": "null"},
+        {"kind": "float", "value": 0.0},
+        {"kind": "null"},
+        {"kind": "null"},
+        {
+          "kind": "callback",
+          "interface": "kotlin.jvm.functions.Function1",
+          "method": "invoke",
+          "action": "toggleTranslation"
+        },
+        {"kind": "integer", "value": 127},
+        {"kind": "null"}
+      ]
+    }
+  },
+  "hooks": {
+    "message.bind": {
+      "target": {
+        "class": "com.discord.chat.presentation.message.MessageView",
+        "name": "setMessage",
+        "static": false,
+        "parameterCount": 7,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "com.discord.chat.bridge.Message",
+          "1": "com.discord.chat.presentation.root.MessageContext",
+          "2": "com.discord.chat.presentation.events.ChatEventHandler",
+          "3": "com.discord.chat.presentation.message.view.botuikit.ComponentProvider",
+          "4": "kotlin.jvm.functions.Function0",
+          "5": "boolean",
+          "6": "boolean"
+        }
+      },
+      "modelArgument": 0,
+      "messageIdGetter": "getId",
+      "contentGetter": "getContent",
+      "editedTimestampGetter": "getEditedTimestamp",
+      "referencedMessage": {
+        "accessor": "getReferencedMessage",
+        "loadedClass": "com.discord.chat.bridge.referencedmessage.LoadedReferencedMessage",
+        "messageField": "message",
+        "messageIdGetter": "getId",
+        "contentField": "systemContent",
+        "messageContentGetter": "getContent",
+        "editedTimestampGetter": "getEditedTimestamp"
+      },
+      "replyPreviewField": "replyPreview",
+      "replyPreviewBindingField": "binding",
+      "replyPreviewTextField": "replyText"
+    },
+    "message.render": {
+      "shadowViewGetter": "getShadowView",
+      "target": {
+        "class": "com.discord.chat.presentation.message.view.MessageContentView",
+        "name": "setMessageContent-hYrISQc",
+        "static": false,
+        "parameterCount": 34,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "com.discord.chat.presentation.message.messagepart.MessageMargins",
+          "1": "com.discord.chat.bridge.structurabletext.StructurableText",
+          "2": "java.lang.String",
+          "3": "boolean",
+          "4": "boolean",
+          "5": "boolean",
+          "6": "boolean",
+          "7": "kotlin.jvm.functions.Function1",
+          "8": "kotlin.jvm.functions.Function1",
+          "9": "kotlin.jvm.functions.Function3",
+          "10": "kotlin.jvm.functions.Function4",
+          "11": "kotlin.jvm.functions.Function1",
+          "12": "kotlin.jvm.functions.Function2",
+          "13": "kotlin.jvm.functions.Function6",
+          "14": "kotlin.jvm.functions.Function1",
+          "15": "kotlin.jvm.functions.Function1",
+          "16": "kotlin.jvm.functions.Function1",
+          "17": "kotlin.jvm.functions.Function0",
+          "18": "kotlin.jvm.functions.Function1",
+          "19": "kotlin.jvm.functions.Function1",
+          "20": "kotlin.jvm.functions.Function1",
+          "21": "kotlin.jvm.functions.Function1",
+          "22": "kotlin.jvm.functions.Function1",
+          "23": "kotlin.jvm.functions.Function1",
+          "24": "int",
+          "25": "int",
+          "26": "boolean",
+          "27": "java.lang.String",
+          "28": "java.lang.String",
+          "29": "java.lang.Integer",
+          "30": "com.discord.chat.bridge.truncation.Truncation",
+          "31": "com.discord.theme.DiscordThemeObject",
+          "32": "java.lang.Float",
+          "33": "boolean"
+        }
+      },
+      "identitySource": "argument",
+      "contentArgument": 1,
+      "messageIdArgument": 2
+    },
+    "message.textConversion": {
+      "target": {
+        "class": "com.discord.chat.presentation.textutils.TextUtilsKt",
+        "name": "toSpannable",
+        "static": true,
+        "parameterCount": 29,
+        "returnType": "com.facebook.drawee.span.DraweeSpanStringBuilder",
+        "parameterTypes": {
+          "0": "com.discord.chat.bridge.structurabletext.StructurableText",
+          "1": "android.content.Context",
+          "2": "java.lang.String",
+          "3": "boolean",
+          "4": "boolean",
+          "5": "boolean",
+          "6": "boolean",
+          "7": "android.graphics.Paint",
+          "8": "kotlin.jvm.functions.Function1",
+          "9": "kotlin.jvm.functions.Function1",
+          "10": "kotlin.jvm.functions.Function3",
+          "11": "kotlin.jvm.functions.Function4",
+          "12": "kotlin.jvm.functions.Function1",
+          "13": "kotlin.jvm.functions.Function2",
+          "14": "kotlin.jvm.functions.Function6",
+          "15": "kotlin.jvm.functions.Function1",
+          "16": "kotlin.jvm.functions.Function1",
+          "17": "kotlin.jvm.functions.Function1",
+          "18": "kotlin.jvm.functions.Function1",
+          "19": "kotlin.jvm.functions.Function1",
+          "20": "kotlin.jvm.functions.Function1",
+          "21": "kotlin.jvm.functions.Function1",
+          "22": "kotlin.jvm.functions.Function0",
+          "23": "kotlin.jvm.functions.Function1",
+          "24": "boolean",
+          "25": "com.discord.theme.DiscordThemeObject",
+          "26": "float",
+          "27": "java.lang.Float",
+          "28": "boolean"
+        }
+      },
+      "contentArgument": 0,
+      "contextArgument": 1,
+      "messageIdArgument": 2
+    },
+    "poll.bind": {
+      "enabled": true,
+      "target": {
+        "class": "com.discord.chat.presentation.message.viewholder.PollViewHolder",
+        "name": "bind",
+        "static": false,
+        "parameterCount": 4,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "com.discord.chat.presentation.message.messagepart.PollMessageAccessory",
+          "1": "kotlin.jvm.functions.Function3",
+          "2": "kotlin.jvm.functions.Function3",
+          "3": "kotlin.jvm.functions.Function8"
+        }
+      },
+      "accessoryArgument": 0,
+      "optionsPath": ["answers"],
+      "messageIdPath": ["messageId"],
+      "textPath": ["data", "question", "text"],
+      "hostPath": ["pollView"],
+      "textViewPath": ["pollView", "binding", "questionText"]
+    },
+    "poll.answerBind": {
+      "enabled": true,
+      "target": {
+        "class": "com.discord.chat.presentation.message.view.polls.PollAnswerAdapter",
+        "name": "onBindViewHolder",
+        "static": false,
+        "parameterCount": 2,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "com.discord.chat.presentation.message.view.polls.PollAnswerViewHolder",
+          "1": "int"
+        }
+      },
+      "holderArgument": 0,
+      "positionArgument": 1,
+      "itemsPath": ["items"],
+      "messageIdPath": ["messageId"],
+      "answerIdPath": ["answer", "answerId"],
+      "textPath": ["answer", "pollMedia", "text"],
+      "holderBindingPath": ["binding"],
+      "textBindingClass": "com.discord.chat.databinding.PollTextAndImageAnswerViewBinding",
+      "textViewPath": ["label"],
+      "imageBindingClass": "com.discord.chat.databinding.PollImageOnlyAnswerViewBinding",
+      "imageViewPath": ["image"]
+    },
+    "poll.textSet": {
+      "enabled": true,
+      "target": {
+        "class": "android.widget.TextView",
+        "name": "setText",
+        "static": false,
+        "parameterCount": 1,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "java.lang.CharSequence"
+        }
+      },
+      "contentArgument": 0
+    },
+    "poll.accessibilitySet": {
+      "enabled": true,
+      "target": {
+        "class": "android.view.View",
+        "name": "setContentDescription",
+        "static": false,
+        "parameterCount": 1,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "java.lang.CharSequence"
+        }
+      },
+      "contentArgument": 0
+    },
+    "embed.bind": {
+      "enabled": true,
+      "target": {
+        "class": "com.discord.chat.presentation.message.viewholder.EmbedViewHolder",
+        "name": "bind",
+        "static": false,
+        "parameterCount": 9,
+        "returnType": "void",
+        "parameterTypes": {
+          "0": "com.discord.chat.presentation.events.ChatEventHandler",
+          "1": "com.discord.chat.presentation.message.messagepart.EmbedMessageAccessory",
+          "2": "int",
+          "3": "int",
+          "4": "kotlin.jvm.functions.Function0",
+          "5": "com.discord.chat.bridge.spoiler.SpoilerConfig",
+          "6": "kotlin.jvm.functions.Function2",
+          "7": "android.view.View$OnLongClickListener",
+          "8": "double"
+        }
+      },
+      "inputSource": "accessory",
+      "accessoryArgument": 1,
+      "host": {
+        "source": "field",
+        "field": "itemView"
+      }
+    }
+  },
+  "members": {
+    "getEmbed": "getEmbed",
+    "getContent": "getContent",
+    "getItems": "getItems",
+    "getEmojiAnchor": "getSurrogate",
+    "getAlt": "getAlt",
+    "getDescription": "getDescription",
+    "getTitle": "getTitle",
+    "getFields": "getFields",
+    "getName": "getName",
+    "getValue": "getValue"
+  },
+  "accessors": {
+    "EmbedMessageAccessory": {
+      "getMessageId": "getMessageId-3Eiw7ao"
+    },
+    "Message": {
+      "getId": "getId-3Eiw7ao",
+      "getChannelId": "getChannelId-o4g7jtM",
+      "getGuildId": "getGuildId-qOKuAAo"
+    },
+    "GuildId": {
+      "asString": "toString"
+    },
+    "RecyclerViewViewHolder": {
+      "getBindingAdapterPosition": "getBindingAdapterPosition",
+      "getAbsoluteAdapterPosition": "getAbsoluteAdapterPosition"
+    },
+    "RecyclerViewAdapterObservable": {
+      "notifyItemChanged": "d"
+    },
+    "RecyclerView": {
+      "isComputingLayout": "isComputingLayout",
+      "consumePendingUpdates": "consumePendingUpdateOperations",
+      "getAdapter": "getAdapter",
+      "getChildCount": "getChildCount",
+      "getChildAt": "getChildAt"
+    }
+  },
+  "fields": {
+    "MessageContentViewHolder": {
+      "bindCache": "lastMessageContent"
+    },
+    "RecyclerViewViewHolder": {
+      "itemView": "itemView",
+      "bindingAdapter": "mBindingAdapter",
+      "recyclerView": "mOwnerRecyclerView"
+    },
+    "RecyclerViewLayoutParams": {
+      "viewHolder": "d"
+    },
+    "RecyclerViewAdapter": {
+      "observable": "mObservable"
+    },
+    "RecyclerView": {
+      "layoutSuppressed": "mLayoutSuppressed",
+      "interceptRequestLayoutDepth": "mInterceptRequestLayoutDepth"
+    }
+  },
+  "types": {
+    "MessageContentViewHolder": "com.discord.chat.presentation.message.viewholder.MessageContentViewHolder",
+    "EmbedMessageAccessory": "com.discord.chat.presentation.message.messagepart.EmbedMessageAccessory",
+    "Embed": "com.discord.chat.bridge.embed.Embed",
+    "EmbedField": "com.discord.chat.bridge.embed.EmbedField",
+    "StructurableText": "com.discord.chat.bridge.structurabletext.StructurableText",
+    "PrimitiveStructurableText": "com.discord.chat.bridge.structurabletext.PrimitiveStructurableText",
+    "AnnotatedStructurableText": "com.discord.chat.bridge.structurabletext.AnnotatedStructurableText",
+    "Message": "com.discord.chat.bridge.Message",
+    "GuildId": "com.discord.primitives.GuildId",
+    "TextContentNode": "com.discord.chat.bridge.contentnode.TextContentNode",
+    "StrongContentNode": "com.discord.chat.bridge.contentnode.StrongContentNode",
+    "LHeadingContentNode": "com.discord.chat.bridge.contentnode.LHeadingContentNode",
+    "StrikethroughContentNode": "com.discord.chat.bridge.contentnode.StrikethroughContentNode",
+    "InlineCodeContentNode": "com.discord.chat.bridge.contentnode.InlineCodeContentNode",
+    "CodeBlockContentNode": "com.discord.chat.bridge.contentnode.CodeBlockContentNode",
+    "SubtextContentNode": "com.discord.chat.bridge.contentnode.SubtextContentNode",
+    "LinkContentNode": "com.discord.chat.bridge.contentnode.LinkContentNode",
+    "BulletListContentNode": "com.discord.chat.bridge.contentnode.BulletListContentNode",
+    "HeadingContentNode": "com.discord.chat.bridge.contentnode.HeadingContentNode",
+    "SpoilerContentNode": "com.discord.chat.bridge.contentnode.SpoilerContentNode",
+    "UnicodeEmojiContentNode": "com.discord.chat.bridge.contentnode.UnicodeEmojiContentNode",
+    "CustomEmojiContentNode": "com.discord.chat.bridge.contentnode.CustomEmojiContentNode",
+    "ParagraphContentNode": "com.discord.chat.bridge.contentnode.ParagraphContentNode",
+    "EmphasisContentNode": "com.discord.chat.bridge.contentnode.EmphasisContentNode",
+    "BlockQuoteContentNode": "com.discord.chat.bridge.contentnode.BlockQuoteContentNode",
+    "UnderlineContentNode": "com.discord.chat.bridge.contentnode.UnderlineContentNode",
+    "NewLineContentNode": "com.discord.chat.bridge.contentnode.NewLineContentNode",
+    "LineBreakContentNode": "com.discord.chat.bridge.contentnode.LineBreakContentNode",
+    "RecyclerView": "androidx.recyclerview.widget.RecyclerView",
+    "RecyclerViewViewHolder": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+    "RecyclerViewLayoutParams": "androidx.recyclerview.widget.RecyclerView$LayoutParams",
+    "RecyclerViewAdapter": "androidx.recyclerview.widget.RecyclerView$Adapter",
+    "RecyclerViewAdapterObservable": "androidx.recyclerview.widget.RecyclerView$AdapterDataObservable",
+    "MessageAccessoriesView": "com.discord.chat.presentation.message.MessageAccessoriesView",
+    "MessageView": "com.discord.chat.presentation.message.MessageView"
+  }
+}

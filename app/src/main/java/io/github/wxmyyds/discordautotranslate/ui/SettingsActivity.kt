@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Window
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -123,9 +124,13 @@ class SettingsActivity : ComponentActivity(), SettingsActions {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 系统 ActionBar 的标题与 miuix SmallTopAppBar 重复，且不是 MIUI 风格。
+        // 关掉窗口标题栏，只保留 Compose 里居中的 miuix 顶部应用栏
+        //（SmallTopAppBar 内部已处理状态栏 insets，无需额外 padding）。
+        requestWindowFeature(Window.FEATURE_NO_TITLE)
+        actionBar?.hide()
         enableEdgeToEdge()
         chineseUi = isChineseSystemLanguage()
-        setTitle(R.string.module_name)
         prefs = getSharedPreferences(LOCAL_PREFS_NAME, MODE_PRIVATE)
         targetLanguageValues.clear()
         targetLanguageValues.addAll(TARGET_LANGUAGE_VALUES)
@@ -567,11 +572,13 @@ class SettingsActivity : ComponentActivity(), SettingsActions {
 
         val task = object : FutureTask<ApiTester.Result>(
             Callable {
-                if (connectionTest) {
-                    ApiTester.testConnection(snapshot)
+                val kind = if (connectionTest) {
+                    ApiTester.TestKind.CONNECTION
                 } else {
-                    ApiTester.testTranslation(snapshot, text)
+                    ApiTester.TestKind.TRANSLATION
                 }
+                // 上游新接口：一次一个 Call，页面取消时同步断开 HTTP I/O。
+                ApiTester.newCall(snapshot, kind, text).call()
             },
         ) {
             override fun done() {
@@ -618,10 +625,18 @@ class SettingsActivity : ComponentActivity(), SettingsActions {
         if (result != null) {
             showResult(result)
         } else {
-            state.result = getString(
-                R.string.status_test_failed_detail,
-                if (failure == null) getString(R.string.unknown_error) else failure.javaClass.simpleName,
-            )
+            val cause: Throwable? = failure
+            val detail = if (cause == null) {
+                getString(R.string.unknown_error)
+            } else {
+                val causeMessage = cause.message
+                if (causeMessage.isNullOrEmpty()) {
+                    cause.javaClass.simpleName
+                } else {
+                    cause.javaClass.simpleName + "：" + causeMessage
+                }
+            }
+            state.result = getString(R.string.status_test_failed_detail, detail)
             updateStatus(getString(R.string.status_test_failed))
         }
     }
@@ -639,12 +654,39 @@ class SettingsActivity : ComponentActivity(), SettingsActions {
         state.testsEnabled = enabled
     }
 
+    /** 把上游归类的失败信息压缩成一行（状态码 / 原因 / 异常类型 / 服务端错误体摘要）。 */
+    private fun describeFailure(failure: ApiTester.Failure): String {
+        val parts = mutableListOf<String>()
+        if (failure.httpStatus > 0) {
+            parts.add("HTTP " + failure.httpStatus)
+        }
+        parts.add(failure.reason.name)
+        val type = failure.exceptionType
+        if (!type.isNullOrEmpty() && !parts.contains(type)) {
+            parts.add(type)
+        }
+        val body = failure.upstreamErrorBody
+        if (!body.isNullOrEmpty()) {
+            val trimmed = body.trim()
+            if (trimmed.isNotEmpty()) {
+                parts.add(if (trimmed.length > 200) trimmed.substring(0, 200) + "…" else trimmed)
+            }
+        }
+        return if (parts.isEmpty()) failure.kind.name else parts.joinToString(" · ")
+    }
+
     private fun showResult(result: ApiTester.Result) {
         val message = StringBuilder()
         if (result.ok) {
             message.append(getString(R.string.result_success, result.elapsedMs))
         } else {
             message.append(getString(R.string.result_failure))
+        }
+        // 失败详情由 ApiTester 归类给出（配置错误 / 状态码 / 超时 / 网络 / 解析失败）。
+        // 旧实现整段丢弃失败信息，界面只剩「请求失败」四个字，无法定位问题。
+        val failure = result.failure
+        if (!result.ok && failure != null) {
+            message.append(getString(R.string.result_detail, describeFailure(failure)))
         }
         if (result.translated != null) {
             message.append(getString(R.string.result_translation, result.translated))
